@@ -1,0 +1,59 @@
+#dashboard {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  padding:0;
+  margin-left:0.5rem;
+  margin-top:0.5rem;
+}
+
+.dashboard-item {
+  display:block;
+  border-radius: 0.5rem;
+  border: 1px solid #3d5a96;
+  color: #071a41;
+  margin-top:1rem;
+}
+
+.dashboard-item {
+  margin-right:1rem;
+  box-sizing: border-box;
+  width: 15rem;
+  height: 15rem;
+}
+
+.new-repl {
+  text-align: center;
+  padding-top: 6.5rem;
+}
+
+.repl-overview {
+  position:relative;
+  text-align: center;
+  .delete {
+    width:1.5rem;
+    height:1.5rem;
+    position:absolute;
+    top:0.5rem;
+    right:0.5rem;
+  }
+  .edit {
+    width:1.5rem;
+    height:1.5rem;
+    position:absolute;
+    top:0.5rem;
+    right:2.5rem;
+  }
+  .repl-type {
+    display:inline-block;
+    margin-top:4rem;
+    img {
+      width:3rem;
+      height:3rem;
+    }
+  }
+  .repl-name {
+    display: block;
+    margin-top: 2rem;
+  }
+}
