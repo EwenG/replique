@@ -1,6 +1,16 @@
+$dark-blue: #071a41;
+$blue: #3d5a96;
+$green: #63b132;
+$gray: #dadada;
+
+a {
+  text-decoration: none;
+  color:black;
+}
+
 #dashboard {
+  display:flex;
   width: 100%;
-  display: flex;
   flex-wrap: wrap;
   padding:0;
   margin-left:0.5rem;
@@ -10,8 +20,8 @@
 .dashboard-item {
   display:block;
   border-radius: 0.5rem;
-  border: 1px solid #3d5a96;
-  color: #071a41;
+  border: 3px solid $blue;
+  color: $dark-blue;
   margin-top:1rem;
 }
 
@@ -36,6 +46,7 @@
     position:absolute;
     top:0.5rem;
     right:0.5rem;
+    cursor: pointer;
   }
   .edit {
     width:1.5rem;
@@ -43,17 +54,92 @@
     position:absolute;
     top:0.5rem;
     right:2.5rem;
+    cursor: pointer;
   }
   .repl-type {
     display:inline-block;
-    margin-top:4rem;
+    position:absolute;
+    top:4rem;
+    left:0;
+    right:0;
+    margin-left:auto;
+    margin-right:auto;
     img {
       width:3rem;
       height:3rem;
     }
   }
-  .repl-name {
+  .repl-directory {
     display: block;
-    margin-top: 2rem;
+    position:absolute;
+    top: 8rem;
+    left:0;
+    right:0;
+    margin-left:auto;
+    margin-right:auto;
+    width:13rem;
+    height:2rem;
+    overflow:overlay;
+    white-space:nowrap;
+    direction:rtl;
+    &::-webkit-scrollbar {
+      display:none;
+    }
+  }
+}
+
+#edit-form {
+  .back-nav {
+    display:block;
+    position:fixed;
+    height:100%;
+    width:3rem;
+    background-image: url('resources/images/back.png');
+    background-repeat: no-repeat;
+    background-position: 50% 50%;
+    background-size:3rem;
+    padding-left:1rem;
+    padding-right:1rem;
+    &:hover {
+      background-color: $gray;
+    }
+  }
+  form {
+    margin-left: 6rem;
+    .save {
+      display:inline-block;
+      padding:0.5rem;
+      background-color: $green;
+      color:white;
+      &:hover {
+        opacity: 0.75;
+      }
+      &.disabled {
+        background-color: $gray;
+        &:hover {
+          opacity: 1;
+          cursor: default;
+        }
+      }
+    }
+    .directory {
+      margin-top: 2rem;
+    }
+    .type {
+      margin-top: 1rem;
+      .type-checkbox ~ .type-checkbox {
+        margin-left:1rem;
+      }
+    }
+    .new-directory {
+      display:inline-block;
+      padding:0.5rem;
+      background-color: $blue;
+      color:white;
+      margin-left:1rem;
+      &:hover {
+        opacity: 0.75;
+      }
+    }
   }
 }
