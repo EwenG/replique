@@ -1,35 +1,18 @@
 (ns ewen.replique.ui.view
-  (:require [cljs.nodejs :as node]
-            [hiccup.core]
+  (:require [hiccup.core]
             [hiccup.page :refer [include-css]]
             [goog.dom :as dom]
             [goog.events :as events]
-            [cljs.reader :as reader])
+            [cljs.reader :as reader]
+            [ewen.replique.ui.remote :refer [remote]])
   (:require-macros [hiccup.core :refer [html]]
                    [hiccup.def :refer [defhtml]]))
 
-;; Keyboard shortcuts
-
-(def remote (node/require "remote"))
-(def current-window (.getCurrentWindow remote))
-(def web-contents (aget current-window "webContents"))
 (def dialog (.require remote "dialog"))
 
 (comment
   (.showOpenDialog dialog #js {:properties #js ["openDirectory"]})
   )
-
-(defn keyboard-shortcuts [e]
-  (cond (and (aget e "ctrlKey")
-             (aget e "shiftKey")
-             (= (aget e "keyCode") 73))
-        (.toggleDevTools web-contents)
-        :else nil))
-
-(defn init-keyboards []
-  (.addEventListener js/document "keyup" #(keyboard-shortcuts %)))
-
-;; View
 
 (def state
   (atom
@@ -54,6 +37,8 @@
 
 (defhtml dashboard [{:keys [repls]}]
   (html [:div#dashboard
+         [:div.settings-wrapper
+          [:img.settings-button {:src "/resources/images/settings.png"}]]
          (new-repl)
          (for [[repl index] (map vector repls (range (count repls)))]
            (repl-overview repl index))]))
@@ -86,6 +71,10 @@
                :checked (contains? type "cljs")}
               "Clourescript"]]]])))
 
+(defhtml settings [state]
+  (html [:div#settings
+         [:a.back-nav {:href "#"}]]))
+
 (defn make-node [s]
   (dom/htmlToDocumentFragment s))
 
@@ -98,6 +87,9 @@
 
 (defn add-new-repl []
   (swap! state update-in [:repls] conj {:type #{} :directory nil}))
+
+(defn settings-button-clicked []
+  (swap! state assoc :view :settings))
 
 (defn overview-clicked [overview e]
   (let [class-list (-> (aget e "target")
@@ -167,6 +159,20 @@
                             (js/Event. "change" #js {:bubbles true})))
           :else nil)))
 
+(defn settings-clicked [settings-node e]
+  (let [class-list (-> (aget e "target")
+                       (aget "classList"))]
+    (cond (.contains class-list "save")
+          nil
+          :else nil)))
+
+(defn settings-changed [settings-node e]
+  (let [target (aget e "target")
+        class-list (aget target "classList")]
+    (cond (.contains class-list "field")
+          (swap! state assoc :dirty true)
+          :else nil)))
+
 (defmulti refresh-view :view)
 
 (defmethod refresh-view :dashboard [state]
@@ -178,6 +184,8 @@
     (dom/appendChild root dashboard-node)
     (events/listen (.querySelector dashboard-node ".new-repl")
                    events/EventType.CLICK add-new-repl)
+    (events/listen (.querySelector dashboard-node ".settings-button")
+                   events/EventType.CLICK settings-button-clicked)
     (doseq [overview (-> (.querySelectorAll dashboard-node ".repl-overview")
                          array-seq)]
       (events/listen overview events/EventType.CLICK
@@ -198,6 +206,22 @@
     (events/listen (.querySelector edit-form-node "#edit-form form")
                    events/EventType.CHANGE (partial edit-form-changed
                                                     edit-form-node))))
+
+(defmethod refresh-view :settings [state]
+  (let [root (dom/createDom "div" #js {:id "root"})
+        old-root (.getElementById js/document "root")
+        settings-node (dom/htmlToDocumentFragment (settings state))]
+    (when old-root (dom/removeNode old-root))
+    (dom/appendChild js/document.body root)
+    (dom/appendChild root settings-node)
+    (events/listen (.querySelector settings-node ".back-nav")
+                   events/EventType.CLICK back-clicked)
+    #_(events/listen (.querySelector settings-node "#settings form")
+                   events/EventType.CLICK (partial settings-clicked
+                                                   settings-node))
+    #_(events/listen (.querySelector settings-node "#settings form")
+                   events/EventType.CHANGE (partial settings-changed
+                                                    settings-node))))
 
 (defn persist-state [{:keys [repls]}]
   (loop [index 0
