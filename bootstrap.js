@@ -6,6 +6,8 @@ const BrowserWindow = electron.BrowserWindow;  // Module to create native browse
 // be closed automatically when the JavaScript object is garbage collected.
 var mainWindow = null;
 
+global.repliqueRootDir = __dirname;
+
 // Quit when all windows are closed.
 app.on('window-all-closed', function() {
   // On OS X it is common for applications and their menu bar

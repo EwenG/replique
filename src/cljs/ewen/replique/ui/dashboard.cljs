@@ -9,7 +9,8 @@
             [ewen.replique.ui.utils :as utils]
             [ewen.replique.ui.edit-repl]
             [ewen.replique.ui.settings]
-            [ewen.replique.ui.shortcuts])
+            [ewen.replique.ui.shortcuts]
+            [ewen.replique.ui.notifications])
   (:require-macros [hiccup.core :refer [html]]
                    [hiccup.def :refer [defhtml]]))
 
@@ -58,21 +59,24 @@
             (swap! core/state assoc :view :edit-repl))
           :else nil)))
 
-(defmethod core/refresh-view :dashboard [state]
-  (let [root (dom/createDom "div" #js {:id "root"})
-        old-root (.getElementById js/document "root")
-        dashboard-node (dom/htmlToDocumentFragment (dashboard state))]
-    (when old-root (dom/removeNode old-root))
-    (dom/appendChild js/document.body root)
-    (dom/appendChild root dashboard-node)
-    (events/listen (.querySelector dashboard-node ".new-repl")
-                   events/EventType.CLICK add-new-repl)
-    (events/listen (.querySelector dashboard-node ".settings-button")
-                   events/EventType.CLICK settings-button-clicked)
-    (doseq [overview (-> (.querySelectorAll dashboard-node ".repl-overview")
-                         array-seq)]
-      (events/listen overview events/EventType.CLICK
-                     (partial overview-clicked overview)))))
+(swap!
+ core/refresh-view-fns assoc :dashboard
+ (fn [root {:keys [view] :as state}]
+   (if (= :dashboard view)
+     (let [node (utils/replace-or-append
+                           root "#dashboard"
+                           (dom/htmlToDocumentFragment
+                            (dashboard state)))]
+       (events/listen (.querySelector node ".new-repl")
+                      events/EventType.CLICK add-new-repl)
+       (events/listen (.querySelector node ".settings-button")
+                      events/EventType.CLICK settings-button-clicked)
+       (doseq [overview (-> (.querySelectorAll node ".repl-overview")
+                            array-seq)]
+         (events/listen overview events/EventType.CLICK
+                        (partial overview-clicked overview))))
+     (when-let [node (.querySelector root "#dashboard")]
+       (dom/removeNode node)))))
 
 
 (add-watch core/state :repls-watcher

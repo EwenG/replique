@@ -1,11 +1,20 @@
 $dark-blue: #071a41;
 $blue: #3d5a96;
+$light-blue: #7c9cdc;
 $green: #63b132;
+$light-green: #91dc47;
+$dark-green: #1c3801;
 $gray: #dadada;
+$light-red: #f2dede;
+$dark-red: #a94442;
 
 a {
   text-decoration: none;
   color:black;
+}
+
+#root {
+  position:relative;
 }
 
 #dashboard {
@@ -206,5 +215,27 @@ select {
         margin-left: 1rem;
       }
     }
+  }
+}
+
+#notifications {
+  position: absolute;
+  top:0;
+  right:0;
+  .notif {
+    padding: 1rem;
+    border-radius: 0.3rem;
+  }
+  .err {
+    background-color: $light-red;
+    color: $dark-red;
+  }
+  .download {
+    background-color: $light-blue;
+    color: $dark-blue;
+  }
+  .success {
+    background-color: $light-green;
+    color: $dark-green;
   }
 }

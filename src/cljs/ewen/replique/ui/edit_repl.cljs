@@ -104,21 +104,24 @@
           (swap! core/state assoc :dirty true)
           :else nil)))
 
-(defmethod core/refresh-view :edit-repl [state]
-  (let [root (dom/createDom "div" #js {:id "root"})
-        old-root (.getElementById js/document "root")
-        edit-repl-node (dom/htmlToDocumentFragment (edit-repl state))]
-    (when old-root (dom/removeNode old-root))
-    (dom/appendChild js/document.body root)
-    (dom/appendChild root edit-repl-node)
-    (events/listen (.querySelector edit-repl-node ".back-nav")
-                   events/EventType.CLICK back-clicked)
-    (events/listen (.querySelector edit-repl-node "#edit-repl form")
-                   events/EventType.CLICK (partial edit-repl-clicked
-                                                   edit-repl-node))
-    (events/listen (.querySelector edit-repl-node "#edit-repl form")
-                   events/EventType.CHANGE (partial edit-repl-changed
-                                                    edit-repl-node))))
+(swap!
+ core/refresh-view-fns assoc :edit-repl
+ (fn [root {:keys [view] :as state}]
+   (if (= :edit-repl view)
+     (let [node (utils/replace-or-append
+                           root "#edit-repl"
+                           (dom/htmlToDocumentFragment
+                            (edit-repl state)))]
+       (events/listen (.querySelector node ".back-nav")
+                      events/EventType.CLICK back-clicked)
+       (events/listen (.querySelector node "#edit-repl form")
+                      events/EventType.CLICK (partial
+                                              edit-repl-clicked node))
+       (events/listen (.querySelector node "#edit-repl form")
+                      events/EventType.CHANGE (partial
+                                               edit-repl-changed node)))
+     (when-let [node (.querySelector root "#edit-repl")]
+       (dom/removeNode node)))))
 
 (add-watch core/state :edit-watcher
            (fn [r k o n]

@@ -1,6 +1,7 @@
 (ns ewen.replique.ui.core
   (:require [cljs.reader :as reader]
-            [ewen.replique.ui.remote :refer [remote]]))
+            [ewen.replique.ui.remote :refer [remote]]
+            [goog.dom :as dom]))
 
 (def init-state {:repls '()
                  :view :dashboard
@@ -12,7 +13,14 @@
 (defn reset-state []
   (reset! state init-state))
 
-(defmulti refresh-view :view)
+(defonce refresh-view-fns (atom {}))
+
+(defn refresh-view [state]
+  (let [root (or (.getElementById js/document "root")
+                 (doto (dom/createDom "div" #js {:id "root"})
+                   (#(dom/appendChild js/document.body %))))]
+    (doseq [[_ f] @refresh-view-fns]
+      (f root state))))
 
 (comment
   (refresh-view @state)
