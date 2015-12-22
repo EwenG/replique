@@ -5,7 +5,8 @@
 
 (def init-state {:repls '()
                  :view :dashboard
-                 :settings {:clj-jar-source "embedded"}})
+                 :settings {:clj-jar-source "embedded"
+                            :cljs-jar-source "embedded"}})
 
 (defonce state
   (atom init-state))
@@ -31,7 +32,7 @@
              (when (not= (:view o) (:view n))
                (refresh-view n))))
 
-(defn persist-state [{:keys [repls]}]
+(defn persist-state [{:keys [repls settings]}]
   (loop [index 0
          repls repls]
     (cond
@@ -42,7 +43,9 @@
       (.getItem js/localStorage (str "repl" index))
       (do (.removeItem js/localStorage (str "repl" index))
           (recur (inc index) nil))
-      :else true)))
+      :else true))
+  (prn (str settings))
+  (.setItem js/localStorage "settings" (str settings)))
 
 (defn load-state []
   (loop [i 0

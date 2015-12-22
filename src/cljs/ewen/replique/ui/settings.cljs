@@ -12,21 +12,47 @@
 
 (def fs (node/require "fs"))
 (def https (node/require "https"))
+(def dialog (.require remote "dialog"))
 (def replique-root-dir (.getGlobal remote "repliqueRootDir"))
 
-(def clj-versions #{"1.7"})
-(def clj-file "clojure-1.7.0.jar")
-(def clj-urls {"1.7" "https://repo1.maven.org/maven2/org/clojure/clojure/1.7.0/clojure-1.7.0.jar"})
-(def clj-paths
-  {"1.7" (str replique-root-dir "/runnables/clojure-1.7.0.jar")})
-(def current-clj-v "1.7")
+(def clj-versions #{"1.7.0"})
+(def clj-file-names {"1.7.0" "clojure-1.7.0.jar"})
+(def current-clj-v "1.7.0")
+(def clj-file-name (get clj-file-names current-clj-v))
+(def clj-urls {"1.7.0" "https://repo1.maven.org/maven2/org/clojure/clojure/1.7.0/clojure-1.7.0.jar"})
+(def clj-paths (->> (map (fn [[v f]]
+                           [v (str replique-root-dir "/runnables/" f)])
+                         clj-file-names)
+                    (into {})))
 
-#_(defn downloaded-clj-jars []
+(def cljs-versions #{"1.7.170"})
+(def cljs-file-names {"1.7.170" "cljs-1.7.170.jar"})
+(def current-cljs-v "1.7.170")
+(def cljs-file-name (get cljs-file-names current-cljs-v))
+(def cljs-urls {"1.7.170" "https://github.com/clojure/clojurescript/releases/download/r1.7.170/cljs.jar"})
+(def cljs-paths (->> (map (fn [[v f]]
+                           [v (str replique-root-dir "/runnables/" f)])
+                         cljs-file-names)
+                    (into {})))
+
+(defn runnable-files []
   (->> (.readdirSync fs (str replique-root-dir "/runnables"))
-       (apply vec)
-       (filter )))
+       (apply vector)))
 
-(defhtml clj-jar-tmpl [clj-jar-source]
+(defn clj-jar-files []
+  (let [clj-file-names (into #{} (vals clj-file-names))]
+    (->> (runnable-files)
+         (filter #(get clj-file-names %))
+         (into #{}))))
+
+(defn cljs-jar-files []
+  (let [cljs-file-names (into #{} (vals cljs-file-names))]
+    (->> (runnable-files)
+         (filter #(get cljs-file-names %))
+         (into #{}))))
+
+(defhtml clj-jar-tmpl [{:keys [clj-jar-source downloaded-clj-jar
+                               custom-clj-jar]}]
   [:fieldset.clj-jar
    [:legend "Clojure jar"]
    [:label {:for "clj-embedded-source"} "Embedded Clojure jar"]
@@ -46,7 +72,11 @@
                           {:checked true}))] [:br]
    [:select.field.select-downloaded
     (when (= "custom" clj-jar-source)
-      {:disabled true})]
+      {:disabled true})
+    (for [f (conj (clj-jar-files) downloaded-clj-jar nil)]
+      [:option (merge {:value f}
+                      (when (= f downloaded-clj-jar) {:selected true}))
+       f])]
    [:a (merge {:href "#"}
               (if (= "custom" clj-jar-source)
                 {:class "disabled button download-clj-jar"}
@@ -54,7 +84,7 @@
     "Download Clojure jar"] [:br]
    [:input.field.custom-clj-jar
     (merge {:type "text" :readonly true
-            :value ""}
+            :value custom-clj-jar}
            (when (= "embedded" clj-jar-source)
              {:disabled true}))]
    [:a (merge {:href "#"}
@@ -63,7 +93,49 @@
                 {:class "button new-clj-jar"}))
     "Select Clojure jar"]])
 
-(defn start-progress [resp id]
+(defhtml cljs-jar-tmpl [{:keys [cljs-jar-source downloaded-cljs-jar
+                                custom-cljs-jar]}]
+  [:fieldset.cljs-jar
+   [:legend "Clojurescript jar"]
+   [:label {:for "cljs-embedded-source"} "Embedded Clojurescript jar"]
+   [:input.field (merge {:type "radio"
+                         :name "cljs-source"
+                         :id "cljs-embedded-source"
+                         :value "embedded"}
+                        (if (= "embedded" cljs-jar-source)
+                          {:checked true}
+                          nil))]
+   [:label {:for "cljs-custom-source"} "Custom Clojurescript jar"]
+   [:input.field (merge {:type "radio"
+                         :name "cljs-source"
+                         :id "cljs-custom-source"
+                         :value "custom"}
+                        (when (= "custom" cljs-jar-source)
+                          {:checked true}))] [:br]
+   [:select.field.select-downloaded
+    (when (= "custom" cljs-jar-source)
+      {:disabled true})
+    (for [f (conj (cljs-jar-files) downloaded-cljs-jar nil)]
+      [:option (merge {:value f}
+                      (when (= f downloaded-cljs-jar) {:selected true}))
+       f])]
+   [:a (merge {:href "#"}
+              (if (= "custom" cljs-jar-source)
+                {:class "disabled button download-cljs-jar"}
+                {:class "button download-cljs-jar"}))
+    "Download Clojurescript jar"] [:br]
+   [:input.field.custom-cljs-jar
+    (merge {:type "text" :readonly true
+            :value custom-cljs-jar}
+           (when (= "embedded" cljs-jar-source)
+             {:disabled true}))]
+   [:a (merge {:href "#"}
+              (if (= "embedded" cljs-jar-source)
+                {:class "disabled button new-cljs-jar"}
+                {:class "button new-cljs-jar"}))
+    "Select Clojurescript jar"]])
+
+(defn start-progress [resp id file-name]
   (let [total-length (-> (aget resp "headers")
                          (aget "content-length")
                          js/parseInt)
@@ -81,36 +153,41 @@
                        (notif/notif-with-id
                         {:type :download
                          :progress (js/Math.floor updated-percent)
-                         :file clj-file }
+                         :file file-name }
                         id)))
                   1000)]
              (vswap! length + (aget chunk "length"))
              (compute-progress))))))
 
-(defn download-clj-jar []
-  (let [url (get clj-urls current-clj-v)
-        path (get clj-paths current-clj-v)
-        file (.createWriteStream fs path #js {:flags "wx"})
+(defn download-jar [url path file-name]
+  (let [file (.createWriteStream fs path #js {:flags "wx"})
         id (.getNextUniqueId utils/id-gen)
         req (.get https url
                   (fn [resp]
                     (let [status (aget resp "statusCode")]
-                      (if (not= status 200)
+                      (cond
+                        (= status 302)
+                        (let [location (-> (aget resp "headers")
+                                           (aget "location"))]
+                          (.unlink fs path)
+                          (download-jar location path file-name))
+                        (not= status 200)
                         (do
-                          (.log js/console "Error while downloading the Clojure jar. Recevied HTTP status " status)
+                          (.log js/console (str "Error while downloading the file: " file-name ". Recevied HTTP status " status))
                           (notif/single-notif
-                           {:type :err-msg
-                            :msg "Error while downloading the Clojure jar"})
+                           {:type :err
+                            :msg (str "Error while downloading the file: " file-name)})
                           (.unlink fs path))
+                        :else
                         (do
-                          (start-progress resp id)
+                          (start-progress resp id file-name)
                           (.pipe resp file))))))]
     (.on req "error"
          (fn [err]
-           (.log js/console "Error while downloading the Clojure jar. Recevied error " err)
+           (.log js/console (str "Error while downloading the file: " file-name ". Recevied error " err))
            (notif/single-notif
-            {:type :err-msg
-             :msg "Error while downloading the Clojure jar"})
+            {:type :err
+             :msg (str "Error while downloading the file: " file-name)})
            (.unlink fs path)))
     (.on req "timeout"
          (fn [err]
@@ -122,19 +199,19 @@
            (notif/clear-notif id)
            (notif/single-notif
             {:type :success
-             :msg (str clj-file " successfully downloaded")})
-           (.close file)))
+             :msg (str file-name " successfully downloaded")})
+           (.close file)
+           (core/refresh-view @core/state)))
     (.on file "error"
          (fn [err]
            (if (= (aget err "code") "EEXIST")
              (notif/single-notif
               {:type :err
-               :msg "The most recent Clojure version has already been downloaded"})
+               :msg "The most recent version has already been downloaded"})
              (do (prn "File error " err)
                  (.unlink fs path)))))))
 
-(defhtml settings [{dirty :dirty
-                    {clj-jar-source :clj-jar-source} :settings}]
+(defhtml settings [{dirty :dirty settings :settings}]
   (html [:div#settings
          [:a.back-nav {:href "#"}]
          [:form
@@ -144,7 +221,47 @@
                     {:class "button save"}
                     {:class "button save disabled"}))
            "Save"]
-          (clj-jar-tmpl clj-jar-source)]]))
+          (clj-jar-tmpl settings)
+          (cljs-jar-tmpl settings)]]))
+
+(def settings-field-readers (atom #{}))
+
+(swap! settings-field-readers conj
+       (fn []
+         (let [checked-source
+               (.querySelector
+                js/document
+                "#settings input[name=\"clj-source\"]:checked")]
+           [:clj-jar-source (.getAttribute checked-source "value")])))
+
+(swap! settings-field-readers conj
+       (fn []
+         (let [downloaded-jar
+               (.querySelector
+                js/document
+                "#settings .clj-jar .select-downloaded option:checked")]
+           (if downloaded-jar
+             [:downloaded-clj-jar (let [val (.getAttribute downloaded-jar "value")]
+                         (if (= "" val)
+                           nil val))]
+             [:downloaded-clj-jar nil]))))
+
+(swap! settings-field-readers conj
+       (fn []
+         (let [custom-jar
+               (-> (.querySelector js/document "#settings .custom-clj-jar")
+                   (aget "value"))]
+           (if (or (nil? custom-jar) (= custom-jar ""))
+             [:custom-clj-jar nil]
+             [:custom-clj-jar custom-jar]))))
+
+(defn save-settings []
+  (let [{:keys [settings]} @core/state
+        fields (->> (for [field-reader @settings-field-readers]
+                      (field-reader))
+                    (into {}))
+        new (merge settings fields)]
+    (swap! core/state assoc :settings new)))
 
 (defn back-clicked []
   (swap! core/state assoc
@@ -154,8 +271,28 @@
 (defn settings-clicked [settings-node e]
   (let [class-list (-> (aget e "target")
                        (aget "classList"))]
-    (cond (.contains class-list "download-clj-jar")
-          (download-clj-jar)
+    (cond (.contains class-list "save")
+          (do
+            (save-settings)
+            (swap! core/state dissoc :dirty))
+          (.contains class-list "download-clj-jar")
+          (download-jar (get clj-urls current-clj-v)
+                        (get clj-paths current-clj-v)
+                        clj-file-name)
+          (.contains class-list "download-cljs-jar")
+          (download-jar (get cljs-urls current-cljs-v)
+                        (get cljs-paths current-cljs-v)
+                        cljs-file-name)
+          (.contains class-list "new-clj-jar")
+          (let [input (.querySelector
+                       settings-node ".custom-clj-jar")]
+            (->> (.showOpenDialog
+                  dialog #js {:properties #js ["openFile"]
+                              :filters #js [#js {:name "jar files"
+                                                 :extensions #js ["jar"]}]})
+                 first
+                 (aset input "value"))
+            (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
           :else nil)))
 
 (defn settings-changed [settings-node e]
@@ -164,8 +301,22 @@
     (cond (= "clj-source" (.getAttribute target "name"))
           (let [source (.getAttribute target "value")
                 clj-jar-node (.querySelector settings-node ".clj-jar")]
-            (dom/replaceNode (utils/make-node (clj-jar-tmpl source))
+            (dom/replaceNode (utils/make-node
+                              (clj-jar-tmpl
+                               (->
+                                (:settings @core/state)
+                                (assoc :clj-jar-source source))))
                              clj-jar-node)
+            (swap! core/state assoc :dirty true))
+          (= "cljs-source" (.getAttribute target "name"))
+          (let [source (.getAttribute target "value")
+                cljs-jar-node (.querySelector settings-node ".cljs-jar")]
+            (dom/replaceNode (utils/make-node
+                              (cljs-jar-tmpl
+                               (->
+                                (:settings @core/state)
+                                (assoc :cljs-jar-source source))))
+                             cljs-jar-node)
             (swap! core/state assoc :dirty true))
           (.contains class-list "field")
           (swap! core/state assoc :dirty true)
@@ -202,3 +353,8 @@
                  (-> (aget save-node "classList")
                      (.add "disabled")))
                :else nil)))
+
+(add-watch core/state :settings-watcher
+           (fn [r k o n]
+             (when (not= (:settings o) (:settings n))
+               (core/persist-state n))))

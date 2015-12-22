@@ -109,9 +109,9 @@
  (fn [root {:keys [view] :as state}]
    (if (= :edit-repl view)
      (let [node (utils/replace-or-append
-                           root "#edit-repl"
-                           (dom/htmlToDocumentFragment
-                            (edit-repl state)))]
+                 root "#edit-repl"
+                 (dom/htmlToDocumentFragment
+                  (edit-repl state)))]
        (events/listen (.querySelector node ".back-nav")
                       events/EventType.CLICK back-clicked)
        (events/listen (.querySelector node "#edit-repl form")

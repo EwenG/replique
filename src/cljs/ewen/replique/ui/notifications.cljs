@@ -7,18 +7,6 @@
   (:require-macros [hiccup.core :refer [html]]
                    [hiccup.def :refer [defhtml]]))
 
-
-(defn notif-comparator [{id1 :id t1 :timestamp} {id2 :id t2 :timestamp}]
-  (cond (= id1 id2) 0
-        (= t1 t2) (compare id1 id2)
-        :else (compare t1 t2)))
-
-(swap! core/state
-       (fn [state]
-         (if (nil? (:notifications state))
-           (assoc state :notifications (sorted-map-by notif-comparator))
-           state)))
-
 (defhtml notifications-tmpl [{notifications :notifications}]
   (html [:div#notifications
          (for [[_ {:keys [type] :as notif}] notifications]
@@ -65,17 +53,25 @@
     (when-let [node (.querySelector root "#notifications")]
       (dom/removeNode node))))
 
-(defn reset-notifications []
-  (swap! core/state assoc :notifications (sorted-map-by notif-comparator)))
-
 (comment
   (reset-notifications)
   )
 
+(defn notif-comparator [{id1 :id t1 :timestamp} {id2 :id t2 :timestamp}]
+  (cond (= id1 id2) 0
+        (= t1 t2) (compare id1 id2)
+        :else (compare t1 t2)))
+
+(defn reset-notifications []
+  (swap! core/state assoc :notifications (sorted-map-by notif-comparator)))
+
 (add-watch core/state :notifications-watcher
            (fn [r k o n]
-             (when (not= (:notifications o) (:notifications n))
-               (refresh-notifications
-                (.getElementById js/document "root") n))))
+             (if (nil? (:notifications n))
+               (swap! core/state assoc :notifications
+                      (sorted-map-by notif-comparator))
+               (when (not= (:notifications o) (:notifications n))
+                 (refresh-notifications
+                  (.getElementById js/document "root") n)))))
 
 (swap! core/refresh-view-fns assoc :notifications refresh-notifications)

@@ -195,23 +195,23 @@ select {
 
 #settings {
   form {
-    .clj-jar {
+    .clj-jar, .cljs-jar {
       margin-top: 2rem;
-      label[for="clj-custom-source"] {
+      label[for="clj-custom-source"], label[for="cljs-custom-source"] {
         margin-left:1rem;
       }
-      .custom-clj-jar {
+      .custom-clj-jar, .custom-cljs-jar {
         width:11rem;
         margin-top:1rem;
       }
-      .download-clj-jar {
+      .download-clj-jar, .download-cljs-jar {
         margin-left: 1rem;
       }
       .select-downloaded {
         width:11rem;
         margin-top:1rem;
       }
-      .new-clj-jar {
+      .new-clj-jar, .new-cljs-jar {
         margin-left: 1rem;
       }
     }
