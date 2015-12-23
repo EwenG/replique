@@ -7,4 +7,5 @@
   :cljsbuild {:builds [{:source-paths ["src/cljs"]
                         :compiler {:output-to "out/main.js"
                                    :optimizations :advanced
+                                   :pretty-print false
                                    :externs ["resources/js/externs.js"]}}]})
