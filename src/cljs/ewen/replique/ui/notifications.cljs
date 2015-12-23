@@ -29,19 +29,13 @@
 (defn notif-with-id [notif-msg id]
   (let [{:keys [timeout]} (get (:notifications @core/state) {:id id})
         notif-key {:id id
-                   :timestamp (js/Date.now)}
-        timeout-k (js/setTimeout
-                   #(swap! core/state update-in [:notifications]
-                           dissoc notif-key)
-                   3000)
-        notif-msg (assoc notif-msg :timeout timeout-k)]
-    (.clearTimeout js/window timeout)
+                   :timestamp (js/Date.now)}]
     (swap! core/state update-in [:notifications]
            assoc notif-key notif-msg)))
 
 (defn clear-notif [id]
   (let [{:keys [timeout]} (get (:notifications @core/state) {:id id})]
-    (.clearTimeout js/window timeout)
+    (when timeout (.clearTimeout js/window timeout))
     (swap! core/state update-in [:notifications] dissoc {:id id})))
 
 (defn refresh-notifications [root {:keys [notifications] :as state}]

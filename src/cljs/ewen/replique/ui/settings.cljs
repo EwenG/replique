@@ -15,11 +15,11 @@
 (def dialog (.require remote "dialog"))
 (def replique-root-dir (.getGlobal remote "repliqueRootDir"))
 
-(def clj-versions #{"1.7.0"})
-(def clj-file-names {"1.7.0" "clojure-1.7.0.jar"})
-(def current-clj-v "1.7.0")
+(def clj-versions #{"1.8.0-RC4"})
+(def clj-file-names {"1.8.0-RC4" "clojure-1.8.0-RC4.jar"})
+(def current-clj-v "1.8.0-RC4")
 (def clj-file-name (get clj-file-names current-clj-v))
-(def clj-urls {"1.7.0" "https://repo1.maven.org/maven2/org/clojure/clojure/1.7.0/clojure-1.7.0.jar"})
+(def clj-urls {"1.8.0-RC4" "https://repo1.maven.org/maven2/org/clojure/clojure/1.8.0-RC4/clojure-1.8.0-RC4.jar"})
 (def clj-paths (->> (map (fn [[v f]]
                            [v (str replique-root-dir "/runnables/" f)])
                          clj-file-names)
@@ -185,13 +185,18 @@
     (.on req "error"
          (fn [err]
            (.log js/console (str "Error while downloading the file: " file-name ". Recevied error " err))
+           (notif/clear-notif id)
            (notif/single-notif
             {:type :err
              :msg (str "Error while downloading the file: " file-name)})
            (.unlink fs path)))
     (.on req "timeout"
          (fn [err]
-           (prn (str "Req timed out" err))
+           (.log js/console (str "Error while downloading the file: " file-name ". Timed out with error " err))
+           (notif/clear-notif id)
+           (notif/single-notif
+            {:type :err
+             :msg (str "Error while downloading the file: " file-name)})
            (.abort req)
            (.unlink fs path)))
     (.on file "finish"
@@ -205,10 +210,16 @@
     (.on file "error"
          (fn [err]
            (if (= (aget err "code") "EEXIST")
-             (notif/single-notif
-              {:type :err
-               :msg "The most recent version has already been downloaded"})
-             (do (prn "File error " err)
+             (do
+               (.abort req)
+               (notif/single-notif
+                {:type :err
+                 :msg "The most recent version has already been downloaded"}))
+             (do (.log js/console (str "Error while downloading the file: " file-name ". Recevied error " err))
+                 (notif/clear-notif id)
+                 (notif/single-notif
+                  {:type :err
+                   :msg (str "Error while downloading the file: " file-name)})
                  (.unlink fs path)))))))
 
 (defhtml settings [{dirty :dirty settings :settings}]
