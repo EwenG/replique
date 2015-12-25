@@ -20,7 +20,7 @@
 (defhtml new-repl []
   [:a.dashboard-item.new-repl {:href "#"} "New REPL"])
 
-(defhtml repl-overview [{:keys [type directory proc]} index]
+(defhtml repl-overview [{:keys [type directory proc status]} index]
   [:div.dashboard-item.repl-overview
    {:href "#"
     :data-index index}
@@ -28,6 +28,7 @@
    [:div {:class (if proc "stop" "stop disabled")}]
    [:img.delete {:src "resources/images/delete.png"}]
    [:img.edit {:src "resources/images/edit.png"}]
+   [:span.repl-status status]
    [:div.repl-type
     (when (contains? type "clj")
       [:img {:src "resources/images/clj-logo.gif"}])
@@ -44,7 +45,8 @@
            (repl-overview repl index))]))
 
 (defn add-new-repl []
-  (swap! core/state update-in [:repls] conj {:type #{} :directory nil}))
+  (swap! core/state update-in [:repls] conj
+         {:type #{"clj"} :directory nil}))
 
 (defn settings-button-clicked []
   (swap! core/state assoc :view :settings))
@@ -77,30 +79,40 @@
              (str (settings/get-clj-jar state) ":"
                   (settings/get-cljs-jar state))
              (settings/get-clj-jar state))
-        cmd-args #js ["-cp" cp "clojure.main" "-e" "\"started\""]
+        opts {:port 5555 :accept 'clojure.core.server/repl
+              :server-daemon false}
+        cmd-args #js ["-cp" cp
+                      (str "-Dclojure.server.repl=" opts)
+                      "clojure.main" "-e" "\"started\""]
         proc (spawn "java" cmd-args #js {:cwd directory})
-        new-repl (assoc repl :proc proc)]
+        status (.querySelector overview ".repl-status")]
     (.on (aget proc "stdout") "data"
          (fn [data]
            (when (= (reader/read-string (str data)) "started")
-             (.log js/console "REPL started"))))
+             (swap! core/state core/update-repls index assoc
+                    :status "REPL started")
+             (js/setTimeout
+              #(swap! core/state core/update-repls index
+                      (fn [repl]
+                        (if (identical? proc (:proc repl))
+                          (dissoc repl :status)
+                          repl)))
+              2000))))
     (.on proc "close"
          (fn [code signal]
-           (if (= 0 code)
-             (.log js/console "REPL stopped")
-             (do (.log js/console "REPL process stopped with code " code)
-                 (notif/single-notif
-                  {:type :err
-                   :msg "Error while starting the REPL"})))
-           (swap! core/state update-in [:repls]
-                  #(map-indexed (fn [i repl]
-                                  (if (= i index)
-                                    (dissoc repl :proc)
-                                    repl))
-                                %))))
-    (swap! core/state update-in [:repls]
-           #(map-indexed (fn [i repl]
-                           (if (= i index) new-repl repl)) %))))
+           ;; When killed with the stop button, the process returns code 143
+           (when (not= 143 code)
+             (.log js/console "Error while starting the REPL. Code " code)
+             (notif/single-notif
+              {:type :err
+               :msg "Error while starting the REPL"}))
+           (swap! core/state core/update-repls index dissoc :proc :status)))
+    (swap! core/state core/update-repls index assoc
+           :proc proc :status "REPL starting")))
+
+(defn stop-repl [overview {:keys [repls] :as state} index]
+  (let [{:keys [proc]} (nth repls index)]
+    (.kill proc)))
 
 (defn overview-clicked [overview e]
   (let [class-list (-> (aget e "target")
@@ -115,13 +127,20 @@
                           (js/parseInt))]
             (swap! core/state assoc :repl-index index)
             (swap! core/state assoc :view :edit-repl))
-          (.contains class-list "start")
+          (and (.contains class-list "start")
+               (not (.contains class-list "disabled")))
           (let [index (-> (.getAttribute overview "data-index")
                           (js/parseInt))
                 state @core/state]
             (if-let [err (maybe-start-repl-error state index)]
               (notif/single-notif err)
               (start-repl overview state index)))
+          (and (.contains class-list "stop")
+               (not (.contains class-list "disabled")))
+          (let [index (-> (.getAttribute overview "data-index")
+                          (js/parseInt))
+                state @core/state]
+            (stop-repl overview state index))
           :else nil)))
 
 (swap!

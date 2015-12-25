@@ -54,3 +54,10 @@
       (let [repl (reader/read-string repl-str)]
         (recur (inc i) (conj repls repl)))
       (swap! state assoc :repls (reverse repls)))))
+
+(defn update-repls [state index f & args]
+  (assoc state :repls
+         (map-indexed
+          (fn [i repl]
+            (if (= i index) (apply f repl args) repl))
+          (:repls state))))

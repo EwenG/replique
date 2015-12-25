@@ -71,13 +71,10 @@
 
 (defn save-repl []
   (let [{:keys [repl-index repls]} @core/state
-        old (nth repls repl-index)
         fields (->> (for [field-reader @repl-field-readers]
                       (field-reader))
-                    (into {}))
-        new (merge old fields)]
-    (swap! core/state update-in [:repls]
-           #(map-indexed (fn [i repl] (if (= i repl-index) new repl)) %))))
+                    (into {}))]
+    (swap! core/state core/update-repls repl-index merge fields)))
 
 (defn edit-repl-clicked [edit-repl e]
   (let [class-list (-> (aget e "target")
