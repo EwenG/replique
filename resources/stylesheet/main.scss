@@ -63,6 +63,48 @@ a {
 .repl-overview {
   position:relative;
   text-align: center;
+  .start {
+    width:1.3rem;
+    height:1.5rem;
+    position:absolute;
+    top:0.5rem;
+    left:0.5rem;
+    cursor: pointer;
+    background-image: url('/resources/images/start.png');
+    background-repeat: no-repeat;
+    background-size: 1.3rem 1.5rem;
+    &:hover {
+      opacity: 0.75;
+    }
+    &.disabled {
+      background-image: url('/resources/images/start-disabled.png');
+      cursor: default;
+      &:hover {
+        opacity: 1;
+      }
+    }
+  }
+  .stop {
+    width:1.5rem;
+    height:1.5rem;
+    position:absolute;
+    top:0.5rem;
+    left:2.5rem;
+    cursor: pointer;
+    background-image: url('/resources/images/stop.png');
+    background-repeat: no-repeat;
+    background-size: 1.5rem 1.5rem;
+    &:hover {
+      opacity: 0.75;
+    }
+    &.disabled {
+      background-image: url('/resources/images/stop-disabled.png');
+      cursor: default;
+      &:hover {
+        opacity: 1;
+      }
+    }
+  }
   .delete {
     width:1.5rem;
     height:1.5rem;
@@ -183,7 +225,7 @@ select {
     }
     .type {
       margin-top: 1rem;
-      .type-checkbox ~ .type-checkbox {
+      label[for="type-cljs"] {
         margin-left:1rem;
       }
     }

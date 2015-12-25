@@ -1,9 +1,12 @@
 (ns ewen.replique.ui.utils
   (:require [goog.dom :as dom]
             [goog.dom.classlist]
-            [goog.async.Throttle :as Throttle])
+            [goog.async.Throttle :as Throttle]
+            [cljs.nodejs :as node])
   (:import [goog.async Throttle]
            [goog.ui IdGenerator]))
+
+(def fs (node/require "fs"))
 
 (defn make-node [s]
   (dom/htmlToDocumentFragment s))
@@ -32,3 +35,12 @@
       (.fire throttle))))
 
 (def id-gen (IdGenerator.))
+
+(defn file-exists [path]
+  (try
+    (do (.lstatSync fs path)
+        true)
+    (catch js/Error e
+      (if (= "ENOENT" (aget e "code"))
+        false
+        (throw e)))))

@@ -5,22 +5,27 @@
             [goog.events :as events]
             [cljs.reader :as reader]
             [ewen.replique.ui.remote :refer [remote]]
+            [cljs.nodejs :as node]
             [ewen.replique.ui.core :as core]
             [ewen.replique.ui.utils :as utils]
             [ewen.replique.ui.edit-repl]
-            [ewen.replique.ui.settings]
+            [ewen.replique.ui.settings :as settings]
             [ewen.replique.ui.shortcuts]
-            [ewen.replique.ui.notifications])
+            [ewen.replique.ui.notifications :as notif])
   (:require-macros [hiccup.core :refer [html]]
                    [hiccup.def :refer [defhtml]]))
+
+(def spawn (aget (node/require "child_process") "spawn"))
 
 (defhtml new-repl []
   [:a.dashboard-item.new-repl {:href "#"} "New REPL"])
 
-(defhtml repl-overview [{:keys [type directory]} index]
+(defhtml repl-overview [{:keys [type directory proc]} index]
   [:div.dashboard-item.repl-overview
    {:href "#"
     :data-index index}
+   [:div {:class (if proc "start disabled" "start")}]
+   [:div {:class (if proc "stop" "stop disabled")}]
    [:img.delete {:src "resources/images/delete.png"}]
    [:img.edit {:src "resources/images/edit.png"}]
    [:div.repl-type
@@ -44,6 +49,59 @@
 (defn settings-button-clicked []
   (swap! core/state assoc :view :settings))
 
+(defn maybe-start-repl-error [{:keys [repls] :as state} index]
+  (let [{:keys [directory type]} (nth repls index)
+        clj-jar (settings/get-clj-jar state)
+        cljs-jar (settings/get-cljs-jar state)]
+    (cond
+      (nil? directory)
+      {:type :err
+       :msg "The REPL directory has not been configured"}
+      (nil? clj-jar)
+      {:type :err
+       :msg "Clojure jar has not been configured"}
+      (not (utils/file-exists clj-jar))
+      {:type :err
+       :msg "Invalid Clojure jar"}
+      (and (= #{"clj" "cljs"} type) (nil? cljs-jar))
+      {:type :err
+       :msg "Clojurescript jar has not been configured"}
+      (and (= #{"clj" "cljs"} type) (not (utils/file-exists cljs-jar)))
+      {:type :err
+       :msg "Invalid Clojurescript jar"}
+      :else nil)))
+
+(defn start-repl [overview {:keys [repls] :as state} index]
+  (let [{:keys [directory type] :as repl} (nth repls index)
+        cp (if (= #{"clj" "cljs"} type)
+             (str (settings/get-clj-jar state) ":"
+                  (settings/get-cljs-jar state))
+             (settings/get-clj-jar state))
+        cmd-args #js ["-cp" cp "clojure.main" "-e" "\"started\""]
+        proc (spawn "java" cmd-args #js {:cwd directory})
+        new-repl (assoc repl :proc proc)]
+    (.on (aget proc "stdout") "data"
+         (fn [data]
+           (when (= (reader/read-string (str data)) "started")
+             (.log js/console "REPL started"))))
+    (.on proc "close"
+         (fn [code signal]
+           (if (= 0 code)
+             (.log js/console "REPL stopped")
+             (do (.log js/console "REPL process stopped with code " code)
+                 (notif/single-notif
+                  {:type :err
+                   :msg "Error while starting the REPL"})))
+           (swap! core/state update-in [:repls]
+                  #(map-indexed (fn [i repl]
+                                  (if (= i index)
+                                    (dissoc repl :proc)
+                                    repl))
+                                %))))
+    (swap! core/state update-in [:repls]
+           #(map-indexed (fn [i repl]
+                           (if (= i index) new-repl repl)) %))))
+
 (defn overview-clicked [overview e]
   (let [class-list (-> (aget e "target")
                        (.-classList))]
@@ -57,6 +115,13 @@
                           (js/parseInt))]
             (swap! core/state assoc :repl-index index)
             (swap! core/state assoc :view :edit-repl))
+          (.contains class-list "start")
+          (let [index (-> (.getAttribute overview "data-index")
+                          (js/parseInt))
+                state @core/state]
+            (if-let [err (maybe-start-repl-error state index)]
+              (notif/single-notif err)
+              (start-repl overview state index)))
           :else nil)))
 
 (swap!
@@ -90,5 +155,7 @@
   (dom/appendChild
    js/document.head (utils/make-node (html (include-css "main.css"))))
   (core/refresh-view @core/state)
+  (core/load-state)
+
 
  )

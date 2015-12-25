@@ -44,7 +44,6 @@
       (do (.removeItem js/localStorage (str "repl" index))
           (recur (inc index) nil))
       :else true))
-  (prn (str settings))
   (.setItem js/localStorage "settings" (str settings)))
 
 (defn load-state []

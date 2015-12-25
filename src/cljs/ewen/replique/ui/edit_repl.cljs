@@ -34,16 +34,20 @@
              [:a.button.new-directory {:href "#"} "Choose directory"]]
             [:fieldset.type
              [:legend "REPL type"]
-             [:input.field.type-checkbox
-              {:type "checkbox"
+             [:label {:for "type-clj"} "Clojure"]
+             [:input.field
+              {:type "radio"
+               :id "type-clj"
+               :name "type"
                :value "clj"
-               :checked (contains? type "clj")}
-              "Clojure"]
-             [:input.field.type-checkbox
-              {:type "checkbox"
+               :checked (= type #{"clj"})}]
+             [:label {:for "type-cljs"} "Clojure/Clojurescript"]
+             [:input.field
+              {:type "radio"
+               :id "type-cljs"
+               :name "type"
                :value "cljs"
-               :checked (contains? type "cljs")}
-              "Clourescript"]]]])))
+               :checked (contains? type "cljs")}]]]])))
 
 (defn back-clicked []
   (swap! core/state assoc :view :dashboard)
@@ -59,15 +63,11 @@
 
 (swap! repl-field-readers conj
        (fn []
-         (let [fields (-> (.querySelectorAll
-                           js/document ".type-checkbox")
-                          array-seq)
-               checked-values (for [field fields]
-                                (if (aget field "checked")
-                                  (aget field "value")
-                                  nil))]
-           [:type (->> (remove nil? checked-values)
-                       (into #{}))])))
+         (let [type (-> (.querySelector
+                         js/document "input[name=\"type\"]:checked")
+                        (aget "value"))
+               types (if (= "cljs" type) #{"clj" "cljs"} #{"clj"})]
+           [:type types])))
 
 (defn save-repl []
   (let [{:keys [repl-index repls]} @core/state

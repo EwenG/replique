@@ -247,12 +247,21 @@
 
 (swap! settings-field-readers conj
        (fn []
+         (let [checked-source
+               (.querySelector
+                js/document
+                "#settings input[name=\"cljs-source\"]:checked")]
+           [:cljs-jar-source (.getAttribute checked-source "value")])))
+
+(swap! settings-field-readers conj
+       (fn []
          (let [downloaded-jar
                (.querySelector
                 js/document
                 "#settings .clj-jar .select-downloaded option:checked")]
            (if downloaded-jar
-             [:downloaded-clj-jar (let [val (.getAttribute downloaded-jar "value")]
+             [:downloaded-clj-jar (let [val (.getAttribute
+                                             downloaded-jar "value")]
                          (if (= "" val)
                            nil val))]
              [:downloaded-clj-jar nil]))))
@@ -265,6 +274,28 @@
            (if (or (nil? custom-jar) (= custom-jar ""))
              [:custom-clj-jar nil]
              [:custom-clj-jar custom-jar]))))
+
+(swap! settings-field-readers conj
+       (fn []
+         (let [downloaded-jar
+               (.querySelector
+                js/document
+                "#settings .cljs-jar .select-downloaded option:checked")]
+           (if downloaded-jar
+             [:downloaded-cljs-jar (let [val (.getAttribute
+                                              downloaded-jar "value")]
+                                    (if (= "" val)
+                                      nil val))]
+             [:downloaded-cljs-jar nil]))))
+
+(swap! settings-field-readers conj
+       (fn []
+         (let [custom-jar
+               (-> (.querySelector js/document "#settings .custom-cljs-jar")
+                   (aget "value"))]
+           (if (or (nil? custom-jar) (= custom-jar ""))
+             [:custom-cljs-jar nil]
+             [:custom-cljs-jar custom-jar]))))
 
 (defn save-settings []
   (let [{:keys [settings]} @core/state
@@ -304,6 +335,16 @@
                  first
                  (aset input "value"))
             (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
+          (.contains class-list "new-cljs-jar")
+          (let [input (.querySelector
+                       settings-node ".custom-cljs-jar")]
+            (->> (.showOpenDialog
+                  dialog #js {:properties #js ["openFile"]
+                              :filters #js [#js {:name "jar files"
+                                                 :extensions #js ["jar"]}]})
+                 first
+                 (aset input "value"))
+            (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
           :else nil)))
 
 (defn settings-changed [settings-node e]
@@ -332,6 +373,22 @@
           (.contains class-list "field")
           (swap! core/state assoc :dirty true)
           :else nil)))
+
+(defn get-clj-jar [{{:keys [clj-jar-source downloaded-clj-jar
+                            custom-clj-jar]} :settings}]
+  (case clj-jar-source
+    "embedded" (when downloaded-clj-jar
+                 (str replique-root-dir "/runnables/" downloaded-clj-jar))
+    "custom" (or custom-clj-jar nil)
+    :else nil))
+
+(defn get-cljs-jar [{{:keys [cljs-jar-source downloaded-cljs-jar
+                             custom-cljs-jar]} :settings}]
+  (case cljs-jar-source
+    "embedded" (when downloaded-cljs-jar
+                 (str replique-root-dir "/runnables/" downloaded-cljs-jar))
+    "custom" (or custom-cljs-jar nil)
+    :else nil))
 
 (swap!
  core/refresh-view-fns assoc :settings
