@@ -119,9 +119,11 @@
                        (.-classList))]
     (cond (.contains class-list "delete")
           (let [overview (aget e "currentTarget")
-                index (js/parseInt (.getAttribute overview "data-index"))]
+                index (js/parseInt (.getAttribute overview "data-index"))
+                {:keys [proc]} (nth (:repls @core/state) index)]
+            (when proc (.kill proc))
             (swap! core/state update-in [:repls]
-                   (partial keep-indexed #(if(= index %1) nil %2))))
+                   (partial keep-indexed #(if (= index %1) nil %2))))
           (.contains class-list "edit")
           (let [index (-> (.getAttribute overview "data-index")
                           (js/parseInt))]
