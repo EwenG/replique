@@ -163,6 +163,15 @@ a {
       display:none;
     }
   }
+  .repl-port {
+    display: block;
+    position:absolute;
+    top: 10rem;
+    left:0;
+    right:0;
+    margin-left:auto;
+    margin-right:auto;
+  }
 }
 
 .back-nav {
@@ -229,14 +238,23 @@ select {
     .directory {
       margin-top: 2rem;
     }
+    .new-directory {
+      margin-left: 1rem;
+    }
     .type {
       margin-top: 1rem;
       label[for="type-cljs"] {
         margin-left:1rem;
       }
     }
-    .new-directory {
-      margin-left: 1rem;
+    .port {
+      margin-top: 1rem;
+      label[for="random-port"] {
+        margin-left:1rem;
+      }
+      .custom-port[readonly] {
+        background-color:$gray;
+      }
     }
   }
 }

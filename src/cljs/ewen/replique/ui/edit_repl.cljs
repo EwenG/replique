@@ -6,18 +6,32 @@
             [cljs.reader :as reader]
             [ewen.replique.ui.remote :refer [remote]]
             [ewen.replique.ui.core :as core]
-            [ewen.replique.ui.utils :as utils])
+            [ewen.replique.ui.utils :as utils]
+            [ewen.replique.ui.notifications :as notif])
   (:require-macros [hiccup.core :refer [html]]
                    [hiccup.def :refer [defhtml]]))
 
 (def dialog (.require remote "dialog"))
 
-(comment
-  (.showOpenDialog dialog #js {:properties #js ["openDirectory"]})
-  )
+(defn port-tmpl [{:keys [repls repl-index]}]
+  (let [{:keys [port random-port]} (nth repls repl-index)]
+    (html [:fieldset.port
+           [:legend "REPL port"]
+           [:input (merge
+                    {:type "text" :maxlength "5"
+                     :class "custom-port field" :value port}
+                    (when random-port
+                      {:readonly true}))]
+           [:label {:for "random-port"} "Random port"]
+           [:input (merge
+                    {:type "checkbox"
+                     :class "field random-port"
+                     :id "random-port"}
+                    (when random-port
+                      {:checked true}))]])))
 
-(defhtml edit-repl [{:keys [dirty repls repl-index]}]
-  (let [{:keys [directory type]} (nth repls repl-index)]
+(defn edit-repl [{:keys [dirty repls repl-index] :as state}]
+  (let [{:keys [directory type port random-port]} (nth repls repl-index)]
     (html [:div#edit-repl
            [:a.back-nav {:href "#"}]
            [:form
@@ -47,7 +61,8 @@
                :id "type-cljs"
                :name "type"
                :value "cljs"
-               :checked (contains? type "cljs")}]]]])))
+               :checked (contains? type "cljs")}]]
+            (port-tmpl state)]])))
 
 (defn back-clicked []
   (swap! core/state assoc :view :dashboard)
@@ -69,6 +84,19 @@
                types (if (= "cljs" type) #{"clj" "cljs"} #{"clj"})]
            [:type types])))
 
+(swap! repl-field-readers conj
+       (fn []
+         (let [random-port (-> (.querySelector
+                                js/document ".field.random-port")
+                               (aget "checked"))]
+           [:random-port random-port])))
+
+(swap! repl-field-readers conj
+       (fn []
+         (let [port (-> (.querySelector js/document ".field.custom-port")
+                        (aget "value"))]
+           [:port (if (= "" port) nil (js/parseInt port))])))
+
 (defn save-repl []
   (let [{:keys [repl-index repls]} @core/state
         fields (->> (for [field-reader @repl-field-readers]
@@ -76,13 +104,26 @@
                     (into {}))]
     (swap! core/state core/update-repls repl-index merge fields)))
 
+(defn valid-port? [port]
+  (try (let [port-nb (js/parseInt port)]
+         (< -1 port-nb 65535))
+       (catch js/Error e false)))
+
+(defn maybe-save-repl-error [edit-repl]
+  (let [port (aget (.querySelector edit-repl ".port .field") "value")]
+    (if-not (valid-port? port)
+      {:type :err
+       :msg "Invalid port number"}
+      nil)))
+
 (defn edit-repl-clicked [edit-repl e]
   (let [class-list (-> (aget e "target")
                        (aget "classList"))]
     (cond (.contains class-list "save")
-          (do
-            (save-repl)
-            (swap! core/state dissoc :dirty))
+          (if-let [err (maybe-save-repl-error edit-repl)]
+            (notif/single-notif err)
+            (do (save-repl)
+                (swap! core/state dissoc :dirty)))
           (.contains class-list "new-directory")
           (let [input (.querySelector
                        edit-repl
@@ -96,8 +137,19 @@
 
 (defn edit-repl-changed [edit-repl e]
   (let [target (aget e "target")
-        class-list (aget target "classList")]
-    (cond (.contains class-list "field")
+        class-list (aget target "classList")
+        index (:repl-index @core/state)]
+    (cond (.contains class-list "random-port")
+          (let [port-node (.querySelector edit-repl ".port")
+                random-port (aget target "checked")]
+            (dom/replaceNode (->> (core/update-repls
+                                   @core/state index assoc
+                                   :random-port random-port)
+                                  port-tmpl
+                                  utils/make-node)
+                             port-node)
+            (swap! core/state assoc :dirty true))
+          (.contains class-list "field")
           (swap! core/state assoc :dirty true)
           :else nil)))
 
@@ -111,12 +163,16 @@
                   (edit-repl state)))]
        (events/listen (.querySelector node ".back-nav")
                       events/EventType.CLICK back-clicked)
-       (events/listen (.querySelector node "#edit-repl form")
-                      events/EventType.CLICK (partial
-                                              edit-repl-clicked node))
-       (events/listen (.querySelector node "#edit-repl form")
-                      events/EventType.CHANGE (partial
-                                               edit-repl-changed node)))
+       (events/listen (.querySelector node "form")
+                      events/EventType.CLICK
+                      (partial edit-repl-clicked node))
+       (events/listen (.querySelector node "form")
+                      events/EventType.CHANGE
+                      (partial edit-repl-changed node))
+       (events/listen (.querySelector
+                       node ".port input.field[type=\"text\"]")
+                      events/EventType.INPUT
+                      (partial edit-repl-changed node)))
      (when-let [node (.querySelector root "#edit-repl")]
        (dom/removeNode node)))))
 

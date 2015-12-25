@@ -20,7 +20,8 @@
 (defhtml new-repl []
   [:a.dashboard-item.new-repl {:href "#"} "New REPL"])
 
-(defhtml repl-overview [{:keys [type directory proc status]} index]
+(defhtml repl-overview [{:keys [type directory proc proc-port status]}
+                        index]
   [:div.dashboard-item.repl-overview
    {:href "#"
     :data-index index}
@@ -34,7 +35,9 @@
       [:img {:src "resources/images/clj-logo.gif"}])
     (when (contains? type "cljs")
       [:img {:src "resources/images/cljs-logo.png"}])]
-   [:span.repl-directory directory]])
+   [:span.repl-directory directory]
+   (when proc-port
+     [:span.repl-port (str "REPL port: " proc-port)])])
 
 (defhtml dashboard [{:keys [repls]}]
   (html [:div#dashboard
@@ -46,7 +49,7 @@
 
 (defn add-new-repl []
   (swap! core/state update-in [:repls] conj
-         {:type #{"clj"} :directory nil}))
+         {:type #{"clj"} :directory nil :random-port true}))
 
 (defn settings-button-clicked []
   (swap! core/state assoc :view :settings))
@@ -56,7 +59,7 @@
         clj-jar (settings/get-clj-jar state)
         cljs-jar (settings/get-cljs-jar state)]
     (cond
-      (nil? directory)
+      (or (= "" directory) (nil? directory))
       {:type :err
        :msg "The REPL directory has not been configured"}
       (nil? clj-jar)
@@ -74,23 +77,29 @@
       :else nil)))
 
 (defn start-repl [overview {:keys [repls] :as state} index]
-  (let [{:keys [directory type] :as repl} (nth repls index)
+  (let [{:keys [directory type port random-port] :as repl}
+        (nth repls index)
         cp (if (= #{"clj" "cljs"} type)
              (str (settings/get-clj-jar state) ":"
                   (settings/get-cljs-jar state))
              (settings/get-clj-jar state))
-        opts {:port 5555 :accept 'clojure.core.server/repl
-              :server-daemon false}
+        port (if random-port 0 port)
+        opts {:port port :accept 'clojure.core.server/repl
+              :server-daemon false :name "replique-repl"}
         cmd-args #js ["-cp" cp
                       (str "-Dclojure.server.repl=" opts)
-                      "clojure.main" "-e" "\"started\""]
+                      "clojure.main" "-e"
+                      "(-> @#'clojure.core.server/servers
+(get \"replique-repl\")
+:socket
+(.getLocalPort))"]
         proc (spawn "java" cmd-args #js {:cwd directory})
         status (.querySelector overview ".repl-status")]
     (.on (aget proc "stdout") "data"
          (fn [data]
-           (when (= (reader/read-string (str data)) "started")
+           (let [port (reader/read-string (str data))]
              (swap! core/state core/update-repls index assoc
-                    :status "REPL started")
+                    :status "REPL started" :proc-port port)
              (js/setTimeout
               #(swap! core/state core/update-repls index
                       (fn [repl]
@@ -106,7 +115,8 @@
              (notif/single-notif
               {:type :err
                :msg "Error while starting the REPL"}))
-           (swap! core/state core/update-repls index dissoc :proc :status)))
+           (swap! core/state core/update-repls index dissoc
+                  :proc :proc-port :status)))
     (swap! core/state core/update-repls index assoc
            :proc proc :status "REPL starting")))
 
