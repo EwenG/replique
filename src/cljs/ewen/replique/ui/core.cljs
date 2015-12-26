@@ -6,7 +6,8 @@
 (def init-state {:repls '()
                  :view :dashboard
                  :settings {:clj-jar-source "embedded"
-                            :cljs-jar-source "embedded"}})
+                            :cljs-jar-source "embedded"
+                            :lein-source "embedded"}})
 
 (defonce state
   (atom init-state))

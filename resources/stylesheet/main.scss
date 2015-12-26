@@ -252,18 +252,15 @@ select {
       label[for="random-port"] {
         margin-left:1rem;
       }
-      .custom-port[readonly] {
-        background-color:$gray;
-      }
     }
   }
 }
 
 #settings {
   form {
-    .clj-jar, .cljs-jar {
+    .clj-jar, .cljs-jar, .lein {
       margin-top: 2rem;
-      label[for="clj-custom-source"], label[for="cljs-custom-source"] {
+      label[for="clj-custom-source"], label[for="cljs-custom-source"], label[for="lein-custom-source"] {
         margin-left:1rem;
       }
       .custom-clj-jar, .custom-cljs-jar {
@@ -278,6 +275,12 @@ select {
         margin-top:1rem;
       }
       .new-clj-jar, .new-cljs-jar {
+        margin-left: 1rem;
+      }
+      .custom-lein-script {
+        margin-top:1rem;
+      }
+      .new-lein-script {
         margin-left: 1rem;
       }
     }

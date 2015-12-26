@@ -21,7 +21,8 @@
                     {:type "text" :maxlength "5"
                      :class "custom-port field" :value port}
                     (when random-port
-                      {:readonly true}))]
+                      {:readonly true
+                       :disabled true}))]
            [:label {:for "random-port"} "Random port"]
            [:input (merge
                     {:type "checkbox"
@@ -110,8 +111,10 @@
        (catch js/Error e false)))
 
 (defn maybe-save-repl-error [edit-repl]
-  (let [port (aget (.querySelector edit-repl ".port .field") "value")]
-    (if-not (valid-port? port)
+  (let [port (aget (.querySelector edit-repl ".port .field") "value")
+        random-port (aget (.querySelector edit-repl ".field.random-port")
+                          "checked")]
+    (if (and (not random-port) (valid-port? port))
       {:type :err
        :msg "Invalid port number"}
       nil)))

@@ -135,6 +135,35 @@
                 {:class "button new-cljs-jar"}))
     "Select Clojurescript jar"]])
 
+(defhtml lein-tmpl [{:keys [lein-source custom-lein-script]}]
+  [:fieldset.lein
+   [:legend "Leiningen"]
+   [:label {:for "lein-embedded-source"} "Embedded Leiningen script"]
+   [:input.field (merge {:type "radio"
+                         :name "lein-source"
+                         :id "lein-embedded-source"
+                         :value "embedded"}
+                        (if (= "embedded" lein-source)
+                          {:checked true}
+                          nil))]
+   [:label {:for "lein-custom-source"} "Custom Leiningen script"]
+   [:input.field (merge {:type "radio"
+                         :name "lein-source"
+                         :id "lein-custom-source"
+                         :value "custom"}
+                        (when (= "custom" lein-source)
+                          {:checked true}))] [:br]
+   [:input.field.custom-lein-script
+    (merge {:type "text" :readonly true
+            :value custom-lein-script}
+           (when (= "embedded" lein-source)
+             {:disabled true}))]
+   [:a (merge {:href "#"}
+              (if (= "embedded" lein-source)
+                {:class "disabled button new-lein-script"}
+                {:class "button new-lein-script"}))
+    "Select Leiningen script"]])
+
 (defn start-progress [resp id file-name]
   (let [total-length (-> (aget resp "headers")
                          (aget "content-length")
@@ -233,7 +262,8 @@
                     {:class "button save disabled"}))
            "Save"]
           (clj-jar-tmpl settings)
-          (cljs-jar-tmpl settings)]]))
+          (cljs-jar-tmpl settings)
+          (lein-tmpl settings)]]))
 
 (def settings-field-readers (atom #{}))
 
@@ -252,6 +282,14 @@
                 js/document
                 "#settings input[name=\"cljs-source\"]:checked")]
            [:cljs-jar-source (.getAttribute checked-source "value")])))
+
+(swap! settings-field-readers conj
+       (fn []
+         (let [checked-source
+               (.querySelector
+                js/document
+                "#settings input[name=\"lein-source\"]:checked")]
+           [:lein-source (.getAttribute checked-source "value")])))
 
 (swap! settings-field-readers conj
        (fn []
@@ -296,6 +334,16 @@
            (if (or (nil? custom-jar) (= custom-jar ""))
              [:custom-cljs-jar nil]
              [:custom-cljs-jar custom-jar]))))
+
+(swap! settings-field-readers conj
+       (fn []
+         (let [custom-jar
+               (-> (.querySelector
+                    js/document "#settings .custom-lein-script")
+                   (aget "value"))]
+           (if (or (nil? custom-jar) (= custom-jar ""))
+             [:custom-lein-script nil]
+             [:custom-lein-script custom-jar]))))
 
 (defn save-settings []
   (let [{:keys [settings]} @core/state
@@ -345,6 +393,14 @@
                  first
                  (aset input "value"))
             (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
+          (.contains class-list "new-lein-script")
+          (let [input (.querySelector
+                       settings-node ".custom-lein-script")]
+            (->> (.showOpenDialog
+                  dialog #js {:properties #js ["openFile"]})
+                 first
+                 (aset input "value"))
+            (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
           :else nil)))
 
 (defn settings-changed [settings-node e]
@@ -369,6 +425,16 @@
                                 (:settings @core/state)
                                 (assoc :cljs-jar-source source))))
                              cljs-jar-node)
+            (swap! core/state assoc :dirty true))
+          (= "lein-source" (.getAttribute target "name"))
+          (let [source (.getAttribute target "value")
+                lein-node (.querySelector settings-node ".lein")]
+            (dom/replaceNode (utils/make-node
+                              (lein-tmpl
+                               (->
+                                (:settings @core/state)
+                                (assoc :lein-source source))))
+                             lein-node)
             (swap! core/state assoc :dirty true))
           (.contains class-list "field")
           (swap! core/state assoc :dirty true)

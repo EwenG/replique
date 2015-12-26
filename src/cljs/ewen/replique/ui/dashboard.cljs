@@ -76,6 +76,8 @@
        :msg "Invalid Clojurescript jar"}
       :else nil)))
 
+;; JAVA_OPTS="-Dclojure.server.repl={:port 5555 :accept clojure.core.server/repl :server-daemon false}" lein run -m clojure.main/main
+
 (defn start-repl [overview {:keys [repls] :as state} index]
   (let [{:keys [directory type port random-port] :as repl}
         (nth repls index)
