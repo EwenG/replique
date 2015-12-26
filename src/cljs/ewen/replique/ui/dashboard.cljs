@@ -2,6 +2,7 @@
   (:require [hiccup.core]
             [hiccup.page :refer [include-css]]
             [goog.dom :as dom]
+            [goog.object :as obj]
             [goog.events :as events]
             [cljs.reader :as reader]
             [ewen.replique.ui.remote :refer [remote]]
@@ -12,10 +13,12 @@
             [ewen.replique.ui.settings :as settings]
             [ewen.replique.ui.shortcuts]
             [ewen.replique.ui.notifications :as notif])
+  (:import [goog.string format])
   (:require-macros [hiccup.core :refer [html]]
                    [hiccup.def :refer [defhtml]]))
 
 (def spawn (aget (node/require "child_process") "spawn"))
+(def tree-kill (.require remote "tree-kill"))
 
 (defhtml new-repl []
   [:a.dashboard-item.new-repl {:href "#"} "New REPL"])
@@ -54,6 +57,10 @@
 (defn settings-button-clicked []
   (swap! core/state assoc :view :settings))
 
+(defn is-lein-project [{:keys [repls] :as state} index]
+  (let [{:keys [directory]} (nth repls index)]
+    (and directory (utils/file-exists (str directory "/project.clj")))))
+
 (defn maybe-start-repl-error [{:keys [repls] :as state} index]
   (let [{:keys [directory type]} (nth repls index)
         clj-jar (settings/get-clj-jar state)
@@ -62,6 +69,14 @@
       (or (= "" directory) (nil? directory))
       {:type :err
        :msg "The REPL directory has not been configured"}
+      (and (is-lein-project state index)
+           (not (settings/get-lein-script state)))
+      {:type :err
+       :msg "Leiningen script has not been configured"}
+      (and (is-lein-project state index)
+           (not (utils/file-exists (settings/get-lein-script state))))
+      {:type :err
+       :msg "Invalid Leiningen script"}
       (nil? clj-jar)
       {:type :err
        :msg "Clojure jar has not been configured"}
@@ -76,15 +91,13 @@
        :msg "Invalid Clojurescript jar"}
       :else nil)))
 
-;; JAVA_OPTS="-Dclojure.server.repl={:port 5555 :accept clojure.core.server/repl :server-daemon false}" lein run -m clojure.main/main
-
-(defn start-repl [overview {:keys [repls] :as state} index]
+(defn repl-cmd-raw [{:keys [repls] :as state} index]
   (let [{:keys [directory type port random-port] :as repl}
         (nth repls index)
         cp (if (= #{"clj" "cljs"} type)
-             (str (settings/get-clj-jar state) ":"
-                  (settings/get-cljs-jar state))
-             (settings/get-clj-jar state))
+              (str (settings/get-clj-jar state) ":"
+                   (settings/get-cljs-jar state))
+              (settings/get-clj-jar state))
         port (if random-port 0 port)
         opts {:port port :accept 'clojure.core.server/repl
               :server-daemon false :name "replique-repl"}
@@ -94,8 +107,37 @@
                       "(-> @#'clojure.core.server/servers
 (get \"replique-repl\")
 :socket
-(.getLocalPort))"]
-        proc (spawn "java" cmd-args #js {:cwd directory})
+(.getLocalPort))"]]
+    ["java" cmd-args #js {:cwd directory}]))
+
+(defn repl-cmd-lein [{:keys [repls] :as state} index]
+  (let [{:keys [directory type port random-port] :as repl}
+        (nth repls index)
+        port (if random-port 0 port)
+        opts {:port port :accept 'clojure.core.server/repl
+              :server-daemon false :name "replique-repl"}
+        cmd-args #js ["run" "-m" "clojure.main/main" "-e"
+                      "(-> @#'clojure.core.server/servers
+(get \"replique-repl\")
+:socket
+(.getLocalPort))"]]
+    [(settings/get-lein-script state)
+     cmd-args #js {:cwd directory
+                   :env (doto (aget node/process "env")
+                          obj/clone
+                          (aset
+                           "JAVA_OPTS"
+                           (format "-Dclojure.server.repl=%s" opts)))}]))
+
+;; JAVA_OPTS="-Dclojure.server.repl={:port 5555 :accept clojure.core.server/repl :server-daemon false}" lein run -m clojure.main/main
+
+(defn start-repl [overview {:keys [repls] :as state} index]
+  (let [{:keys [directory] :as repl}
+        (nth repls index)
+        repl-cmd (if (is-lein-project state index)
+                   (repl-cmd-lein state index)
+                   (repl-cmd-raw state index))
+        proc (apply spawn repl-cmd)
         status (.querySelector overview ".repl-status")]
     (.on (aget proc "stdout") "data"
          (fn [data]
@@ -111,8 +153,9 @@
               2000))))
     (.on proc "close"
          (fn [code signal]
-           ;; When killed with the stop button, the process returns code 143
-           (when (not= 143 code)
+           ;; When killed with the stop button, the process returns
+           ;; code 143 or signal SIGTERM
+           (when (and (not= 143 code) (not= "SIGTERM" signal))
              (.log js/console "Error while starting the REPL. Code " code)
              (notif/single-notif
               {:type :err
@@ -124,7 +167,7 @@
 
 (defn stop-repl [overview {:keys [repls] :as state} index]
   (let [{:keys [proc]} (nth repls index)]
-    (.kill proc)))
+    (tree-kill (aget proc "pid"))))
 
 (defn overview-clicked [overview e]
   (let [class-list (-> (aget e "target")
@@ -133,7 +176,7 @@
           (let [overview (aget e "currentTarget")
                 index (js/parseInt (.getAttribute overview "data-index"))
                 {:keys [proc]} (nth (:repls @core/state) index)]
-            (when proc (.kill proc))
+            (when proc (tree-kill (aget proc "pid")))
             (swap! core/state update-in [:repls]
                    (partial keep-indexed #(if (= index %1) nil %2))))
           (.contains class-list "edit")

@@ -114,7 +114,7 @@
   (let [port (aget (.querySelector edit-repl ".port .field") "value")
         random-port (aget (.querySelector edit-repl ".field.random-port")
                           "checked")]
-    (if (and (not random-port) (valid-port? port))
+    (if (and (not random-port) (not (valid-port? port)))
       {:type :err
        :msg "Invalid port number"}
       nil)))

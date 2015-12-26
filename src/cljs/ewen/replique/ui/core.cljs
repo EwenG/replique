@@ -39,7 +39,9 @@
     (cond
       (first repls)
       (do (.setItem js/localStorage (str "repl" index)
-                    (pr-str (first repls)))
+                    (-> (first repls)
+                        (dissoc :proc :proc-port)
+                        pr-str))
           (recur (inc index) (rest repls)))
       (.getItem js/localStorage (str "repl" index))
       (do (.removeItem js/localStorage (str "repl" index))

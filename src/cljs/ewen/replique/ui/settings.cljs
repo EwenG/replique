@@ -445,7 +445,7 @@
   (case clj-jar-source
     "embedded" (when downloaded-clj-jar
                  (str replique-root-dir "/runnables/" downloaded-clj-jar))
-    "custom" (or custom-clj-jar nil)
+    "custom" (if (= custom-clj-jar "") nil custom-clj-jar)
     :else nil))
 
 (defn get-cljs-jar [{{:keys [cljs-jar-source downloaded-cljs-jar
@@ -453,7 +453,13 @@
   (case cljs-jar-source
     "embedded" (when downloaded-cljs-jar
                  (str replique-root-dir "/runnables/" downloaded-cljs-jar))
-    "custom" (or custom-cljs-jar nil)
+    "custom" (if (= custom-cljs-jar "") nil custom-cljs-jar)
+    :else nil))
+
+(defn get-lein-script [{{:keys [lein-source custom-lein-script]} :settings}]
+  (case lein-source
+    "embedded" (str replique-root-dir "/runnables/lein")
+    "custom" (if (= custom-lein-script "") nil custom-lein-script)
     :else nil))
 
 (swap!
