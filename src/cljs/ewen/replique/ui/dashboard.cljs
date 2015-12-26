@@ -2,7 +2,6 @@
   (:require [hiccup.core]
             [hiccup.page :refer [include-css]]
             [goog.dom :as dom]
-            [goog.object :as obj]
             [goog.events :as events]
             [cljs.reader :as reader]
             [ewen.replique.ui.remote :refer [remote]]
@@ -16,6 +15,8 @@
   (:import [goog.string format])
   (:require-macros [hiccup.core :refer [html]]
                    [hiccup.def :refer [defhtml]]))
+
+(def replique-root-dir (.getGlobal remote "repliqueRootDir"))
 
 (def spawn (aget (node/require "child_process") "spawn"))
 (def tree-kill (.require remote "tree-kill"))
@@ -96,16 +97,18 @@
         (nth repls index)
         cp (if (= #{"clj" "cljs"} type)
               (str (settings/get-clj-jar state) ":"
-                   (settings/get-cljs-jar state))
-              (settings/get-clj-jar state))
+                   (settings/get-cljs-jar state) ":"
+                   (format "\"%s/src/clj\"" replique-root-dir))
+              (str (settings/get-clj-jar state) ":"
+                   (format "\"%s/src/clj\"" replique-root-dir)))
         port (if random-port 0 port)
-        opts {:port port :accept 'clojure.core.server/repl
-              :server-daemon false :name "replique-repl"}
+        opts {:port port :accept 'ewen.replique.server/tooling-repl
+              :server-daemon false :name :replique-tooling-repl}
         cmd-args #js ["-cp" cp
                       (str "-Dclojure.server.repl=" opts)
                       "clojure.main" "-e"
                       "(-> @#'clojure.core.server/servers
-(get \"replique-repl\")
+(get :replique-tooling-repl)
 :socket
 (.getLocalPort))"]]
     ["java" cmd-args #js {:cwd directory}]))
@@ -114,22 +117,21 @@
   (let [{:keys [directory type port random-port] :as repl}
         (nth repls index)
         port (if random-port 0 port)
-        opts {:port port :accept 'clojure.core.server/repl
-              :server-daemon false :name "replique-repl"}
-        cmd-args #js ["run" "-m" "clojure.main/main" "-e"
+        opts {:port port :accept 'ewen.replique.server/tooling-repl
+              :server-daemon false :name :replique-tooling-repl}
+        cmd-args #js ["update-in" ":jvm-opts" "conj"
+                      (format "\"-Dclojure.server.repl=%s\"" opts) "--"
+                      "update-in" ":source-paths" "conj"
+                      (format "\"%s/src/clj\"" replique-root-dir) "--"
+                      "run" "-m" "clojure.main/main" "-e"
                       "(-> @#'clojure.core.server/servers
-(get \"replique-repl\")
+(get :replique-tooling-repl)
 :socket
 (.getLocalPort))"]]
     [(settings/get-lein-script state)
-     cmd-args #js {:cwd directory
-                   :env (doto (aget node/process "env")
-                          obj/clone
-                          (aset
-                           "JAVA_OPTS"
-                           (format "-Dclojure.server.repl=%s" opts)))}]))
+     cmd-args #js {:cwd directory}]))
 
-;; JAVA_OPTS="-Dclojure.server.repl={:port 5555 :accept clojure.core.server/repl :server-daemon false}" lein run -m clojure.main/main
+;; lein update-in :jvm-opts conj '"-Dclojure.server.repl={:port 5555 :accept clojure.core.server/repl :server-daemon false}"' -- run -m clojure.main/main
 
 (defn start-repl [overview {:keys [repls] :as state} index]
   (let [{:keys [directory] :as repl}
