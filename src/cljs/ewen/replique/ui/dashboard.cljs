@@ -52,7 +52,7 @@
 
 (defn add-new-repl []
   (swap! core/state update-in [:repls] conj
-         {:type :clj :directory nil :random-port true}))
+         {:directory nil :type :clj :cljs-env :browser :random-port true}))
 
 (defn settings-button-clicked []
   (swap! core/state assoc :view :settings))
@@ -62,7 +62,8 @@
     (and directory (utils/file-exists (str directory "/project.clj")))))
 
 (defn maybe-start-repl-error [{:keys [repls] :as state} index]
-  (let [{:keys [directory type]} (nth repls index)
+  (let [{:keys [directory type cljs-env webapp-env-assets]}
+        (nth repls index)
         clj-jar (settings/get-clj-jar state)
         cljs-jar (settings/get-cljs-jar state)]
     (cond
@@ -89,10 +90,13 @@
       (and (= :cljs type) (not (utils/file-exists cljs-jar)))
       {:type :err
        :msg "Invalid Clojurescript jar"}
+      (and (= :cljs type) (= :webapp cljs-env) (= nil webapp-env-assets))
+      {:type :err
+       :msg "Assets directory for Clojurescript web application environment has not been configured"}
       :else nil)))
 
 (defn repl-cmd-raw [{:keys [repls] :as state} index]
-  (let [{:keys [directory type port random-port] :as repl}
+  (let [{:keys [directory type cljs-env port random-port] :as repl}
         (nth repls index)
         cp (if (= :cljs type)
               (str (settings/get-clj-jar state) ":"
@@ -102,21 +106,22 @@
                    (format "%s/src/clj" replique-root-dir)))
         port (if random-port 0 port)
         cmd-args #js ["-cp" cp "clojure.main"
-                      "-m" "ewen.replique.server" type port]]
+                      "-m" "ewen.replique.server"
+                      port type cljs-env]]
     ["java" cmd-args #js {:cwd directory}]))
 
 (defn repl-cmd-lein [{:keys [repls] :as state} index]
-  (let [{:keys [directory type port random-port] :as repl}
+  (let [{:keys [directory type cljs-env port random-port] :as repl}
         (nth repls index)
         port (if random-port 0 port)
         cmd-args #js ["update-in" ":source-paths" "conj"
                       (pr-str (format "%s/src/clj" replique-root-dir))
                       "--" "run" "-m" "ewen.replique.server/-main"
-                      type port]]
+                      port type cljs-env]]
     [(settings/get-lein-script state)
      cmd-args #js {:cwd directory}]))
 
-;; lein update-in :source-paths conj "\"/home/egr/electron/resources/replique/src/clj\"" -- run -m ewen.replique.server/main :clj 9001
+;; lein update-in :source-paths conj "\"/home/egr/electron/resources/replique/src/clj\"" -- run -m ewen.replique.server/-main 9001 :clj :browser
 
 (defn start-repl [overview {:keys [repls] :as state} index]
   (let [{:keys [directory] :as repl}

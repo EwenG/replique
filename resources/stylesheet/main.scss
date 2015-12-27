@@ -13,6 +13,10 @@ a {
   color:black;
 }
 
+label.disabled {
+  color:$gray;
+}
+
 #root {
   position:relative;
 }
@@ -244,6 +248,27 @@ select {
     .type {
       margin-top: 1rem;
       label[for="type-cljs"] {
+        margin-left:1rem;
+      }
+    }
+    .cljs-env {
+      margin-top: 1rem;
+      #webapp-env, #replique-env {
+        margin-top:1rem;
+      }
+      .browser-env-main {
+        margin-left:5rem;
+      }
+      .webapp-env-main {
+        margin-left:1rem;
+      }
+      .new-browser-env-main, .new-webapp-env-main, .new-webapp-env-assets {
+        margin-left:1rem;
+        &.disabled {
+          background-color:$gray;
+        }
+      }
+      .webapp-env-assets {
         margin-left:1rem;
       }
     }

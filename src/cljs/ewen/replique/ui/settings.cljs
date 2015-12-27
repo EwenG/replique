@@ -377,9 +377,9 @@
           (let [input (.querySelector
                        settings-node ".custom-clj-jar")]
             (->> (.showOpenDialog
-                  dialog #js {:properties #js ["openFile"]
-                              :filters #js [#js {:name "jar files"
-                                                 :extensions #js ["jar"]}]})
+                  dialog #js {:filters #js [#js {:name "jar files"
+                                                 :extensions #js ["jar"]}]
+                              :defaultPath replique-root-dir})
                  first
                  (aset input "value"))
             (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
@@ -387,9 +387,9 @@
           (let [input (.querySelector
                        settings-node ".custom-cljs-jar")]
             (->> (.showOpenDialog
-                  dialog #js {:properties #js ["openFile"]
-                              :filters #js [#js {:name "jar files"
-                                                 :extensions #js ["jar"]}]})
+                  dialog #js {:filters #js [#js {:name "jar files"
+                                                 :extensions #js ["jar"]}]
+                              :defaultPath replique-root-dir})
                  first
                  (aset input "value"))
             (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
@@ -397,7 +397,7 @@
           (let [input (.querySelector
                        settings-node ".custom-lein-script")]
             (->> (.showOpenDialog
-                  dialog #js {:properties #js ["openFile"]})
+                  dialog #js {:defaultPath replique-root-dir})
                  first
                  (aset input "value"))
             (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))

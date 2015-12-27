@@ -28,38 +28,29 @@
      :read clojure.core.server/repl-read
      :prompt #())))
 
-(defmulti -main (fn [type port] (read-string type)))
+(defn init-repl [port type cljs-env]
+  (start-server {:port port :name :replique-tooling-repl
+                 :accept 'ewen.replique.server/tooling-repl
+                 :server-daemon false})
+  (start-server {:port 0 :name :replique-repl
+                 :accept 'ewen.replique.server/repl
+                 :server-daemon false
+                 :args [type]})
+  (-> @#'clojure.core.server/servers
+      (get :replique-tooling-repl)
+      :socket
+      (.getLocalPort)
+      prn))
 
-(defmethod -main :clj [type port]
-  (let [port (read-string port)]
-    (start-server {:port port :name :replique-tooling-repl
-                   :accept 'ewen.replique.server/tooling-repl
-                   :server-daemon false})
-    (start-server {:port 0 :name :replique-repl
-                   :accept 'ewen.replique.server/repl
-                   :server-daemon false
-                   :args [type]})
-    (require '[ewen.replique.server-clj])
-    (-> @#'clojure.core.server/servers
-        (get :replique-tooling-repl)
-        :socket
-        (.getLocalPort))))
+(defmulti -main (fn [port type cljs-env] (read-string type)))
 
-(defmethod -main :cljs [type port]
-  (let [port (read-string port)]
-    (start-server {:port port :name :replique-tooling-repl
-                   :accept 'ewen.replique.server/tooling-repl
-                   :server-daemon false})
-    (start-server {:port 0 :name :replique-repl
-                   :accept 'ewen.replique.server/repl
-                   :server-daemon false
-                   :args [type]})
-    (require '[ewen.replique.server-cljs])
-    (-> @#'clojure.core.server/servers
-        (get :replique-tooling-repl)
-        :socket
-        (.getLocalPort)
-        prn)))
+(defmethod -main :clj [port type cljs-env]
+  (require '[ewen.replique.server-clj])
+  (init-repl (read-string port) (read-string type) (read-string cljs-env)))
+
+(defmethod -main :cljs [port type cljs-env]
+  (require '[ewen.replique.server-cljs])
+  (init-repl (read-string port) (read-string type) (read-string cljs-env)))
 
 (defmulti tooling-msg-handle :type)
 

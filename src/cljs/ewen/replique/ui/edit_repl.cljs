@@ -13,6 +13,79 @@
 
 (def dialog (.require remote "dialog"))
 
+(defn current-repl [{:keys [repls repl-index]}]
+  (nth repls repl-index))
+
+(defn cljs-env-tmpl [{:keys [repls repl-index]}]
+  (let [{:keys [type cljs-env browser-env-main
+                webapp-env-main webapp-env-assets]}
+        (nth repls repl-index)]
+    (html [:fieldset.cljs-env
+           [:legend "Clojurescript environment"]
+           [:label {:for "browser-env"
+                    :class (if (not= :cljs type) "disabled" "")}
+            "Browser"]
+           [:input.field
+            {:type "radio"
+             :id "browser-env"
+             :name "cljs-env"
+             :value "browser"
+             :checked (= cljs-env :browser)
+             :disabled (not= :cljs type)}]
+           [:input.field.browser-env-main
+            {:type "text"
+             :readonly true
+             :value browser-env-main
+             :disabled (or (not= :cljs type)
+                           (not= :browser cljs-env))}]
+           [:a {:href "#"
+                :class (if (or (not= :cljs type) (not= :browser cljs-env))
+                         "button new-browser-env-main disabled"
+                         "button new-browser-env-main")}
+            "Choose main namespace"]
+           [:br]
+           [:label {:for "webapp-env"
+                    :class (if (not= :cljs type) "disabled" "")}
+            "Web application"]
+           [:input.field
+            {:type "radio"
+             :id "webapp-env"
+             :name "cljs-env"
+             :value "webapp"
+             :checked (= cljs-env :webapp)
+             :disabled (not= :cljs type)}]
+           [:input.field.webapp-env-main
+            {:type "text"
+             :readonly true
+             :value webapp-env-main
+             :disabled (or (not= :cljs type) (not= :webapp cljs-env))}]
+           [:a {:href "#"
+                :class (if (or (not= :cljs type) (not= :webapp cljs-env))
+                         "button new-webapp-env-main disabled"
+                         "button new-webapp-env-main")}
+            "Choose main namespace"]
+           [:input.field.webapp-env-assets
+            {:type "text"
+             :readonly true
+             :value webapp-env-assets
+             :disabled (or (not= :cljs type) (not= :webapp cljs-env))}]
+           [:a {:href "#"
+                :class (if (or (not= :cljs type) (not= :webapp cljs-env))
+                         "button new-webapp-env-assets disabled"
+                         "button new-webapp-env-assets")}
+            "Choose assets folder"]
+           [:br]
+           [:label {:for "replique-env"
+                    :class (if (not= :cljs type) "disabled" "")}
+            "Replique"]
+           [:input.field
+            {:type "radio"
+             :id "replique-env"
+             :name "cljs-env"
+             :value "replique"
+             :checked (= cljs-env :replique)
+             :disabled (not= :cljs type)}]])))
+
 (defn port-tmpl [{:keys [repls repl-index]}]
   (let [{:keys [port random-port]} (nth repls repl-index)]
     (html [:fieldset.port
@@ -32,7 +105,8 @@
                       {:checked true}))]])))
 
 (defn edit-repl [{:keys [dirty repls repl-index] :as state}]
-  (let [{:keys [directory type port random-port]} (nth repls repl-index)]
+  (let [{:keys [directory type cljs-env port random-port]}
+        (nth repls repl-index)]
     (html [:div#edit-repl
            [:a.back-nav {:href "#"}]
            [:form
@@ -63,6 +137,7 @@
                :name "type"
                :value "cljs"
                :checked (= type :cljs)}]]
+            (cljs-env-tmpl state)
             (port-tmpl state)]])))
 
 (defn back-clicked []
@@ -91,6 +166,35 @@
                                 js/document ".field.random-port")
                                (aget "checked"))]
            [:random-port random-port])))
+
+(swap! repl-field-readers conj
+       (fn []
+         (let [cljs-env (-> (.querySelector
+                             js/document "input[name=\"cljs-env\"]:checked")
+                            (aget "value")
+                            keyword)]
+           [:cljs-env cljs-env])))
+
+(swap! repl-field-readers conj
+       (fn []
+         (let [val (-> (.querySelector
+                        js/document ".field.browser-env-main")
+                       (aget "value"))]
+           [:browser-env-main (if (= "" val) nil val)])))
+
+(swap! repl-field-readers conj
+       (fn []
+         (let [val (-> (.querySelector
+                        js/document ".field.webapp-env-main")
+                       (aget "value"))]
+           [:webapp-env-main (if (= "" val) nil val)])))
+
+(swap! repl-field-readers conj
+       (fn []
+         (let [val (-> (.querySelector
+                        js/document ".field.webapp-env-assets")
+                       (aget "value"))]
+           [:webapp-env-assets (if (= "" val) nil val)])))
 
 (swap! repl-field-readers conj
        (fn []
@@ -136,13 +240,72 @@
                  first
                  (aset input "value"))
             (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
+          (and (.contains class-list "new-browser-env-main")
+               (not (.contains class-list "disabled")))
+          (let [input (.querySelector edit-repl ".browser-env-main")
+                directory (-> (current-repl @core/state) :directory str)]
+            (->> (.showOpenDialog
+                  dialog #js {
+                              :filters #js [#js {:name "clojurescript file"
+                                                 :extensions
+                                                 #js ["cljs" "cljc"]}]
+                              :defaultPath directory})
+                 first
+                 (aset input "value"))
+            (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
+          (and (.contains class-list "new-webapp-env-main")
+               (not (.contains class-list "disabled")))
+          (let [input (.querySelector edit-repl ".webapp-env-main")
+                directory (-> (current-repl @core/state) :directory str)]
+            (->> (.showOpenDialog
+                  dialog #js {:filters #js [#js {:name "clojurescript file"
+                                                 :extensions
+                                                 #js ["cljs" "cljc"]}]
+                              :defaultPath directory})
+                 first
+                 (aset input "value"))
+            (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
+          (and (.contains class-list "new-webapp-env-assets")
+               (not (.contains class-list "disabled")))
+          (let [input (.querySelector edit-repl ".webapp-env-assets")
+                directory (-> (current-repl @core/state) :directory str)]
+            (->> (.showOpenDialog
+                  dialog #js {:properties #js ["openDirectory"]
+                              :defaultPath directory})
+                 first
+                 (aset input "value"))
+            (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
           :else nil)))
 
 (defn edit-repl-changed [edit-repl e]
   (let [target (aget e "target")
         class-list (aget target "classList")
         index (:repl-index @core/state)]
-    (cond (.contains class-list "random-port")
+    (cond (= (.getAttribute target "name") "type")
+          (let [cljs-env-node (.querySelector edit-repl ".cljs-env")
+                type (keyword (aget target "value"))]
+            (dom/replaceNode (->> (core/update-repls
+                                   @core/state index assoc
+                                   :type type)
+                                  cljs-env-tmpl
+                                  utils/make-node)
+                             cljs-env-node)
+            (swap! core/state assoc :dirty true))
+          (= (.getAttribute target "name") "cljs-env")
+          (let [cljs-env-node (.querySelector edit-repl ".cljs-env")
+                type-node (.querySelector
+                           edit-repl "[name=\"type\"]:checked")
+                type (keyword (aget type-node "value"))
+                cljs-env (keyword (aget target "value"))]
+            (dom/replaceNode (->> (core/update-repls
+                                   @core/state index assoc
+                                   :type type
+                                   :cljs-env cljs-env)
+                                  cljs-env-tmpl
+                                  utils/make-node)
+                             cljs-env-node)
+            (swap! core/state assoc :dirty true))
+          (.contains class-list "random-port")
           (let [port-node (.querySelector edit-repl ".port")
                 random-port (aget target "checked")]
             (dom/replaceNode (->> (core/update-repls
