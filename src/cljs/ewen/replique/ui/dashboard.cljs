@@ -35,9 +35,8 @@
    [:img.edit {:src "resources/images/edit.png"}]
    [:span.repl-status status]
    [:div.repl-type
-    (when (contains? type "clj")
-      [:img {:src "resources/images/clj-logo.gif"}])
-    (when (contains? type "cljs")
+    [:img {:src "resources/images/clj-logo.gif"}]
+    (when (= type :cljs)
       [:img {:src "resources/images/cljs-logo.png"}])]
    [:span.repl-directory directory]
    (when proc-port
@@ -53,7 +52,7 @@
 
 (defn add-new-repl []
   (swap! core/state update-in [:repls] conj
-         {:type #{"clj"} :directory nil :random-port true}))
+         {:type :clj :directory nil :random-port true}))
 
 (defn settings-button-clicked []
   (swap! core/state assoc :view :settings))
@@ -84,10 +83,10 @@
       (not (utils/file-exists clj-jar))
       {:type :err
        :msg "Invalid Clojure jar"}
-      (and (= #{"clj" "cljs"} type) (nil? cljs-jar))
+      (and (= :cljs type) (nil? cljs-jar))
       {:type :err
        :msg "Clojurescript jar has not been configured"}
-      (and (= #{"clj" "cljs"} type) (not (utils/file-exists cljs-jar)))
+      (and (= :cljs type) (not (utils/file-exists cljs-jar)))
       {:type :err
        :msg "Invalid Clojurescript jar"}
       :else nil)))
@@ -95,43 +94,29 @@
 (defn repl-cmd-raw [{:keys [repls] :as state} index]
   (let [{:keys [directory type port random-port] :as repl}
         (nth repls index)
-        cp (if (= #{"clj" "cljs"} type)
+        cp (if (= :cljs type)
               (str (settings/get-clj-jar state) ":"
                    (settings/get-cljs-jar state) ":"
-                   (format "\"%s/src/clj\"" replique-root-dir))
+                   (format "%s/src/clj" replique-root-dir))
               (str (settings/get-clj-jar state) ":"
-                   (format "\"%s/src/clj\"" replique-root-dir)))
+                   (format "%s/src/clj" replique-root-dir)))
         port (if random-port 0 port)
-        opts {:port port :accept 'ewen.replique.server/tooling-repl
-              :server-daemon false :name :replique-tooling-repl}
-        cmd-args #js ["-cp" cp
-                      (str "-Dclojure.server.repl=" opts)
-                      "clojure.main" "-e"
-                      "(-> @#'clojure.core.server/servers
-(get :replique-tooling-repl)
-:socket
-(.getLocalPort))"]]
+        cmd-args #js ["-cp" cp "clojure.main"
+                      "-m" "ewen.replique.server" type port]]
     ["java" cmd-args #js {:cwd directory}]))
 
 (defn repl-cmd-lein [{:keys [repls] :as state} index]
   (let [{:keys [directory type port random-port] :as repl}
         (nth repls index)
         port (if random-port 0 port)
-        opts {:port port :accept 'ewen.replique.server/tooling-repl
-              :server-daemon false :name :replique-tooling-repl}
-        cmd-args #js ["update-in" ":jvm-opts" "conj"
-                      (format "\"-Dclojure.server.repl=%s\"" opts) "--"
-                      "update-in" ":source-paths" "conj"
-                      (format "\"%s/src/clj\"" replique-root-dir) "--"
-                      "run" "-m" "clojure.main/main" "-e"
-                      "(-> @#'clojure.core.server/servers
-(get :replique-tooling-repl)
-:socket
-(.getLocalPort))"]]
+        cmd-args #js ["update-in" ":source-paths" "conj"
+                      (pr-str (format "%s/src/clj" replique-root-dir))
+                      "--" "run" "-m" "ewen.replique.server/-main"
+                      type port]]
     [(settings/get-lein-script state)
      cmd-args #js {:cwd directory}]))
 
-;; lein update-in :jvm-opts conj '"-Dclojure.server.repl={:port 5555 :accept clojure.core.server/repl :server-daemon false}"' -- run -m clojure.main/main
+;; lein update-in :source-paths conj "\"/home/egr/electron/resources/replique/src/clj\"" -- run -m ewen.replique.server/main :clj 9001
 
 (defn start-repl [overview {:keys [repls] :as state} index]
   (let [{:keys [directory] :as repl}

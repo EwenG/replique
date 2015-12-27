@@ -9,15 +9,57 @@
   (clojure.main/repl :init clojure.core.server/repl-init
                      :read clojure.core.server/repl-read))
 
+(defmulti repl identity)
+
+(defmethod repl :clj [type]
+  (println "Clojure" (clojure-version))
+  (clojure.main/repl :init clojure.core.server/repl-init
+                     :read clojure.core.server/repl-read))
+
+(defmethod repl :cljs [type]
+  (println "Clojure" (clojure-version))
+  (clojure.main/repl :init clojure.core.server/repl-init
+                     :read clojure.core.server/repl-read))
+
 (defn tooling-repl []
   (let [init-fn (fn [] (in-ns 'ewen.replique.server))]
-    (start-server {:port 0 :name :replique-repl
-                   :accept 'ewen.replique.server/repl
-                   :server-daemon false})
     (clojure.main/repl
      :init init-fn
      :read clojure.core.server/repl-read
      :prompt #())))
+
+(defmulti -main (fn [type port] (read-string type)))
+
+(defmethod -main :clj [type port]
+  (let [port (read-string port)]
+    (start-server {:port port :name :replique-tooling-repl
+                   :accept 'ewen.replique.server/tooling-repl
+                   :server-daemon false})
+    (start-server {:port 0 :name :replique-repl
+                   :accept 'ewen.replique.server/repl
+                   :server-daemon false
+                   :args [type]})
+    (require '[ewen.replique.server-clj])
+    (-> @#'clojure.core.server/servers
+        (get :replique-tooling-repl)
+        :socket
+        (.getLocalPort))))
+
+(defmethod -main :cljs [type port]
+  (let [port (read-string port)]
+    (start-server {:port port :name :replique-tooling-repl
+                   :accept 'ewen.replique.server/tooling-repl
+                   :server-daemon false})
+    (start-server {:port 0 :name :replique-repl
+                   :accept 'ewen.replique.server/repl
+                   :server-daemon false
+                   :args [type]})
+    (require '[ewen.replique.server-cljs])
+    (-> @#'clojure.core.server/servers
+        (get :replique-tooling-repl)
+        :socket
+        (.getLocalPort)
+        prn)))
 
 (defmulti tooling-msg-handle :type)
 

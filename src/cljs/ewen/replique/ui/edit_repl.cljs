@@ -55,14 +55,14 @@
                :id "type-clj"
                :name "type"
                :value "clj"
-               :checked (= type #{"clj"})}]
+               :checked (= type :clj)}]
              [:label {:for "type-cljs"} "Clojure/Clojurescript"]
              [:input.field
               {:type "radio"
                :id "type-cljs"
                :name "type"
                :value "cljs"
-               :checked (contains? type "cljs")}]]
+               :checked (= type :cljs)}]]
             (port-tmpl state)]])))
 
 (defn back-clicked []
@@ -81,9 +81,9 @@
        (fn []
          (let [type (-> (.querySelector
                          js/document "input[name=\"type\"]:checked")
-                        (aget "value"))
-               types (if (= "cljs" type) #{"clj" "cljs"} #{"clj"})]
-           [:type types])))
+                        (aget "value")
+                        keyword)]
+           [:type type])))
 
 (swap! repl-field-readers conj
        (fn []
