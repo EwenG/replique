@@ -107,9 +107,12 @@
         port (if random-port 0 port)
         cmd-args #js ["-cp" cp "clojure.main"
                       "-m" "ewen.replique.server"
-                      (str {:type type
-                            :cljs-env (if (= :clj type) nil cljs-env)
-                            :port port :replique-dir replique-dir})]]
+                      (str (merge {:replique-dir replique-dir :port port}
+                                  (select-keys
+                                   repl
+                                   [:type :cljs-env
+                                    :browser-env-out :webapp-env-out
+                                    :browser-env-main :webapp-env-main])))]]
     ["java" cmd-args #js {:cwd directory}]))
 
 (defn repl-cmd-lein [{:keys [repls] :as state} index]
@@ -119,13 +122,22 @@
         cmd-args #js ["update-in" ":source-paths" "conj"
                       (pr-str (format "%s/src/clj" replique-dir))
                       "--" "run" "-m" "ewen.replique.server/-main"
-                      (str {:type type
-                            :cljs-env (if (= :clj type) nil cljs-env)
-                            :port port :replique-dir replique-dir})]]
+                      (str (merge {:replique-dir replique-dir :port port}
+                                  (select-keys
+                                   repl
+                                   [:type :cljs-env
+                                    :browser-env-out :webapp-env-out
+                                    :browser-env-main :webapp-env-main])))]]
     [(settings/get-lein-script state)
      cmd-args #js {:cwd directory}]))
 
 ;; lein update-in :source-paths conj "\"/home/egr/electron/resources/replique/src/clj\"" -- run -m ewen.replique.server/-main "{:type :clj :port 9001}"
+
+(comment
+  (re-matches #"^(REPL started) on port: ([0-9]+)(.|\n)*"
+              "REPL started on port: 42794
+")
+  )
 
 (defn start-repl [overview {:keys [repls] :as state} index]
   (let [{:keys [directory port] :as repl}
@@ -140,10 +152,11 @@
            (let [msg (str data)
                  [done? done-msg port]
                  (re-matches
-                  #"^(REPL started) on port: ([0-9]+)(\n)nil(\n)$" msg)]
+                  #"^(REPL started) on port: ([0-9]+)(.|\n)*" msg)]
              (.log js/console (or done-msg msg))
              (cond done?
                    (do
+                     (.removeAllListeners (aget proc "stdout") "data")
                      (swap! core/state core/update-repls index assoc
                             :status done-msg
                             :proc-port (js/parseInt port))
