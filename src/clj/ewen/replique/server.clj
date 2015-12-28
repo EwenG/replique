@@ -2,7 +2,8 @@
   (:require [clojure.main]
             [clojure.core.server :refer [start-server]]
             [ewen.replique.server-cljs :as server-cljs]
-            [ewen.replique.server-clj :as server-clj]))
+            [ewen.replique.server-clj :as server-clj]
+            [clojure.java.io :refer [file]]))
 
 (def ^:const init-requires
   '[])
@@ -41,12 +42,15 @@
                  :accept 'ewen.replique.server/repl
                  :server-daemon false
                  :args [type]})
-  (print "REPL started on port: ")
-  (println (-> @#'clojure.core.server/servers
-               (get :replique-tooling-repl)
-               :socket
-               (.getLocalPort)
-               prn)))
+  (doto (file ".replique-port")
+    (spit (str {:repl (-> @#'clojure.core.server/servers
+                          (get :replique-tooling-repl)
+                          :socket
+                          (.getLocalPort))}))
+    (.deleteOnExit))
+
+
+  (println "REPL started"))
 
 (defmulti repl-dispatch (fn [{:keys [type cljs-env]}]
                           [type cljs-env]))
@@ -56,7 +60,7 @@
   (init-repl opts))
 
 (defmethod repl-dispatch [:cljs :browser] [opts]
-  (server-cljs/init-common)
+  (server-cljs/init-class-loader)
   (server-cljs/init-tooling-msg-handle tooling-msg-handle)
   (init-repl opts))
 

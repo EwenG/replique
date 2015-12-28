@@ -9,8 +9,10 @@
     (.setContextClassLoader (Thread/currentThread)
                             (clojure.lang.DynamicClassLoader. cl))))
 
-(defn init-common []
-  (init-class-loader))
+(defmulti init-opts :cljs-env)
+
+(defmethod init-opts :browser [out-file main-file]
+  )
 
 (defn init-tooling-msg-handle [tooling-msg-handle]
   nil)

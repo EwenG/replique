@@ -20,6 +20,7 @@
 
 (def spawn (aget (node/require "child_process") "spawn"))
 (def tree-kill (.require remote "tree-kill"))
+(def fs (node/require "fs"))
 
 (defhtml new-repl []
   [:a.dashboard-item.new-repl {:href "#"} "New REPL"])
@@ -105,12 +106,14 @@
               (str (settings/get-clj-jar state) ":"
                    (format "%s/src/clj" replique-dir)))
         port (if random-port 0 port)
+        cljs-env (if (= :clj type) nil cljs-env)
         cmd-args #js ["-cp" cp "clojure.main"
                       "-m" "ewen.replique.server"
-                      (str (merge {:replique-dir replique-dir :port port}
+                      (str (merge {:replique-dir replique-dir :port port
+                                   :cljs-env cljs-env}
                                   (select-keys
                                    repl
-                                   [:type :cljs-env
+                                   [:type
                                     :browser-env-out :webapp-env-out
                                     :browser-env-main :webapp-env-main])))]]
     ["java" cmd-args #js {:cwd directory}]))
@@ -119,13 +122,15 @@
   (let [{:keys [directory type cljs-env port random-port] :as repl}
         (nth repls index)
         port (if random-port 0 port)
+        cljs-env (if (= :clj type) nil cljs-env)
         cmd-args #js ["update-in" ":source-paths" "conj"
                       (pr-str (format "%s/src/clj" replique-dir))
                       "--" "run" "-m" "ewen.replique.server/-main"
-                      (str (merge {:replique-dir replique-dir :port port}
+                      (str (merge {:replique-dir replique-dir :port port
+                                   :cljs-env cljs-env}
                                   (select-keys
                                    repl
-                                   [:type :cljs-env
+                                   [:type
                                     :browser-env-out :webapp-env-out
                                     :browser-env-main :webapp-env-main])))]]
     [(settings/get-lein-script state)
@@ -133,11 +138,15 @@
 
 ;; lein update-in :source-paths conj "\"/home/egr/electron/resources/replique/src/clj\"" -- run -m ewen.replique.server/-main "{:type :clj :port 9001}"
 
-(comment
-  (re-matches #"^(REPL started) on port: ([0-9]+)(.|\n)*"
-              "REPL started on port: 42794
-")
-  )
+(defn read-port-desc [directory]
+  (try
+    (->>
+     (str directory "/.replique-port")
+     (#(.readFileSync fs % "utf-8"))
+     (reader/read-string))
+    (catch js/Error e
+      (.log js/console e)
+      nil)))
 
 (defn start-repl [overview {:keys [repls] :as state} index]
   (let [{:keys [directory port] :as repl}
@@ -149,24 +158,25 @@
         status (.querySelector overview ".repl-status")]
     (.on (aget proc "stdout") "data"
          (fn [data]
-           (let [msg (str data)
-                 [done? done-msg port]
-                 (re-matches
-                  #"^(REPL started) on port: ([0-9]+)(.|\n)*" msg)]
-             (.log js/console (or done-msg msg))
-             (cond done?
+           (let [msg (str data)]
+             (.log js/console msg)
+             (cond (= "REPL started\n" msg)
                    (do
-                     (.removeAllListeners (aget proc "stdout") "data")
                      (swap! core/state core/update-repls index assoc
-                            :status done-msg
-                            :proc-port (js/parseInt port))
+                            :status msg)
                      (js/setTimeout
                       #(swap! core/state core/update-repls index
                               (fn [repl]
                                 (if (identical? proc (:proc repl))
                                   (dissoc repl :status)
                                   repl)))
-                      2000))
+                      2000)
+                     (if-let [repl-desc (read-port-desc directory)]
+                       (swap! core/state core/update-repls index assoc
+                              :proc-port (:repl repl-desc))
+                       (notif/single-notif
+                        {:type :err
+                         :msg "Error while starting the REPL"})))
                    :else (swap! core/state core/update-repls index assoc
                                 :proc proc :status msg)))))
     (.on (aget proc "stderr") "data"
@@ -194,8 +204,11 @@
   )
 
 (defn stop-repl [overview {:keys [repls] :as state} index]
-  (let [{:keys [proc]} (nth repls index)]
-    (tree-kill (aget proc "pid"))))
+  (let [{:keys [proc directory]} (nth repls index)]
+    (tree-kill (aget proc "pid"))
+    (try
+      (.unlink fs (str directory "/.replique-port"))
+      (catch js/Error e nil))))
 
 (defn overview-clicked [overview e]
   (let [class-list (-> (aget e "target")
