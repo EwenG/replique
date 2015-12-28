@@ -134,7 +134,7 @@ label.disabled {
   .repl-type {
     display:inline-block;
     position:absolute;
-    top:4rem;
+    top:5rem;
     left:0;
     right:0;
     margin-left:auto;
@@ -153,7 +153,7 @@ label.disabled {
   .repl-directory {
     display: block;
     position:absolute;
-    top: 8rem;
+    top: 9rem;
     left:0;
     right:0;
     margin-left:auto;
@@ -170,7 +170,7 @@ label.disabled {
   .repl-port {
     display: block;
     position:absolute;
-    top: 10rem;
+    top: 11rem;
     left:0;
     right:0;
     margin-left:auto;
@@ -256,19 +256,20 @@ select {
       #webapp-env, #replique-env {
         margin-top:1rem;
       }
-      .browser-env-main {
+      .browser-env-out {
         margin-left:5rem;
       }
-      .webapp-env-main {
+      .webapp-env-out {
         margin-left:1rem;
       }
-      .new-browser-env-main, .new-webapp-env-main, .new-webapp-env-assets {
+      .new-browser-env-out, .new-webapp-env-out,
+      .new-browser-env-main, .new-webapp-env-main {
         margin-left:1rem;
         &.disabled {
           background-color:$gray;
         }
       }
-      .webapp-env-assets {
+      .webapp-env-main, .browser-env-main {
         margin-left:1rem;
       }
     }

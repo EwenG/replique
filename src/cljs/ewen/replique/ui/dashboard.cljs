@@ -16,7 +16,7 @@
   (:require-macros [hiccup.core :refer [html]]
                    [hiccup.def :refer [defhtml]]))
 
-(def replique-root-dir (.getGlobal remote "repliqueRootDir"))
+(def replique-dir (.getGlobal remote "repliqueRootDir"))
 
 (def spawn (aget (node/require "child_process") "spawn"))
 (def tree-kill (.require remote "tree-kill"))
@@ -101,13 +101,15 @@
         cp (if (= :cljs type)
               (str (settings/get-clj-jar state) ":"
                    (settings/get-cljs-jar state) ":"
-                   (format "%s/src/clj" replique-root-dir))
+                   (format "%s/src/clj" replique-dir))
               (str (settings/get-clj-jar state) ":"
-                   (format "%s/src/clj" replique-root-dir)))
+                   (format "%s/src/clj" replique-dir)))
         port (if random-port 0 port)
         cmd-args #js ["-cp" cp "clojure.main"
                       "-m" "ewen.replique.server"
-                      port type cljs-env]]
+                      (str {:type type
+                            :cljs-env (if (= :clj type) nil cljs-env)
+                            :port port :replique-dir replique-dir})]]
     ["java" cmd-args #js {:cwd directory}]))
 
 (defn repl-cmd-lein [{:keys [repls] :as state} index]
@@ -115,16 +117,18 @@
         (nth repls index)
         port (if random-port 0 port)
         cmd-args #js ["update-in" ":source-paths" "conj"
-                      (pr-str (format "%s/src/clj" replique-root-dir))
+                      (pr-str (format "%s/src/clj" replique-dir))
                       "--" "run" "-m" "ewen.replique.server/-main"
-                      port type cljs-env]]
+                      (str {:type type
+                            :cljs-env (if (= :clj type) nil cljs-env)
+                            :port port :replique-dir replique-dir})]]
     [(settings/get-lein-script state)
      cmd-args #js {:cwd directory}]))
 
-;; lein update-in :source-paths conj "\"/home/egr/electron/resources/replique/src/clj\"" -- run -m ewen.replique.server/-main 9001 :clj :browser
+;; lein update-in :source-paths conj "\"/home/egr/electron/resources/replique/src/clj\"" -- run -m ewen.replique.server/-main "{:type :clj :port 9001}"
 
 (defn start-repl [overview {:keys [repls] :as state} index]
-  (let [{:keys [directory] :as repl}
+  (let [{:keys [directory port] :as repl}
         (nth repls index)
         repl-cmd (if (is-lein-project state index)
                    (repl-cmd-lein state index)
@@ -133,16 +137,28 @@
         status (.querySelector overview ".repl-status")]
     (.on (aget proc "stdout") "data"
          (fn [data]
-           (let [port (reader/read-string (str data))]
-             (swap! core/state core/update-repls index assoc
-                    :status "REPL started" :proc-port port)
-             (js/setTimeout
-              #(swap! core/state core/update-repls index
-                      (fn [repl]
-                        (if (identical? proc (:proc repl))
-                          (dissoc repl :status)
-                          repl)))
-              2000))))
+           (let [msg (str data)
+                 [done? done-msg port]
+                 (re-matches
+                  #"^(REPL started) on port: ([0-9]+)(\n)nil(\n)$" msg)]
+             (.log js/console (or done-msg msg))
+             (cond done?
+                   (do
+                     (swap! core/state core/update-repls index assoc
+                            :status done-msg
+                            :proc-port (js/parseInt port))
+                     (js/setTimeout
+                      #(swap! core/state core/update-repls index
+                              (fn [repl]
+                                (if (identical? proc (:proc repl))
+                                  (dissoc repl :status)
+                                  repl)))
+                      2000))
+                   :else (swap! core/state core/update-repls index assoc
+                                :proc proc :status msg)))))
+    (.on (aget proc "stderr") "data"
+         (fn [err]
+           (.log js/console (str err))))
     (.on proc "close"
          (fn [code signal]
            ;; When killed with the stop button, the process returns
@@ -156,6 +172,13 @@
                   :proc :proc-port :status)))
     (swap! core/state core/update-repls index assoc
            :proc proc :status "REPL starting")))
+
+(comment
+  (re-matches #"^REPL started on port: ([0-9]+)\n$"
+              (str "REPL started on port: " "354\n"))
+  (re-matches #"^REPL started on port: ([0-9]+)$"
+              "REPL started on port: 3")
+  )
 
 (defn stop-repl [overview {:keys [repls] :as state} index]
   (let [{:keys [proc]} (nth repls index)]

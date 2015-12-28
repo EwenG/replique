@@ -1,9 +1,13 @@
 (ns ewen.replique.server
   (:require [clojure.main]
-            [clojure.core.server :refer [start-server]]))
+            [clojure.core.server :refer [start-server]]
+            [ewen.replique.server-cljs :as server-cljs]
+            [ewen.replique.server-clj :as server-clj]))
 
 (def ^:const init-requires
   '[])
+
+(defmulti tooling-msg-handle :type)
 
 (defn repl []
   (clojure.main/repl :init clojure.core.server/repl-init
@@ -28,7 +32,8 @@
      :read clojure.core.server/repl-read
      :prompt #())))
 
-(defn init-repl [port type cljs-env]
+(defn init-repl [{:keys [port type cljs-env replique-dir]}]
+  (def replique-dir replique-dir)
   (start-server {:port port :name :replique-tooling-repl
                  :accept 'ewen.replique.server/tooling-repl
                  :server-daemon false})
@@ -36,23 +41,27 @@
                  :accept 'ewen.replique.server/repl
                  :server-daemon false
                  :args [type]})
-  (-> @#'clojure.core.server/servers
-      (get :replique-tooling-repl)
-      :socket
-      (.getLocalPort)
-      prn))
+  (print "REPL started on port: ")
+  (println (-> @#'clojure.core.server/servers
+               (get :replique-tooling-repl)
+               :socket
+               (.getLocalPort)
+               prn)))
 
-(defmulti -main (fn [port type cljs-env] (read-string type)))
+(defmulti repl-dispatch (fn [{:keys [type cljs-env]}]
+                          [type cljs-env]))
 
-(defmethod -main :clj [port type cljs-env]
-  (require '[ewen.replique.server-clj])
-  (init-repl (read-string port) (read-string type) (read-string cljs-env)))
+(defmethod repl-dispatch [:clj nil] [opts]
+  (server-clj/init-tooling-msg-handle tooling-msg-handle)
+  (init-repl opts))
 
-(defmethod -main :cljs [port type cljs-env]
-  (require '[ewen.replique.server-cljs])
-  (init-repl (read-string port) (read-string type) (read-string cljs-env)))
+(defmethod repl-dispatch [:cljs :browser] [opts]
+  (server-cljs/init-common)
+  (server-cljs/init-tooling-msg-handle tooling-msg-handle)
+  (init-repl opts))
 
-(defmulti tooling-msg-handle :type)
+(defn -main [opts]
+  (repl-dispatch (read-string opts)))
 
 (defmethod tooling-msg-handle :repl-infos [msg]
   (let [{:keys [replique-tooling-repl replique-repl]}

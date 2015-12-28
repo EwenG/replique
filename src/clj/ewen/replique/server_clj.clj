@@ -1,2 +1,4 @@
-(ns ewen.replique.server-clj
-  (:require [ewen.replique.server :refer [tooling-msg-handle]]))
+(ns ewen.replique.server-clj)
+
+(defn init-tooling-msg-handle [tooling-msg-handle]
+  nil)

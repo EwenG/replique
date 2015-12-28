@@ -17,8 +17,8 @@
   (nth repls repl-index))
 
 (defn cljs-env-tmpl [{:keys [repls repl-index]}]
-  (let [{:keys [type cljs-env browser-env-main
-                webapp-env-main webapp-env-assets]}
+  (let [{:keys [type cljs-env browser-env-main webapp-env-main
+                webapp-env-out browser-env-out]}
         (nth repls repl-index)]
     (html [:fieldset.cljs-env
            [:legend "Clojurescript environment"]
@@ -32,6 +32,17 @@
              :value "browser"
              :checked (= cljs-env :browser)
              :disabled (not= :cljs type)}]
+           [:input.field.browser-env-out
+            {:type "text"
+             :readonly true
+             :value browser-env-out
+             :disabled (or (not= :cljs type)
+                           (not= :browser cljs-env))}]
+           [:a {:href "#"
+                :class (if (or (not= :cljs type) (not= :browser cljs-env))
+                         "button new-browser-env-out disabled"
+                         "button new-browser-env-out")}
+            "Select output file"]
            [:input.field.browser-env-main
             {:type "text"
              :readonly true
@@ -54,6 +65,16 @@
              :value "webapp"
              :checked (= cljs-env :webapp)
              :disabled (not= :cljs type)}]
+           [:input.field.webapp-env-out
+            {:type "text"
+             :readonly true
+             :value webapp-env-out
+             :disabled (or (not= :cljs type) (not= :webapp cljs-env))}]
+           [:a {:href "#"
+                :class (if (or (not= :cljs type) (not= :webapp cljs-env))
+                         "button new-webapp-env-out disabled"
+                         "button new-webapp-env-out")}
+            "Select output file"]
            [:input.field.webapp-env-main
             {:type "text"
              :readonly true
@@ -64,16 +85,6 @@
                          "button new-webapp-env-main disabled"
                          "button new-webapp-env-main")}
             "Choose main namespace"]
-           [:input.field.webapp-env-assets
-            {:type "text"
-             :readonly true
-             :value webapp-env-assets
-             :disabled (or (not= :cljs type) (not= :webapp cljs-env))}]
-           [:a {:href "#"
-                :class (if (or (not= :cljs type) (not= :webapp cljs-env))
-                         "button new-webapp-env-assets disabled"
-                         "button new-webapp-env-assets")}
-            "Choose assets folder"]
            [:br]
            [:label {:for "replique-env"
                     :class (if (not= :cljs type) "disabled" "")}
@@ -178,6 +189,20 @@
 (swap! repl-field-readers conj
        (fn []
          (let [val (-> (.querySelector
+                        js/document ".field.browser-env-out")
+                       (aget "value"))]
+           [:browser-env-out (if (= "" val) nil val)])))
+
+(swap! repl-field-readers conj
+       (fn []
+         (let [val (-> (.querySelector
+                        js/document ".field.webapp-env-out")
+                       (aget "value"))]
+           [:webapp-env-out (if (= "" val) nil val)])))
+
+(swap! repl-field-readers conj
+       (fn []
+         (let [val (-> (.querySelector
                         js/document ".field.browser-env-main")
                        (aget "value"))]
            [:browser-env-main (if (= "" val) nil val)])))
@@ -188,13 +213,6 @@
                         js/document ".field.webapp-env-main")
                        (aget "value"))]
            [:webapp-env-main (if (= "" val) nil val)])))
-
-(swap! repl-field-readers conj
-       (fn []
-         (let [val (-> (.querySelector
-                        js/document ".field.webapp-env-assets")
-                       (aget "value"))]
-           [:webapp-env-assets (if (= "" val) nil val)])))
 
 (swap! repl-field-readers conj
        (fn []
@@ -234,11 +252,38 @@
           (.contains class-list "new-directory")
           (let [input (.querySelector
                        edit-repl
-                       ".directory input[type=\"text\"]")]
-            (->> (.showOpenDialog
-                  dialog #js {:properties #js ["openDirectory"]})
-                 first
-                 (aset input "value"))
+                       ".directory input[type=\"text\"]")
+                directory (first
+                           (.showOpenDialog
+                            dialog
+                            #js {:properties #js ["openDirectory"]}))
+                browser-env-out (.querySelector
+                                 edit-repl ".browser-env-out")]
+            (aset input "value" directory)
+            (when (= "" (aget browser-env-out "value"))
+              (aset browser-env-out "value" (str directory "/out/main.js")))
+            (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
+          (and (.contains class-list "new-browser-env-out")
+               (not (.contains class-list "disabled")))
+          (let [input (.querySelector edit-repl ".browser-env-out")
+                directory (-> (current-repl @core/state) :directory str)
+                out-file (.showSaveDialog
+                          dialog
+                          #js {:filters #js [#js {:name "javascript file"
+                                                  :extensions #js ["js"]}]
+                               :defaultPath directory})]
+            (aset input "value" (or out-file nil))
+            (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
+          (and (.contains class-list "new-webapp-env-out")
+               (not (.contains class-list "disabled")))
+          (let [input (.querySelector edit-repl ".webapp-env-out")
+                directory (-> (current-repl @core/state) :directory str)
+                out-file (.showSaveDialog
+                          dialog
+                          #js {:filters #js [#js {:name "javascript file"
+                                                  :extensions #js ["js"]}]
+                               :defaultPath directory})]
+            (aset input "value" (or out-file nil))
             (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
           (and (.contains class-list "new-browser-env-main")
                (not (.contains class-list "disabled")))
@@ -261,16 +306,6 @@
                   dialog #js {:filters #js [#js {:name "clojurescript file"
                                                  :extensions
                                                  #js ["cljs" "cljc"]}]
-                              :defaultPath directory})
-                 first
-                 (aset input "value"))
-            (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
-          (and (.contains class-list "new-webapp-env-assets")
-               (not (.contains class-list "disabled")))
-          (let [input (.querySelector edit-repl ".webapp-env-assets")
-                directory (-> (current-repl @core/state) :directory str)]
-            (->> (.showOpenDialog
-                  dialog #js {:properties #js ["openDirectory"]
                               :defaultPath directory})
                  first
                  (aset input "value"))
