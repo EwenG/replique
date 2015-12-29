@@ -53,7 +53,11 @@
 
 (defn add-new-repl []
   (swap! core/state update-in [:repls] conj
-         {:directory nil :type :clj :cljs-env :browser :random-port true}))
+         {:directory nil
+          :type :clj :cljs-env :browser
+          :browser-env-random-port true
+          :webapp-env-random-port true
+          :random-port true}))
 
 (defn settings-button-clicked []
   (swap! core/state assoc :view :settings))
@@ -246,9 +250,9 @@
  (fn [root {:keys [view] :as state}]
    (if (= :dashboard view)
      (let [node (utils/replace-or-append
-                           root "#dashboard"
-                           (dom/htmlToDocumentFragment
-                            (dashboard state)))]
+                 root "#dashboard"
+                 (dom/htmlToDocumentFragment
+                  (dashboard state)))]
        (events/listen (.querySelector node ".new-repl")
                       events/EventType.CLICK add-new-repl)
        (events/listen (.querySelector node ".settings-button")

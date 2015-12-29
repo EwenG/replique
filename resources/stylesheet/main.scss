@@ -256,12 +256,19 @@ select {
       #webapp-env, #replique-env {
         margin-top:1rem;
       }
-      .browser-env-out {
+      .browser-env-port {
         margin-left:5rem;
+        width:3rem;
       }
-      .webapp-env-out {
+      .webapp-env-port {
+        margin-left:1rem;
+        width:3rem;
+      }
+      label[for="browser-env-random-port"],
+      label[for="webapp-env-random-port"] {
         margin-left:1rem;
       }
+      .browser-env-out, .webapp-env-out,
       .new-browser-env-out, .new-webapp-env-out,
       .new-browser-env-main, .new-webapp-env-main {
         margin-left:1rem;
@@ -275,6 +282,9 @@ select {
     }
     .port {
       margin-top: 1rem;
+      .custom-port {
+        width:3rem;
+      }
       label[for="random-port"] {
         margin-left:1rem;
       }
@@ -286,7 +296,8 @@ select {
   form {
     .clj-jar, .cljs-jar, .lein {
       margin-top: 2rem;
-      label[for="clj-custom-source"], label[for="cljs-custom-source"], label[for="lein-custom-source"] {
+      label[for="clj-custom-source"], label[for="cljs-custom-source"],
+      label[for="lein-custom-source"] {
         margin-left:1rem;
       }
       .custom-clj-jar, .custom-cljs-jar {
