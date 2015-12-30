@@ -1,5 +1,7 @@
 (ns ewen.replique.server-cljs
-  (:require [clojure.java.io :as io :refer [file]]
+  (:require [ewen.replique.server :as server]
+            [clojure.core.server :refer [start-server]]
+            [clojure.java.io :as io :refer [file]]
             [cljs.repl.browser]
             [cljs.closure :as closure]
             [cljs.env :as cljs-env]
@@ -14,6 +16,7 @@
 
 (defonce compiler-env (atom nil))
 (defonce repl-env (atom nil))
+(defonce env {:context :expr :locals {}})
 
 (defn f->src [f]
   (cond (util/url? f) f
@@ -101,20 +104,20 @@
   cljs.repl/IJavaScriptEnv
   (-setup [this opts] setup-ret)
   (-evaluate [this _ _ js]
-    (cljs.repl/-evaluate this nil nil js))
+    (cljs.repl/-evaluate wrapped nil nil js))
   (-load [this provides url]
-    (cljs.repl/-load this provides url))
+    (cljs.repl/-load wrapped provides url))
   (-tear-down [this]
-    (cljs.repl/-tear-down this))
+    (cljs.repl/-tear-down wrapped))
   cljs.repl/IReplEnvOptions
   (-repl-options [this]
-    (cljs.repl/-repl-options this))
+    (cljs.repl/-repl-options wrapped))
   cljs.repl/IParseStacktrace
   (-parse-stacktrace [this st err opts]
-    (cljs.repl/-parse-stacktrace this st err opts))
+    (cljs.repl/-parse-stacktrace wrapped st err opts))
   cljs.repl/IGetError
   (-get-error [this e env opts]
-    (cljs.repl/-get-error this e env opts)))
+    (cljs.repl/-get-error wrapped e env opts)))
 
 (defn override-setup [benv setup-ret]
   (merge (BrowserEnv. benv setup-ret) benv))
@@ -171,5 +174,60 @@
     </body>
 </html>")))
 
-(defn init-tooling-msg-handle [tooling-msg-handle]
-  nil)
+(defmethod server/repl :cljs
+  [type {:keys [comp-opts repl-env compiler-env]}]
+  (let [repl-requires '[[cljs.repl
+                         :refer-macros [source doc
+                                        find-doc apropos
+                                        dir pst]]
+                        [cljs.pprint :refer [pprint]
+                         :refer-macros [pp]]]
+        init-fn (fn []
+                  (cljs.repl/evaluate-form
+                   repl-env
+                   env
+                   "<cljs repl>"
+                   (with-meta
+                     `(~'ns ~'cljs.user
+                        (:require ~@repl-requires))
+                     {:line 1 :column 1})
+                   identity comp-opts))]
+    (when-not (:connection @(:server-state repl-env))
+      (println "Waiting for browser to connect ..."))
+    (apply
+     (partial cljs.repl/repl repl-env)
+     (->> (merge
+           comp-opts
+           {:compiler-env compiler-env
+            :init init-fn})
+          (apply concat)))))
+
+(defmethod server/repl-dispatch [:cljs :browser]
+  [{:keys [port type cljs-env] :as opts}]
+  (init-class-loader)
+  (let [{:keys [comp-opts repl-opts]} (init-opts opts)]
+    (init-browser-env comp-opts repl-opts)
+    (output-index-html comp-opts)
+    (start-server {:port port :name :replique-tooling-repl
+                   :accept 'ewen.replique.server/tooling-repl
+                   :server-daemon false})
+    (start-server {:port 0 :name :replique-repl
+                   :accept 'ewen.replique.server/repl
+                   :server-daemon false
+                   :args [type {:comp-opts comp-opts
+                                :repl-env @repl-env
+                                :compiler-env @compiler-env}]})
+    (doto (file ".replique-port")
+      (spit (str {:tooling-repl (-> @#'clojure.core.server/servers
+                                    (get :replique-tooling-repl)
+                                    :socket
+                                    (.getLocalPort))
+                  :repl (-> @#'clojure.core.server/servers
+                            (get :replique-repl)
+                            :socket
+                            (.getLocalPort))
+                  :cljs-env (-> @(:server-state @repl-env)
+                                :socket
+                                (.getLocalPort))}))
+      (.deleteOnExit))
+    (println "REPL started")))

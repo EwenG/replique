@@ -25,7 +25,7 @@
 (defhtml new-repl []
   [:a.dashboard-item.new-repl {:href "#"} "New REPL"])
 
-(defhtml repl-overview [{:keys [type directory proc proc-port status]}
+(defhtml repl-overview [{:keys [type directory proc cljs-env-port status]}
                         index]
   [:div.dashboard-item.repl-overview
    {:href "#"
@@ -39,7 +39,9 @@
     [:img {:src "resources/images/clj-logo.gif"}]
     (when (= type :cljs)
       [:img {:src "resources/images/cljs-logo.png"}])]
-   [:span.repl-directory directory]])
+   [:span.repl-directory directory]
+   (when cljs-env-port
+     [:span.cljs-env-port (str "Cljs environment port: " cljs-env-port)])])
 
 (defhtml dashboard [{:keys [repls]}]
   (html [:div#dashboard
@@ -118,7 +120,7 @@
         webapp-env-port (if webapp-env-random-port 0 webapp-env-port)
         cljs-env (if (= :clj type) nil cljs-env)
         cmd-args #js ["-cp" cp "clojure.main"
-                      "-m" "ewen.replique.server"
+                      "-m" "ewen.replique.main"
                       (-> (merge repl {:port port :cljs-env cljs-env
                                        :browser-env-port browser-env-port
                                        :webapp-env-port webapp-env-port})
@@ -137,7 +139,7 @@
         cljs-env (if (= :clj type) nil cljs-env)
         cmd-args #js ["update-in" ":source-paths" "conj"
                       (pr-str (format "%s/src" replique-dir))
-                      "--" "run" "-m" "ewen.replique.server/-main"
+                      "--" "run" "-m" "ewen.replique.main/-main"
                       (-> (merge repl {:port port :cljs-env cljs-env
                                        :browser-env-port browser-env-port
                                        :webapp-env-port webapp-env-port})
@@ -145,7 +147,7 @@
     [(settings/get-lein-script state)
      cmd-args #js {:cwd directory}]))
 
-;; lein update-in :source-paths conj "\"/home/egr/electron/resources/replique/src\"" -- run -m ewen.replique.server/-main "{:type :clj :port 9001}"
+;; lein update-in :source-paths conj "\"/home/egr/electron/resources/replique/src\"" -- run -m ewen.replique.main/-main "{:type :clj :port 9001}"
 
 (defn read-port-desc [directory]
   (try
@@ -182,7 +184,7 @@
                       2000)
                      (if-let [repl-desc (read-port-desc directory)]
                        (swap! core/state core/update-repls index assoc
-                              :proc-port (:tooling-repl repl-desc))
+                              :cljs-env-port (:cljs-env repl-desc))
                        (notif/single-notif
                         {:type :err
                          :msg "Error while starting the REPL"})))
@@ -201,16 +203,9 @@
               {:type :err
                :msg "Error while starting the REPL"}))
            (swap! core/state core/update-repls index dissoc
-                  :proc :proc-port :status)))
+                  :proc :cljs-env-port :status)))
     (swap! core/state core/update-repls index assoc
-           :proc proc :status "REPL starting")))
-
-(comment
-  (re-matches #"^REPL started on port: ([0-9]+)\n$"
-              (str "REPL started on port: " "354\n"))
-  (re-matches #"^REPL started on port: ([0-9]+)$"
-              "REPL started on port: 3")
-  )
+           :proc proc :status "REPL starting ...")))
 
 (defn stop-repl [overview {:keys [repls] :as state} index]
   (let [{:keys [proc directory]} (nth repls index)]
