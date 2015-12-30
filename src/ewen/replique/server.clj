@@ -2,8 +2,24 @@
   (:require [clojure.main]
             [clojure.java.io :refer [file]]))
 
-(def ^:const init-requires
-  '[])
+(def directory nil)
+(def ^:const init-requires '[])
+
+(defn normalize-ip-address [address]
+  (if (= "0.0.0.0" address) "127.0.0.1" address))
+
+(defn repl-infos []
+  (let [{:keys [replique-tooling-repl replique-repl]}
+        @#'clojure.core.server/servers]
+    {:directory directory
+     :replique-tooling-repl
+     {:host (-> (:socket replique-tooling-repl)
+                (.getInetAddress) (.getHostAddress) normalize-ip-address)
+      :port (-> (:socket replique-tooling-repl) (.getLocalPort))}
+     :replique-repl
+     {:host (-> (:socket replique-tooling-repl)
+                (.getInetAddress) (.getHostAddress) normalize-ip-address)
+      :port (-> (:socket replique-repl) (.getLocalPort))}}))
 
 (defmulti repl (fn [type opts] type))
 
@@ -14,18 +30,7 @@
      :read clojure.core.server/repl-read
      :prompt #())))
 
-(defmulti repl-dispatch (fn [{:keys [type cljs-env]}] [type cljs-env]))
+(defmulti repl-dispatch (fn [{:keys [type cljs-env]}]
+                          [type cljs-env]))
 
 (defmulti tooling-msg-handle :type)
-
-(defmethod tooling-msg-handle :repl-infos [msg]
-  (let [{:keys [replique-tooling-repl replique-repl]}
-        @#'clojure.core.server/servers]
-    {:replique-tooling-repl
-     {:host (-> (:socket replique-tooling-repl)
-                (.getInetAddress) (.getHostAddress))
-      :port (-> (:socket replique-tooling-repl) (.getLocalPort))}
-     :replique-repl
-     {:host (-> (:socket replique-tooling-repl)
-                (.getInetAddress) (.getHostAddress))
-      :port (-> (:socket replique-repl) (.getLocalPort))}}))

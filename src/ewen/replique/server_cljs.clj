@@ -140,8 +140,8 @@
                      (.getLocalPort))
             host (-> @(:server-state @repl-env)
                      :socket
-                     (.getInetAddress) (.getHostAddress))
-            host (if (= "0.0.0.0" host) "127.0.0.1" host)
+                     (.getInetAddress) (.getHostAddress)
+                     server/normalize-ip-address)
             url (str "http://" host ":" port "/repl")
             repl-src "clojure/browser/repl.cljs"
             benv-src "ewen/replique/cljs_env/browser.cljs"
@@ -231,3 +231,14 @@
                                 (.getLocalPort))}))
       (.deleteOnExit))
     (println "REPL started")))
+
+
+(defmethod server/tooling-msg-handle :repl-infos [msg]
+  (assoc (server/repl-infos) :cljs-env
+         {:host (-> @(:server-state @repl-env)
+                    :socket
+                    (.getLocalPort))
+          :port (-> @(:server-state @repl-env)
+                    :socket
+                    (.getInetAddress) (.getHostAddress)
+                    server/normalize-ip-address)}))
