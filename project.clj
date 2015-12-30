@@ -2,9 +2,9 @@
   :dependencies [[org.clojure/clojure "1.7.0"]
                  [org.clojure/clojurescript "1.7.170"]
                  [ewen/hiccup "1.0.0"]]
-  :source-paths ["src/cljs"]
+  :source-paths ["src"]
   :plugins [[lein-cljsbuild "1.1.1"]]
-  :cljsbuild {:builds [{:source-paths ["src/cljs"]
+  :cljsbuild {:builds [{:source-paths ["src"]
                         :compiler {:output-to "out/main.js"
                                    :optimizations :advanced
                                    :pretty-print false

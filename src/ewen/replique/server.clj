@@ -1,9 +1,9 @@
 (ns ewen.replique.server
   (:require [clojure.main]
             [clojure.core.server :refer [start-server]]
-            [ewen.replique.server-cljs :as server-cljs]
-            [ewen.replique.server-clj :as server-clj]
             [clojure.java.io :refer [file]]))
+
+(require '[ewen.replique.server-clj :as server-clj])
 
 (def ^:const init-requires
   '[])
@@ -33,8 +33,7 @@
      :read clojure.core.server/repl-read
      :prompt #())))
 
-(defn init-repl [{:keys [port type cljs-env replique-dir]}]
-  (def replique-dir replique-dir)
+(defn init-repl [{:keys [port type cljs-env]}]
   (start-server {:port port :name :replique-tooling-repl
                  :accept 'ewen.replique.server/tooling-repl
                  :server-daemon false})
@@ -42,14 +41,6 @@
                  :accept 'ewen.replique.server/repl
                  :server-daemon false
                  :args [type]})
-  (doto (file ".replique-port")
-    (spit (str {:repl (-> @#'clojure.core.server/servers
-                          (get :replique-tooling-repl)
-                          :socket
-                          (.getLocalPort))}))
-    (.deleteOnExit))
-
-
   (println "REPL started"))
 
 (defmulti repl-dispatch (fn [{:keys [type cljs-env]}]
@@ -60,9 +51,42 @@
   (init-repl opts))
 
 (defmethod repl-dispatch [:cljs :browser] [opts]
-  (server-cljs/init-class-loader)
-  (server-cljs/init-tooling-msg-handle tooling-msg-handle)
-  (init-repl opts))
+  (require 'ewen.replique.server-cljs)
+  (let [init-class-loader (ns-resolve 'ewen.replique.server-cljs
+                                      'init-class-loader)
+        init-tooling-msg-handle (ns-resolve 'ewen.replique.server-cljs
+                                            'init-tooling-msg-handle)
+        init-opts (ns-resolve 'ewen.replique.server-cljs 'init-opts)
+        init-browser-env (ns-resolve 'ewen.replique.server-cljs
+                                     'init-browser-env)
+        output-index-html (ns-resolve 'ewen.replique.server-cljs
+                                      'output-index-html)
+        repl-env (ns-resolve 'ewen.replique.server-cljs 'repl-env)]
+    (init-class-loader)
+    (let [{:keys [comp-opts repl-opts]} (init-opts opts)]
+      (init-browser-env comp-opts repl-opts)
+      (output-index-html comp-opts)
+      (init-tooling-msg-handle tooling-msg-handle)
+      (init-repl opts)
+      (doto (file ".replique-port")
+        (spit (str {:tooling-repl (-> @#'clojure.core.server/servers
+                                      (get :replique-tooling-repl)
+                                      :socket
+                                      (.getLocalPort))
+                    :repl (-> @#'clojure.core.server/servers
+                              (get :replique-repl)
+                              :socket
+                              (.getLocalPort))
+                    :cljs-env (-> @(:server-state @@repl-env)
+                                  :socket
+                                  (.getLocalPort))}))
+        (.deleteOnExit)))))
+
+(comment
+  (-> @(:server-state @ewen.replique.server-cljs/repl-env)
+      :socket
+      (.getLocalPort))
+  )
 
 (defn -main [opts]
   (repl-dispatch (read-string opts)))
