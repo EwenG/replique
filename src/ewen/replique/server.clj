@@ -23,6 +23,12 @@
 
 (defmulti repl (fn [type opts] type))
 
+(defmethod repl :clj
+  [type _]
+  (println "Clojure" (clojure-version))
+  (clojure.main/repl :init clojure.core.server/repl-init
+                     :read clojure.core.server/repl-read))
+
 (defn tooling-repl []
   (let [init-fn (fn [] (in-ns 'ewen.replique.server))]
     (clojure.main/repl

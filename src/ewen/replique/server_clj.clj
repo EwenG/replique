@@ -3,12 +3,6 @@
             [clojure.core.server :refer [start-server]]
             [clojure.java.io :as io :refer [file]]))
 
-(defmethod server/repl :clj
-  [type {:keys [comp-opts repl-env compiler-env]}]
-  (println "Clojure" (clojure-version))
-  (clojure.main/repl :init clojure.core.server/repl-init
-                     :read clojure.core.server/repl-read))
-
 (defmethod server/repl-dispatch [:clj nil]
   [{:keys [port type cljs-env] :as opts}]
   (start-server {:port port :name :replique-tooling-repl

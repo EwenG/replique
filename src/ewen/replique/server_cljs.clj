@@ -12,11 +12,20 @@
             [clojure.string :as string]
             [cljs.js-deps :as deps]
             [ewen.replique.cljs])
-  (:import [java.io File]))
+  (:import [java.io File]
+           [java.util.concurrent SynchronousQueue]))
 
-(defonce compiler-env (atom nil))
-(defonce repl-env (atom nil))
+(comment
+  (let [res1 (future (cljs.repl/-evaluate ewen.replique.server-cljs/repl-env nil nil "3"))
+        res2 (future (cljs.repl/-evaluate ewen.replique.server-cljs/repl-env nil nil "4"))]
+    [@res1 @res2])
+  )
+
+(defonce compiler-env nil)
+(defonce repl-env nil)
 (defonce env {:context :expr :locals {}})
+(defonce eval-queue (SynchronousQueue. true))
+(defonce evaled-queue (SynchronousQueue. true))
 
 (defn f->src [f]
   (cond (util/url? f) f
@@ -104,7 +113,8 @@
   cljs.repl/IJavaScriptEnv
   (-setup [this opts] setup-ret)
   (-evaluate [this _ _ js]
-    (cljs.repl/-evaluate wrapped nil nil js))
+    (.put eval-queue js)
+    (.take evaled-queue))
   (-load [this provides url]
     (cljs.repl/-load wrapped provides url))
   (-tear-down [this]
@@ -119,26 +129,43 @@
   (-get-error [this e env opts]
     (cljs.repl/-get-error wrapped e env opts)))
 
-(defn override-setup [benv setup-ret]
+(defn custom-benv [benv setup-ret]
   (merge (BrowserEnv. benv setup-ret) benv))
 
+(defn setup-benv [repl-env]
+  (let [setup-ret (cljs.repl.browser/setup repl-env nil)]
+    (future (binding [cljs.repl.browser/browser-state
+                      (:browser-state repl-env)
+                      cljs.repl.browser/ordering (:ordering repl-env)
+                      cljs.repl.browser/es (:es repl-env)
+                      cljs.repl.server/state (:server-state repl-env)]
+              (loop []
+                (->> (.take eval-queue)
+                     cljs.repl.browser/browser-eval
+                     (.put evaled-queue))
+                (recur))))
+    setup-ret))
+
 (defn init-browser-env [comp-opts repl-opts]
-  (reset! compiler-env (-> comp-opts
-                           closure/add-implicit-options
-                           cljs-env/default-compiler-env))
+  (alter-var-root #'compiler-env (-> comp-opts
+                                   closure/add-implicit-options
+                                   cljs-env/default-compiler-env
+                                   constantly))
   (let [repl-env* (apply cljs.repl.browser/repl-env
                          (apply concat repl-opts))]
-    (cljs-env/with-compiler-env @compiler-env
+    (cljs-env/with-compiler-env compiler-env
       (comp/with-core-cljs nil
         (fn []
-          (let [setup-ret (cljs.repl.browser/setup repl-env* nil)]
-            (reset! repl-env (override-setup repl-env* setup-ret)))))
+          (let [setup-ret (setup-benv repl-env*)]
+            (alter-var-root
+             #'repl-env
+             (constantly (custom-benv repl-env* setup-ret))))))
       ;; Compile ewen.replique.cljs-env.browser, clojure.browser.repl,
       ;; output a main file and call clojure.browser.repl.connect.
-      (let [port (-> @(:server-state @repl-env)
+      (let [port (-> @(:server-state repl-env)
                      :socket
                      (.getLocalPort))
-            host (-> @(:server-state @repl-env)
+            host (-> @(:server-state repl-env)
                      :socket
                      (.getInetAddress) (.getHostAddress)
                      server/normalize-ip-address)
@@ -146,11 +173,11 @@
             repl-src "clojure/browser/repl.cljs"
             benv-src "ewen/replique/cljs_env/browser.cljs"
             repl-compiled (repl-compile-cljs
-                           @repl-env repl-src comp-opts)
+                           repl-env repl-src comp-opts)
             benv-compiled (repl-compile-cljs
-                           @repl-env benv-src comp-opts)]
-        (repl-cljs-on-disk repl-compiled @repl-env comp-opts)
-        (repl-cljs-on-disk benv-compiled @repl-env comp-opts)
+                           repl-env benv-src comp-opts)]
+        (repl-cljs-on-disk repl-compiled repl-env comp-opts)
+        (repl-cljs-on-disk benv-compiled repl-env comp-opts)
         (->> (refresh-cljs-deps comp-opts)
              (closure/output-deps-file
               (assoc comp-opts :output-to
@@ -215,8 +242,8 @@
                    :accept 'ewen.replique.server/repl
                    :server-daemon false
                    :args [type {:comp-opts comp-opts
-                                :repl-env @repl-env
-                                :compiler-env @compiler-env}]})
+                                :repl-env repl-env
+                                :compiler-env compiler-env}]})
     (doto (file ".replique-port")
       (spit (str {:tooling-repl (-> @#'clojure.core.server/servers
                                     (get :replique-tooling-repl)
@@ -226,7 +253,7 @@
                             (get :replique-repl)
                             :socket
                             (.getLocalPort))
-                  :cljs-env (-> @(:server-state @repl-env)
+                  :cljs-env (-> @(:server-state repl-env)
                                 :socket
                                 (.getLocalPort))}))
       (.deleteOnExit))
@@ -235,10 +262,10 @@
 
 (defmethod server/tooling-msg-handle :repl-infos [msg]
   (assoc (server/repl-infos) :cljs-env
-         {:host (-> @(:server-state @repl-env)
+         {:host (-> @(:server-state repl-env)
                     :socket
                     (.getLocalPort))
-          :port (-> @(:server-state @repl-env)
+          :port (-> @(:server-state repl-env)
                     :socket
                     (.getInetAddress) (.getHostAddress)
                     server/normalize-ip-address)}))
