@@ -8,7 +8,7 @@
   (start-server {:port port :name :replique-tooling-repl
                  :accept 'ewen.replique.server/tooling-repl
                  :server-daemon false})
-  (start-server {:port 0 :name :replique-repl
+  (start-server {:port 0 :name :replique-clj-repl
                  :accept 'ewen.replique.server/repl
                  :server-daemon false
                  :args [type nil]})
@@ -17,12 +17,15 @@
                                   (get :replique-tooling-repl)
                                   :socket
                                   (.getLocalPort))
-                :repl (-> @#'clojure.core.server/servers
-                          (get :replique-repl)
-                          :socket
-                          (.getLocalPort))}))
+                :clj-repl (-> @#'clojure.core.server/servers
+                              (get :replique-clj-repl)
+                              :socket
+                              (.getLocalPort))}))
     (.deleteOnExit))
   (println "REPL started"))
 
 (defmethod server/tooling-msg-handle :repl-infos [msg]
   (server/repl-infos))
+
+(defmethod server/tooling-msg-handle :shutdown [msg]
+  (server/shutdown))

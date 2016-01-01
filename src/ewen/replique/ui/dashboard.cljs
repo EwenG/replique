@@ -21,6 +21,7 @@
 (def spawn (aget (node/require "child_process") "spawn"))
 (def tree-kill (.require remote "tree-kill"))
 (def fs (node/require "fs"))
+(def net (node/require "net"))
 
 (defhtml new-repl []
   [:a.dashboard-item.new-repl {:href "#"} "New REPL"])
@@ -184,7 +185,8 @@
                       2000)
                      (if-let [repl-desc (read-port-desc directory)]
                        (swap! core/state core/update-repls index assoc
-                              :cljs-env-port (:cljs-env repl-desc))
+                              :cljs-env-port (:cljs-env repl-desc)
+                              :tooling-port (:tooling-repl repl-desc))
                        (notif/single-notif
                         {:type :err
                          :msg "Error while starting the REPL"})))
@@ -197,19 +199,25 @@
          (fn [code signal]
            ;; When killed with the stop button, the process returns
            ;; code 143 or signal SIGTERM
-           (when (and (not= 143 code) (not= "SIGTERM" signal))
-             (.log js/console "Error while starting the REPL. Code " code)
+           (when (or (not= 0 code) signal)
+             (.log js/console
+                   "Error while starting the REPL. Code " code
+                   ". Signal " signal)
              (notif/single-notif
               {:type :err
                :msg "Error while starting the REPL"}))
            (swap! core/state core/update-repls index dissoc
-                  :proc :cljs-env-port :status)))
+                  :proc :cljs-env-port :tooling-port :status)))
     (swap! core/state core/update-repls index assoc
            :proc proc :status "REPL starting ...")))
 
 (defn stop-repl [overview {:keys [repls] :as state} index]
-  (let [{:keys [proc directory]} (nth repls index)]
-    (tree-kill (aget proc "pid"))
+  (let [{:keys [tooling-port directory]} (nth repls index)]
+    (let [client (.connect net #js {:port tooling-port})]
+      (.on client "connect"
+           (fn []
+             (.write client (format "(ewen.replique.server/tooling-msg-handle %s)\n" (str {:type :shutdown})))
+             (.end client))))
     (try
       (.unlink fs (str directory "/.replique-port"))
       (catch js/Error e nil))))

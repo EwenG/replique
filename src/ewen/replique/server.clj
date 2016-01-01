@@ -1,5 +1,6 @@
 (ns ewen.replique.server
   (:require [clojure.main]
+            [clojure.core.server]
             [clojure.java.io :refer [file]]))
 
 (def directory nil)
@@ -9,17 +10,20 @@
   (if (= "0.0.0.0" address) "127.0.0.1" address))
 
 (defn repl-infos []
-  (let [{:keys [replique-tooling-repl replique-repl]}
+  (let [{:keys [replique-tooling-repl replique-clj-repl]}
         @#'clojure.core.server/servers]
     {:directory directory
      :replique-tooling-repl
      {:host (-> (:socket replique-tooling-repl)
                 (.getInetAddress) (.getHostAddress) normalize-ip-address)
       :port (-> (:socket replique-tooling-repl) (.getLocalPort))}
-     :replique-repl
+     :replique-clj-repl
      {:host (-> (:socket replique-tooling-repl)
                 (.getInetAddress) (.getHostAddress) normalize-ip-address)
-      :port (-> (:socket replique-repl) (.getLocalPort))}}))
+      :port (-> (:socket replique-clj-repl) (.getLocalPort))}}))
+
+(defn shutdown []
+  (clojure.core.server/stop-servers))
 
 (defmulti repl (fn [type opts] type))
 
