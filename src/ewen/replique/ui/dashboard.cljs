@@ -189,7 +189,7 @@
                               :tooling-port (:tooling-repl repl-desc))
                        (notif/single-notif
                         {:type :err
-                         :msg "Error while starting the REPL"})))
+                         :msg "REPL error"})))
                    :else (swap! core/state core/update-repls index assoc
                                 :proc proc :status msg)))))
     (.on (aget proc "stderr") "data"
@@ -201,8 +201,7 @@
            ;; code 143 or signal SIGTERM
            (when (or (not= 0 code) signal)
              (.log js/console
-                   "Error while starting the REPL. Code " code
-                   ". Signal " signal)
+                   "REPL error. Code " code ". Signal " signal)
              (notif/single-notif
               {:type :err
                :msg "Error while starting the REPL"}))
@@ -212,12 +211,15 @@
            :proc proc :status "REPL starting ...")))
 
 (defn stop-repl [overview {:keys [repls] :as state} index]
-  (let [{:keys [tooling-port directory]} (nth repls index)]
+  (let [{:keys [proc tooling-port directory]} (nth repls index)]
     (let [client (.connect net #js {:port tooling-port})]
       (.on client "connect"
            (fn []
              (.write client (format "(ewen.replique.server/tooling-msg-handle %s)\n" (str {:type :shutdown})))
-             (.end client))))
+             (.end client)))
+      (.on client "error"
+           (fn [err]
+             (tree-kill (aget proc "pid")))))
     (try
       (.unlink fs (str directory "/.replique-port"))
       (catch js/Error e nil))))
