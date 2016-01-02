@@ -223,7 +223,7 @@
          (let [val (-> (.querySelector
                         js/document ".field.browser-env-port")
                        (aget "value"))]
-           [:browser-env-port (if (= "" val) nil val)])))
+           [:browser-env-port (if (= "" val) nil (js/parseInt val))])))
 
 (swap! repl-field-readers conj
        (fn []
@@ -237,7 +237,7 @@
          (let [val (-> (.querySelector
                         js/document ".field.webapp-env-port")
                        (aget "value"))]
-           [:webapp-env-port (if (= "" val) nil val)])))
+           [:webapp-env-port (if (= "" val) nil (js/parseInt val))])))
 
 (swap! repl-field-readers conj
        (fn []
