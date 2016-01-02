@@ -244,7 +244,8 @@
            comp-opts
            {:compiler-env compiler-env
             :init init-fn})
-          (apply concat)))))
+          (apply concat)))
+    (swap! cljs-outs disj *out*)))
 
 (defmethod server/repl-dispatch [:cljs :browser]
   [{:keys [port type cljs-env] :as opts}]
