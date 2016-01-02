@@ -26,6 +26,7 @@
 (defonce env {:context :expr :locals {}})
 (defonce eval-queue (SynchronousQueue. true))
 (defonce evaled-queue (SynchronousQueue. true))
+(defonce cljs-outs (atom #{}))
 
 (defn f->src [f]
   (cond (util/url? f) f
@@ -108,6 +109,17 @@
                  :server-static true
                  :static-dir ["." output-dir]
                  :src []}}))
+
+(defmethod cljs.repl.browser/handle-post :print
+  [{:keys [content order]} conn _ ]
+  (cljs.repl.browser/constrain-order
+   order
+   (fn []
+     (doseq [out @cljs-outs]
+       (binding [*out* out]
+         (print (read-string content))
+         (.flush *out*)))))
+  (cljs.repl.server/send-and-close conn 200 "ignore__"))
 
 (defrecord BrowserEnv [wrapped setup-ret]
   cljs.repl/IJavaScriptEnv
@@ -220,9 +232,10 @@
                    "<cljs repl>"
                    (with-meta
                      `(~'ns ~'cljs.user
-                        (:require ~@repl-requires))
+                       (:require ~@repl-requires))
                      {:line 1 :column 1})
                    identity comp-opts))]
+    (swap! cljs-outs conj *out*)
     (when-not (:connection @(:server-state repl-env))
       (println "Waiting for browser to connect ..."))
     (apply
