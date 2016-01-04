@@ -1,6 +1,6 @@
 (ns ewen.replique.server-cljs
   (:require [ewen.replique.server :as server]
-            [clojure.core.server :refer [start-server]]
+            [clojure.core.server :refer [start-server *session*]]
             [clojure.java.io :as io :refer [file]]
             [cljs.repl.browser]
             [cljs.closure :as closure]
@@ -115,10 +115,11 @@
   (cljs.repl.browser/constrain-order
    order
    (fn []
-     (doseq [out @cljs-outs]
+     (doseq [[out out-lock] @cljs-outs]
        (binding [*out* out]
-         (print (read-string content))
-         (.flush *out*)))))
+         (locking out-lock
+           (print (read-string content))
+           (.flush *out*))))))
   (cljs.repl.server/send-and-close conn 200 "ignore__"))
 
 (defrecord BrowserEnv [wrapped setup-ret]
@@ -217,6 +218,18 @@
     </body>
 </html>")))
 
+(def special-fns
+  {'ewen.replique.server-cljs/*session*
+   (fn [repl-env env form opts]
+     (prn clojure.core.server/*session*))
+   'ewen.replique.server-cljs/set-prompt
+   (fn [repl-env env form opts]
+     (set! server/*prompt* cljs.repl/repl-prompt))
+   'ewen.replique.server-cljs/server-connection?
+   (fn [repl-env env form opts]
+     (prn (if (:connection @(:server-state repl-env))
+            true false)))})
+
 (defmethod server/repl :cljs
   [type {:keys [comp-opts repl-env compiler-env]}]
   (let [repl-requires '[[cljs.repl
@@ -226,7 +239,8 @@
                         [cljs.pprint :refer [pprint]
                          :refer-macros [pp]]]
         init-fn (fn []
-                  (cljs.repl/evaluate-form
+                  nil
+                  #_(cljs.repl/evaluate-form
                    repl-env
                    env
                    "<cljs repl>"
@@ -234,18 +248,32 @@
                      `(~'ns ~'cljs.user
                        (:require ~@repl-requires))
                      {:line 1 :column 1})
-                   identity comp-opts))]
-    (swap! cljs-outs conj *out*)
-    (when-not (:connection @(:server-state repl-env))
-      (println "Waiting for browser to connect ..."))
-    (apply
-     (partial cljs.repl/repl repl-env)
-     (->> (merge
-           comp-opts
-           {:compiler-env compiler-env
-            :init init-fn})
-          (apply concat)))
-    (swap! cljs-outs disj *out*)))
+                   identity comp-opts))
+        out-lock (Object.)]
+    (swap! cljs-outs conj [*out* out-lock])
+    #_(when-not (:connection @(:server-state repl-env))
+        (println "Waiting for browser to connect ..."))
+    (binding [server/*prompt* #()]
+      (apply
+       (partial cljs.repl/repl repl-env)
+       (->> (merge
+             comp-opts
+             {:compiler-env compiler-env
+              :init init-fn
+              :prompt (fn [] (server/*prompt*))
+              :special-fns special-fns
+              :print (fn [result]
+                       (binding [*out* server/tooling-out]
+                         (locking server/tooling-out-lock
+                           (prn {:type :eval
+                                 :repl-type :clj
+                                 :session *session*
+                                 :result (pr-str result)})))
+                       (locking out-lock
+                         (println result)))
+              :quit-prompt #()})
+            (apply concat))))
+    (swap! cljs-outs disj [*out* out-lock])))
 
 (defmethod server/repl-dispatch [:cljs :browser]
   [{:keys [port type cljs-env] :as opts}]
