@@ -31,17 +31,17 @@
               #_(locking tooling-out-lock
                   (prn result))))))
 
-(defn repl-clj []
+(defn shutdown []
+  (clojure.core.server/stop-servers))
+
+(defmulti repl (fn [type] type))
+
+(defmethod repl :clj [type]
   (println "Clojure" (clojure-version))
   (clojure.main/repl
    :init clojure.core.server/repl-init))
 
-(defn shutdown []
-  (clojure.core.server/stop-servers))
-
-(defmulti repl (fn [type opts] type))
-
-(defmethod repl :clj
+#_(defmethod repl :clj
   [type _]
   #_(println "Clojure" (clojure-version))
   (binding [*prompt* #()]

@@ -291,7 +291,7 @@
             (apply concat))))
     (swap! cljs-outs disj [*out* out-lock])))
 
-(defn repl-cljs []
+(defmethod server/repl :cljs [type]
   (let [out-lock (Object.)]
     (swap! cljs-outs conj [*out* out-lock])
     (when-not (:connection @(:server-state repl-env))
