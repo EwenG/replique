@@ -14,14 +14,12 @@
                  :args [type nil]})
   (doto (file ".replique-port")
     (spit (str {:repl (-> @#'clojure.core.server/servers
-                          (get :replique-tooling-repl)
-                          :socket
-                          (.getLocalPort))}))
+                          (get :replique) :socket (.getLocalPort))}))
     (.deleteOnExit))
   (println "REPL started"))
 
 (defmethod server/tooling-msg-handle :repl-infos [msg]
-  (assoc (server/repl-infos) :repl-type :cljs))
+  (assoc (server/repl-infos) :repl-type :clj))
 
 (defmethod server/tooling-msg-handle :shutdown [msg]
   (server/shutdown))

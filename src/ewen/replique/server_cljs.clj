@@ -328,12 +328,9 @@
                                 :compiler-env compiler-env}]})
     (doto (file ".replique-port")
       (spit (str {:repl (-> @#'clojure.core.server/servers
-                            (get :replique)
-                            :socket
-                            (.getLocalPort))
+                            (get :replique) :socket (.getLocalPort))
                   :cljs-env (-> @(:server-state repl-env)
-                                :socket
-                                (.getLocalPort))}))
+                                :socket (.getLocalPort))}))
       (.deleteOnExit))
     (println "REPL started")))
 
