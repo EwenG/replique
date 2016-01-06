@@ -186,7 +186,7 @@
                      (if-let [repl-desc (read-port-desc directory)]
                        (swap! core/state core/update-repls index assoc
                               :cljs-env-port (:cljs-env repl-desc)
-                              :tooling-port (:tooling-repl repl-desc))
+                              :repl-port (:repl repl-desc))
                        (notif/single-notif
                         {:type :err
                          :msg "REPL error"})))
@@ -206,13 +206,13 @@
               {:type :err
                :msg "Error while starting the REPL"}))
            (swap! core/state core/update-repls index dissoc
-                  :proc :cljs-env-port :tooling-port :status)))
+                  :proc :cljs-env-port :repl-port :status)))
     (swap! core/state core/update-repls index assoc
            :proc proc :status "REPL starting ...")))
 
 (defn stop-repl [overview {:keys [repls] :as state} index]
-  (let [{:keys [proc tooling-port directory]} (nth repls index)]
-    (let [client (.connect net #js {:port tooling-port})]
+  (let [{:keys [proc repl-port directory]} (nth repls index)]
+    (let [client (.connect net #js {:port repl-port})]
       (.on client "connect"
            (fn []
              (.write client (format "(ewen.replique.server/tooling-msg-handle %s)\n" (str {:type :shutdown})))

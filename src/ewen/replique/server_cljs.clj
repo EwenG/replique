@@ -122,6 +122,17 @@
            (.flush *out*))))))
   (cljs.repl.server/send-and-close conn 200 "ignore__"))
 
+;; Bypass the cljs load-javascript function in order to use the
+;; race condition free "browser-eval" function
+(defn load-javascript
+  "Accepts a REPL environment, a list of namespaces, and a URL for a
+  JavaScript file which contains the implementation for the list of
+  namespaces. Will load the JavaScript file into the REPL environment
+  if any of the namespaces have not already been loaded from the
+  ClojureScript REPL."
+  [repl-env provides url]
+  (cljs.repl/-evaluate repl-env nil nil (slurp url)))
+
 (defrecord BrowserEnv [wrapped setup-ret]
   cljs.repl/IJavaScriptEnv
   (-setup [this opts] setup-ret)
@@ -129,7 +140,7 @@
     (.put eval-queue js)
     (.take evaled-queue))
   (-load [this provides url]
-    (cljs.repl/-load wrapped provides url))
+    (load-javascript this provides url))
   (-tear-down [this] nil)
   cljs.repl/IReplEnvOptions
   (-repl-options [this]
@@ -275,62 +286,63 @@
             (apply concat))))
     (swap! cljs-outs disj [*out* out-lock])))
 
+(defn repl-cljs []
+  (let [out-lock (Object.)]
+    (swap! cljs-outs conj [*out* out-lock])
+    (when-not (:connection @(:server-state repl-env))
+      (println "Waiting for browser to connect ..."))
+    (apply
+     (partial cljs.repl/repl repl-env)
+     (->> (merge
+           (:options compiler-env)
+           {:compiler-env compiler-env
+            :print (fn [result]
+                     (locking out-lock
+                       (println result)))})
+          (apply concat)))
+    (swap! cljs-outs disj [*out* out-lock])))
+
 (defmethod server/repl-dispatch [:cljs :browser]
   [{:keys [port type cljs-env] :as opts}]
   (init-class-loader)
   (let [{:keys [comp-opts repl-opts]} (init-opts opts)]
     (init-browser-env comp-opts repl-opts)
     (output-index-html comp-opts)
-    (start-server {:port port :name :replique-tooling-repl
-                   :accept 'ewen.replique.server/tooling-repl
+    (start-server {:port port :name :replique
+                   :accept 'clojure.core.server/repl
                    :server-daemon false})
-    (start-server {:port 0 :name :replique-clj-repl
+    #_(start-server {:port 0 :name :replique-clj-repl
                    :accept 'ewen.replique.server/repl
                    :server-daemon false
                    :args [:clj nil]})
-    (start-server {:port 0 :name :replique-cljs-repl
+    #_(start-server {:port 0 :name :replique-cljs-repl
                    :accept 'ewen.replique.server/repl
                    :server-daemon false
                    :args [type {:comp-opts comp-opts
                                 :repl-env repl-env
                                 :compiler-env compiler-env}]})
     (doto (file ".replique-port")
-      (spit (str {:tooling-repl (-> @#'clojure.core.server/servers
-                                    (get :replique-tooling-repl)
-                                    :socket
-                                    (.getLocalPort))
-                  :clj-repl (-> @#'clojure.core.server/servers
-                                (get :replique-clj-repl)
-                                :socket
-                                (.getLocalPort))
-                  :cljs-repl (-> @#'clojure.core.server/servers
-                                 (get :replique-cljs-repl)
-                                 :socket
-                                 (.getLocalPort))
+      (spit (str {:repl (-> @#'clojure.core.server/servers
+                            (get :replique)
+                            :socket
+                            (.getLocalPort))
                   :cljs-env (-> @(:server-state repl-env)
                                 :socket
                                 (.getLocalPort))}))
       (.deleteOnExit))
     (println "REPL started")))
 
-
 (defmethod server/tooling-msg-handle :repl-infos [msg]
-  (let [{:keys [replique-tooling-repl replique-cljs-repl]}
-        @#'clojure.core.server/servers]
-    (assoc (server/repl-infos)
-           :replique-cljs-repl
-           {:host (-> (:socket replique-cljs-repl)
-                      (.getInetAddress) (.getHostAddress)
-                      server/normalize-ip-address)
-            :port (-> (:socket replique-cljs-repl) (.getLocalPort))}
-           :cljs-env
-           {:host (-> @(:server-state repl-env)
-                      :socket
-                      (.getLocalPort))
-            :port (-> @(:server-state repl-env)
-                      :socket
-                      (.getInetAddress) (.getHostAddress)
-                      server/normalize-ip-address)})))
+  (assoc (server/repl-infos)
+         :repl-type :cljs
+         :cljs-env
+         {:host (-> @(:server-state repl-env)
+                    :socket
+                    (.getLocalPort))
+          :port (-> @(:server-state repl-env)
+                    :socket
+                    (.getInetAddress) (.getHostAddress)
+                    server/normalize-ip-address)}))
 
 (defmethod server/tooling-msg-handle :shutdown [msg]
   (binding [cljs.repl.server/state (:server-state repl-env)]

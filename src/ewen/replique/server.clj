@@ -13,28 +13,28 @@
   (if (= "0.0.0.0" address) "127.0.0.1" address))
 
 (defn repl-infos []
-  (let [{:keys [replique-tooling-repl replique-clj-repl]}
-        @#'clojure.core.server/servers]
+  (let [server-infos (:replique @#'clojure.core.server/servers)]
     {:directory directory
-     :replique-tooling-repl
-     {:host (-> (:socket replique-tooling-repl)
+     :replique
+     {:host (-> (:socket server-infos)
                 (.getInetAddress) (.getHostAddress) normalize-ip-address)
-      :port (-> (:socket replique-tooling-repl) (.getLocalPort))}
-     :replique-clj-repl
-     {:host (-> (:socket replique-tooling-repl)
-                (.getInetAddress) (.getHostAddress) normalize-ip-address)
-      :port (-> (:socket replique-clj-repl) (.getLocalPort))}}))
+      :port (-> (:socket server-infos) (.getLocalPort))}}))
 
 (defn tooling-repl []
-  (alter-var-root #'tooling-out (constantly *out*))
+  #_(alter-var-root #'tooling-out (constantly *out*))
   (let [init-fn (fn [] (in-ns 'ewen.replique.server))]
     (clojure.main/repl
      :init init-fn
-     :read clojure.core.server/repl-read
      :prompt #()
      :print (fn [result]
-              (locking tooling-out-lock
-                (prn result))))))
+              (prn result)
+              #_(locking tooling-out-lock
+                  (prn result))))))
+
+(defn repl-clj []
+  (println "Clojure" (clojure-version))
+  (clojure.main/repl
+   :init clojure.core.server/repl-init))
 
 (defn shutdown []
   (clojure.core.server/stop-servers))
