@@ -13,7 +13,8 @@
             [cljs.js-deps :as deps]
             [ewen.replique.cljs])
   (:import [java.io File]
-           [java.util.concurrent SynchronousQueue]))
+           [java.util.concurrent SynchronousQueue]
+           [java.net SocketException]))
 
 (comment
   (let [res1 (future (cljs.repl/-evaluate ewen.replique.server-cljs/repl-env nil nil "3"))
@@ -165,9 +166,13 @@
                        cljs.repl.browser/es (:es repl-env)
                        cljs.repl.server/state (:server-state repl-env)]
                (loop []
-                 (->> (.take eval-queue)
-                      cljs.repl.browser/browser-eval
-                      (.put evaled-queue))
+                 (let [js (.take eval-queue)
+                       evaled (try
+                                (cljs.repl.browser/browser-eval js)
+                                (catch SocketException e
+                                  {:status :error
+                                   :value "Connection broken"}))]
+                      (.put evaled-queue evaled))
                  (recur))))
            "repl-env-eval")
       (.setDaemon true)
