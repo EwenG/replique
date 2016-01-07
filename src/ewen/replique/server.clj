@@ -6,6 +6,8 @@
 (def directory nil)
 (defonce tooling-out nil)
 (defonce tooling-out-lock (Object.))
+(defonce tooling-err nil)
+(defonce tooling-err-lock (Object.))
 
 (defn normalize-ip-address [address]
   (if (= "0.0.0.0" address) "127.0.0.1" address))
@@ -27,7 +29,10 @@
               (prn result)))))
 
 (defn shared-tooling-repl []
-  (alter-var-root #'tooling-out (constantly *out*))
+  (locking tooling-out-lock
+    (alter-var-root #'tooling-out (constantly *out*)))
+  (locking tooling-err-lock
+    (alter-var-root #'tooling-err (constantly *err*)))
   (let [init-fn (fn [] (in-ns 'ewen.replique.server))]
     (clojure.main/repl
      :init init-fn
@@ -45,30 +50,25 @@
   (println "Clojure" (clojure-version))
   (clojure.main/repl
    :init clojure.core.server/repl-init
+   :caught (fn [e]
+             (binding [*out* tooling-err]
+               (locking tooling-err-lock
+                 (prn {:type :eval
+                       :error true
+                       :repl-type :clj
+                       :session *session*
+                       :ns (str *ns*)
+                       :value (.getMessage e)})))
+             (clojure.main/repl-caught e))
    :print (fn [result]
             (binding [*out* tooling-out]
               (locking tooling-out-lock
                 (prn {:type :eval
                       :repl-type :clj
                       :session *session*
+                      :ns (str *ns*)
                       :result (pr-str result)})))
             (prn result))))
-
-#_(defmethod repl :clj
-  [type _]
-  #_(println "Clojure" (clojure-version))
-  (binding [*prompt* #()]
-    (clojure.main/repl :init clojure.core.server/repl-init
-                       :read clojure.core.server/repl-read
-                       :prompt (fn [] (*prompt*))
-                       :print (fn [result]
-                                (binding [*out* tooling-out]
-                                  (locking tooling-out-lock
-                                    (prn {:type :eval
-                                          :repl-type :clj
-                                          :session *session*
-                                          :result (pr-str result)})))
-                                (prn result)))))
 
 (defmulti repl-dispatch (fn [{:keys [type cljs-env]}]
                           [type cljs-env]))

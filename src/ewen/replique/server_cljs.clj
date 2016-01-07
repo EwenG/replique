@@ -15,7 +15,8 @@
             [ewen.replique.cljs])
   (:import [java.io File]
            [java.util.concurrent SynchronousQueue]
-           [java.net SocketException]))
+           [java.net SocketException]
+           [clojure.lang IExceptionInfo]))
 
 (comment
   (let [res1 (future (cljs.repl/-evaluate ewen.replique.server-cljs/repl-env nil nil "3"))
@@ -259,6 +260,22 @@
              '(do :cljs/quit)
              input))))))
 
+(defn repl-caught [e repl-env opts]
+  (binding [*out* server/tooling-err]
+    (locking server/tooling-err-lock
+      (-> (assoc {:type :eval
+                  :error true
+                  :repl-type :cljs
+                  :session *session*
+                  :ns (str ana/*cljs-ns*)}
+                 :value (if (and (instance? IExceptionInfo e)
+                                 (#{:js-eval-error :js-eval-exception}
+                                  (:type (ex-data e))))
+                          (:value (:error (ex-data e)))
+                          (.getMessage e)))
+          prn)))
+  (cljs.repl/repl-caught e repl-env opts))
+
 (defmethod server/repl :cljs [type]
   (let [out-lock (Object.)]
     (swap! cljs-outs conj [*out* out-lock])
@@ -271,13 +288,15 @@
            {:compiler-env compiler-env
             :read repl-read
             :quit-prompt #()
+            :caught repl-caught
             :print (fn [result]
                      (binding [*out* server/tooling-out]
                        (locking server/tooling-out-lock
                          (prn {:type :eval
                                :repl-type :cljs
                                :session *session*
-                               :result (pr-str result)})))
+                               :ns (str ana/*cljs-ns*)
+                               :result result})))
                      (locking out-lock
                        (println result)))})
           (apply concat)))
