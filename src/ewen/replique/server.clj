@@ -4,8 +4,6 @@
             [clojure.java.io :refer [file]]))
 
 (def directory nil)
-(def ^:const init-requires '[])
-(defonce ^:dynamic *prompt* nil)
 (defonce tooling-out nil)
 (defonce tooling-out-lock (Object.))
 
@@ -21,15 +19,22 @@
       :port (-> (:socket server-infos) (.getLocalPort))}}))
 
 (defn tooling-repl []
-  #_(alter-var-root #'tooling-out (constantly *out*))
   (let [init-fn (fn [] (in-ns 'ewen.replique.server))]
     (clojure.main/repl
      :init init-fn
      :prompt #()
      :print (fn [result]
-              (prn result)
-              #_(locking tooling-out-lock
-                  (prn result))))))
+              (prn result)))))
+
+(defn shared-tooling-repl []
+  (alter-var-root #'tooling-out (constantly *out*))
+  (let [init-fn (fn [] (in-ns 'ewen.replique.server))]
+    (clojure.main/repl
+     :init init-fn
+     :prompt #()
+     :print (fn [result]
+              (locking tooling-out-lock
+                (prn result))))))
 
 (defn shutdown []
   (clojure.core.server/stop-servers))
@@ -39,7 +44,15 @@
 (defmethod repl :clj [type]
   (println "Clojure" (clojure-version))
   (clojure.main/repl
-   :init clojure.core.server/repl-init))
+   :init clojure.core.server/repl-init
+   :print (fn [result]
+            (binding [*out* tooling-out]
+              (locking tooling-out-lock
+                (prn {:type :eval
+                      :repl-type :clj
+                      :session *session*
+                      :result (pr-str result)})))
+            (prn result))))
 
 #_(defmethod repl :clj
   [type _]

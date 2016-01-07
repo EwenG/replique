@@ -8,10 +8,6 @@
   (start-server {:port port :name :replique
                  :accept 'clojure.core.server/repl
                  :server-daemon false})
-  #_(start-server {:port 0 :name :replique-clj-repl
-                 :accept 'ewen.replique.server/repl
-                 :server-daemon false
-                 :args [type nil]})
   (doto (file ".replique-port")
     (spit (str {:repl (-> @#'clojure.core.server/servers
                           (get :replique) :socket (.getLocalPort))}))

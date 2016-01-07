@@ -11,6 +11,7 @@
             [cljs.repl]
             [clojure.string :as string]
             [cljs.js-deps :as deps]
+            [clojure.tools.reader :as reader]
             [ewen.replique.cljs])
   (:import [java.io File]
            [java.util.concurrent SynchronousQueue]
@@ -235,61 +236,28 @@
 </html>")))
 
 (def special-fns
-  {'ewen.replique.server-cljs/*session*
-   (fn [repl-env env form opts]
-     (prn clojure.core.server/*session*))
-   'ewen.replique.server-cljs/set-prompt
-   (fn [repl-env env form opts]
-     (set! server/*prompt* cljs.repl/repl-prompt))
-   'ewen.replique.server-cljs/server-connection?
+  {'ewen.replique.server-cljs/server-connection?
    (fn [repl-env env form opts]
      (prn (if (:connection @(:server-state repl-env))
             true false)))})
 
-(defmethod server/repl :cljs
-  [type {:keys [comp-opts repl-env compiler-env]}]
-  (let [repl-requires '[[cljs.repl
-                         :refer-macros [source doc
-                                        find-doc apropos
-                                        dir pst]]
-                        [cljs.pprint :refer [pprint]
-                         :refer-macros [pp]]]
-        init-fn (fn []
-                  nil
-                  #_(cljs.repl/evaluate-form
-                   repl-env
-                   env
-                   "<cljs repl>"
-                   (with-meta
-                     `(~'ns ~'cljs.user
-                       (:require ~@repl-requires))
-                     {:line 1 :column 1})
-                   identity comp-opts))
-        out-lock (Object.)]
-    (swap! cljs-outs conj [*out* out-lock])
-    #_(when-not (:connection @(:server-state repl-env))
-        (println "Waiting for browser to connect ..."))
-    (binding [server/*prompt* #()]
-      (apply
-       (partial cljs.repl/repl repl-env)
-       (->> (merge
-             comp-opts
-             {:compiler-env compiler-env
-              :init init-fn
-              :prompt (fn [] (server/*prompt*))
-              :special-fns special-fns
-              :print (fn [result]
-                       (binding [*out* server/tooling-out]
-                         (locking server/tooling-out-lock
-                           (prn {:type :eval
-                                 :repl-type :clj
-                                 :session *session*
-                                 :result (pr-str result)})))
-                       (locking out-lock
-                         (println result)))
-              :quit-prompt #()})
-            (apply concat))))
-    (swap! cljs-outs disj [*out* out-lock])))
+;; Customize repl-read to avoid quitting the REPL on :clj/quit
+;; Unfortunatly, this is cannot be handled by the cljs :read hook
+(defn repl-read
+  ([request-prompt request-exit]
+   (repl-read request-prompt request-exit cljs.repl/*repl-opts*))
+  ([request-prompt request-exit opts]
+   (binding [*in* (if (true? (:source-map-inline opts))
+                    ((:reader opts))
+                    *in*)]
+     (or ({:line-start request-prompt :stream-end request-exit}
+          (cljs.repl/skip-whitespace *in*))
+         (let [input (reader/read
+                      {:read-cond :allow :features #{:cljs}} *in*)]
+           (cljs.repl/skip-if-eol *in*)
+           (if (= :cljs/quit input)
+             '(do :cljs/quit)
+             input))))))
 
 (defmethod server/repl :cljs [type]
   (let [out-lock (Object.)]
@@ -301,7 +269,15 @@
      (->> (merge
            (:options compiler-env)
            {:compiler-env compiler-env
+            :read repl-read
+            :quit-prompt #()
             :print (fn [result]
+                     (binding [*out* server/tooling-out]
+                       (locking server/tooling-out-lock
+                         (prn {:type :eval
+                               :repl-type :cljs
+                               :session *session*
+                               :result (pr-str result)})))
                      (locking out-lock
                        (println result)))})
           (apply concat)))
@@ -316,16 +292,6 @@
     (start-server {:port port :name :replique
                    :accept 'clojure.core.server/repl
                    :server-daemon false})
-    #_(start-server {:port 0 :name :replique-clj-repl
-                   :accept 'ewen.replique.server/repl
-                   :server-daemon false
-                   :args [:clj nil]})
-    #_(start-server {:port 0 :name :replique-cljs-repl
-                   :accept 'ewen.replique.server/repl
-                   :server-daemon false
-                   :args [type {:comp-opts comp-opts
-                                :repl-env repl-env
-                                :compiler-env compiler-env}]})
     (doto (file ".replique-port")
       (spit (str {:repl (-> @#'clojure.core.server/servers
                             (get :replique) :socket (.getLocalPort))
