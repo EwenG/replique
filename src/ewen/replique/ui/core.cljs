@@ -3,7 +3,7 @@
             [ewen.replique.ui.remote :refer [remote]]
             [goog.dom :as dom]))
 
-(def init-state {:repls '()
+(def init-state {:repls {}
                  :view :dashboard
                  :settings {:clj-jar-source "embedded"
                             :cljs-jar-source "embedded"
@@ -33,7 +33,7 @@
              (when (not= (:view o) (:view n))
                (refresh-view n))))
 
-(defn persist-state [{:keys [repls settings]}]
+#_(defn persist-state [{:keys [repls settings]}]
   (loop [index 0
          repls repls]
     (cond
@@ -49,7 +49,7 @@
       :else true))
   (.setItem js/localStorage "settings" (str settings)))
 
-(defn load-state []
+#_(defn load-state []
   (loop [i 0
          repls '()]
     (if-let [repl-str (.getItem js/localStorage
@@ -57,10 +57,3 @@
       (let [repl (reader/read-string repl-str)]
         (recur (inc i) (conj repls repl)))
       (swap! state assoc :repls (reverse repls)))))
-
-(defn update-repls [state index f & args]
-  (assoc state :repls
-         (map-indexed
-          (fn [i repl]
-            (if (= i index) (apply f repl args) repl))
-          (:repls state))))

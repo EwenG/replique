@@ -27,10 +27,10 @@
   [:a.dashboard-item.new-repl {:href "#"} "New REPL"])
 
 (defhtml repl-overview [{:keys [type directory proc cljs-env-port status]}
-                        index]
+                        id]
   [:div.dashboard-item.repl-overview
    {:href "#"
-    :data-index index}
+    :data-repl-id id}
    [:div {:class (if proc "start disabled" "start")}]
    [:div {:class (if proc "stop" "stop disabled")}]
    [:img.delete {:src "resources/images/delete.png"}]
@@ -49,38 +49,39 @@
          [:div.settings-wrapper
           [:img.settings-button {:src "/resources/images/settings.png"}]]
          (new-repl)
-         (for [[repl index] (map vector repls (range (count repls)))]
-           (repl-overview repl index))]))
+         (for [[id repl] repls]
+           (repl-overview repl id))]))
 
 (defn add-new-repl []
-  (swap! core/state update-in [:repls] conj
-         {:directory nil
-          :type :clj :cljs-env :browser
-          :browser-env-random-port true
-          :webapp-env-random-port true
-          :random-port true}))
+  (let [id (.getNextUniqueId utils/id-gen)]
+    (swap! core/state assoc-in [:repls id]
+           {:directory nil
+            :type :clj :cljs-env :browser
+            :browser-env-random-port true
+            :webapp-env-random-port true
+            :random-port true})))
 
 (defn settings-button-clicked []
   (swap! core/state assoc :view :settings))
 
-(defn is-lein-project [{:keys [repls] :as state} index]
-  (let [{:keys [directory]} (nth repls index)]
+(defn is-lein-project [{:keys [repls] :as state} id]
+  (let [{:keys [directory]} (get repls id)]
     (and directory (utils/file-exists (str directory "/project.clj")))))
 
-(defn maybe-start-repl-error [{:keys [repls] :as state} index]
+(defn maybe-start-repl-error [{:keys [repls] :as state} id]
   (let [{:keys [directory type cljs-env browser-env-out webapp-env-out]}
-        (nth repls index)
+        (get repls id)
         clj-jar (settings/get-clj-jar state)
         cljs-jar (settings/get-cljs-jar state)]
     (cond
       (or (= "" directory) (nil? directory))
       {:type :err
        :msg "The REPL directory has not been configured"}
-      (and (is-lein-project state index)
+      (and (is-lein-project state id)
            (not (settings/get-lein-script state)))
       {:type :err
        :msg "Leiningen script has not been configured"}
-      (and (is-lein-project state index)
+      (and (is-lein-project state id)
            (not (utils/file-exists (settings/get-lein-script state))))
       {:type :err
        :msg "Invalid Leiningen script"}
@@ -104,12 +105,12 @@
        :msg "Output file for Clojurescript web application environment has not been configured"}
       :else nil)))
 
-(defn repl-cmd-raw [{:keys [repls] :as state} index]
+(defn repl-cmd-raw [{:keys [repls] :as state} id]
   (let [{:keys [directory type cljs-env port random-port
                 browser-env-port browser-env-random-port
                 webapp-env-port webapp-env-random-port]
          :as repl}
-        (nth repls index)
+        (get repls id)
         cp (if (= :cljs type)
               (str (settings/get-clj-jar state) ":"
                    (settings/get-cljs-jar state) ":"
@@ -128,12 +129,12 @@
                           str)]]
     ["java" cmd-args #js {:cwd directory}]))
 
-(defn repl-cmd-lein [{:keys [repls] :as state} index]
+(defn repl-cmd-lein [{:keys [repls] :as state} id]
   (let [{:keys [directory type cljs-env port random-port
                 browser-env-port browser-env-random-port
                 webapp-env-port webapp-env-random-port]
          :as repl}
-        (nth repls index)
+        (get repls id)
         port (if random-port 0 port)
         browser-env-port (if browser-env-random-port 0 browser-env-port)
         webapp-env-port (if webapp-env-random-port 0 webapp-env-port)
@@ -160,12 +161,12 @@
       (.log js/console e)
       nil)))
 
-(defn start-repl [overview {:keys [repls] :as state} index]
+(defn start-repl [overview {:keys [repls] :as state} id]
   (let [{:keys [directory port] :as repl}
-        (nth repls index)
-        repl-cmd (if (is-lein-project state index)
-                   (repl-cmd-lein state index)
-                   (repl-cmd-raw state index))
+        (get repls id)
+        repl-cmd (if (is-lein-project state id)
+                   (repl-cmd-lein state id)
+                   (repl-cmd-raw state id))
         proc (apply spawn repl-cmd)
         status (.querySelector overview ".repl-status")]
     (.on (aget proc "stdout") "data"
@@ -174,23 +175,23 @@
              (.log js/console msg)
              (cond (= "REPL started\n" msg)
                    (do
-                     (swap! core/state core/update-repls index assoc
+                     (swap! core/state update-in [:repls id] assoc
                             :status msg)
                      (js/setTimeout
-                      #(swap! core/state core/update-repls index
+                      #(swap! core/state update-in [:repls id]
                               (fn [repl]
                                 (if (identical? proc (:proc repl))
                                   (dissoc repl :status)
                                   repl)))
                       2000)
                      (if-let [repl-desc (read-port-desc directory)]
-                       (swap! core/state core/update-repls index assoc
+                       (swap! core/state update-in [:repls id] assoc
                               :cljs-env-port (:cljs-env repl-desc)
                               :repl-port (:repl repl-desc))
                        (notif/single-notif
                         {:type :err
                          :msg "REPL error"})))
-                   :else (swap! core/state core/update-repls index assoc
+                   :else (swap! core/state update-in [:repls id] assoc
                                 :proc proc :status msg)))))
     (.on (aget proc "stderr") "data"
          (fn [err]
@@ -205,13 +206,13 @@
              (notif/single-notif
               {:type :err
                :msg "Error while starting the REPL"}))
-           (swap! core/state core/update-repls index dissoc
+           (swap! core/state update-in [:repls id] dissoc
                   :proc :cljs-env-port :repl-port :status)))
-    (swap! core/state core/update-repls index assoc
+    (swap! core/state update-in [:repls id] assoc
            :proc proc :status "REPL starting ...")))
 
-(defn stop-repl [overview {:keys [repls] :as state} index]
-  (let [{:keys [proc repl-port directory]} (nth repls index)]
+(defn stop-repl [overview {:keys [repls] :as state} id]
+  (let [{:keys [proc repl-port directory]} (get repls id)]
     (let [client (.connect net #js {:port repl-port})]
       (.on client "connect"
            (fn []
@@ -229,30 +230,26 @@
                        (.-classList))]
     (cond (.contains class-list "delete")
           (let [overview (aget e "currentTarget")
-                index (js/parseInt (.getAttribute overview "data-index"))
-                {:keys [proc]} (nth (:repls @core/state) index)]
+                id (.getAttribute overview "data-repl-id")
+                {:keys [proc]} (get (:repls @core/state) id)]
             (when proc (tree-kill (aget proc "pid")))
-            (swap! core/state update-in [:repls]
-                   (partial keep-indexed #(if (= index %1) nil %2))))
+            (swap! core/state update-in [:repls] dissoc id))
           (.contains class-list "edit")
-          (let [index (-> (.getAttribute overview "data-index")
-                          (js/parseInt))]
-            (swap! core/state assoc :repl-index index)
+          (let [id (.getAttribute overview "data-repl-id")]
+            (swap! core/state assoc :repl-id id)
             (swap! core/state assoc :view :edit-repl))
           (and (.contains class-list "start")
                (not (.contains class-list "disabled")))
-          (let [index (-> (.getAttribute overview "data-index")
-                          (js/parseInt))
+          (let [id (.getAttribute overview "data-repl-id")
                 state @core/state]
-            (if-let [err (maybe-start-repl-error state index)]
+            (if-let [err (maybe-start-repl-error state id)]
               (notif/single-notif err)
-              (start-repl overview state index)))
+              (start-repl overview state id)))
           (and (.contains class-list "stop")
                (not (.contains class-list "disabled")))
-          (let [index (-> (.getAttribute overview "data-index")
-                          (js/parseInt))
+          (let [id (.getAttribute overview "data-repl-id")
                 state @core/state]
-            (stop-repl overview state index))
+            (stop-repl overview state id))
           :else nil)))
 
 (swap!
@@ -278,7 +275,7 @@
 (add-watch core/state :repls-watcher
            (fn [r k o n]
              (when (not= (:repls o) (:repls n))
-               (core/persist-state n)
+               #_(core/persist-state n)
                (core/refresh-view n))))
 
 (comment

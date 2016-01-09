@@ -497,4 +497,4 @@
 (add-watch core/state :settings-watcher
            (fn [r k o n]
              (when (not= (:settings o) (:settings n))
-               (core/persist-state n))))
+               #_(core/persist-state n))))

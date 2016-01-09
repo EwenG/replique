@@ -14,16 +14,16 @@
 (def replique-dir (.getGlobal remote "repliqueRootDir"))
 (def dialog (.require remote "dialog"))
 
-(defn current-repl [{:keys [repls repl-index]}]
-  (nth repls repl-index))
+(defn current-repl [{:keys [repls repl-id]}]
+  (get repls repl-id))
 
-(defn cljs-env-tmpl [{:keys [repls repl-index]}]
+(defn cljs-env-tmpl [{:keys [repls] :as state}]
   (let [{:keys [directory type cljs-env
                 browser-env-port browser-env-random-port
                 webapp-env-port webapp-env-random-port
                 browser-env-main webapp-env-main
                 webapp-env-out browser-env-out]}
-        (nth repls repl-index)]
+        (current-repl state)]
     (html [:fieldset.cljs-env
            [:legend "Clojurescript environment"]
            [:label {:for "browser-env"
@@ -136,8 +136,8 @@
              :checked (= cljs-env :replique)
              :disabled (not= :cljs type)}]])))
 
-(defn port-tmpl [{:keys [repls repl-index]}]
-  (let [{:keys [port random-port]} (nth repls repl-index)]
+(defn port-tmpl [{:keys [repls] :as state}]
+  (let [{:keys [port random-port]} (current-repl state)]
     (html [:fieldset.port
            [:legend "REPL port"]
            [:input (merge
@@ -154,9 +154,9 @@
                     (when random-port
                       {:checked true}))]])))
 
-(defn edit-repl [{:keys [dirty repls repl-index] :as state}]
+(defn edit-repl [{:keys [dirty repls] :as state}]
   (let [{:keys [directory type cljs-env port random-port]}
-        (nth repls repl-index)]
+        (current-repl state)]
     (html [:div#edit-repl
            [:a.back-nav {:href "#"}]
            [:form
@@ -288,11 +288,11 @@
            [:random-port random-port])))
 
 (defn save-repl []
-  (let [{:keys [repl-index repls]} @core/state
+  (let [{:keys [repl-id repls]} @core/state
         fields (->> (for [field-reader @repl-field-readers]
                       (field-reader))
                     (into {}))]
-    (swap! core/state core/update-repls repl-index merge fields)))
+    (swap! core/state update-in [:repls repl-id] merge fields)))
 
 (defn valid-port? [port]
   (try (let [port-nb (js/parseInt port)]
@@ -335,12 +335,12 @@
                         (aget "value")
                         keyword)
                     (:cljs-env (current-repl @core/state)))
-         index (:repl-index state)]
-     (dom/replaceNode (->> (core/update-repls
-                            state index assoc
-                            :directory directory
-                            :type type
-                            :cljs-env cljs-env)
+         id (:repl-id state)]
+     (dom/replaceNode (->> (update-in state [:repls id]
+                                      assoc
+                                      :directory directory
+                                      :type type
+                                      :cljs-env cljs-env)
                            cljs-env-tmpl
                            utils/make-node)
                       cljs-env-node))))
@@ -436,7 +436,7 @@
 (defn edit-repl-changed [edit-repl e]
   (let [target (aget e "target")
         class-list (aget target "classList")
-        index (:repl-index @core/state)]
+        id (:repl-id @core/state)]
     (cond (= (.getAttribute target "name") "type")
           (do (refresh-cljs-env @core/state edit-repl)
               (swap! core/state assoc :dirty true))
@@ -446,8 +446,8 @@
           (.contains class-list "random-port")
           (let [port-node (.querySelector edit-repl ".port")
                 random-port (aget target "checked")]
-            (dom/replaceNode (->> (core/update-repls
-                                   @core/state index assoc
+            (dom/replaceNode (->> (update-in
+                                   @core/state [:repls id] assoc
                                    :random-port random-port)
                                   port-tmpl
                                   utils/make-node)
