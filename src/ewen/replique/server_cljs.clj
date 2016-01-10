@@ -1,5 +1,6 @@
 (ns ewen.replique.server-cljs
-  (:require [ewen.replique.server :as server]
+  (:require [ewen.replique.server :refer [with-tooling-response]
+             :as server]
             [clojure.core.server :refer [start-server *session*]]
             [clojure.java.io :as io :refer [file]]
             [cljs.repl.browser]
@@ -118,6 +119,8 @@
   (cljs.repl.browser/constrain-order
    order
    (fn []
+     ;; When sessions are implemented, we should only print in the
+     ;; output stream of the "currently active" cljs REPL
      (doseq [[out out-lock] @cljs-outs]
        (binding [*out* out]
          (locking out-lock
@@ -237,10 +240,11 @@
 </html>")))
 
 (def special-fns
-  {'ewen.replique.server-cljs/server-connection?
-   (fn [repl-env env form opts]
-     (prn (if (:connection @(:server-state repl-env))
-            true false)))})
+  (merge cljs.repl/default-special-fns
+         {'ewen.replique.server-cljs/server-connection?
+          (fn [repl-env env form opts]
+            (prn (if (:connection @(:server-state repl-env))
+                   true false)))}))
 
 ;; Customize repl-read to avoid quitting the REPL on :clj/quit
 ;; Unfortunatly, this is cannot be handled by the cljs :read hook
@@ -276,6 +280,14 @@
           prn)))
   (cljs.repl/repl-caught e repl-env opts))
 
+(let [is-special-fn? (set (keys special-fns))]
+  (defn eval-cljs
+    "Custom eval REPL fn which prints the result of special fns"
+    ([repl-env env form opts]
+     (if (and (seq? form) (is-special-fn? (first form)))
+       ((get special-fns (first form)) repl-env env form opts)
+       (#'cljs.repl/eval-cljs repl-env env form opts)))))
+
 (defmethod server/repl :cljs [type]
   (let [out-lock (Object.)]
     (swap! cljs-outs conj [*out* out-lock])
@@ -298,7 +310,8 @@
                                :ns (str ana/*cljs-ns*)
                                :result result})))
                      (locking out-lock
-                       (println result)))})
+                       (println result)))
+            :eval eval-cljs})
           (apply concat)))
     (swap! cljs-outs disj [*out* out-lock])))
 

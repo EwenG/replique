@@ -9,6 +9,18 @@
 (defonce tooling-err nil)
 (defonce tooling-err-lock (Object.))
 
+(defmulti repl-dispatch (fn [{:keys [type cljs-env]}]
+                          [type cljs-env]))
+
+(defmacro with-tooling-response [msg resp]
+  `(let [type# (:type ~msg)]
+     (try (merge {:type type#} ~resp)
+          (catch Throwable t#
+            {:type type#
+             :error t#}))))
+
+(defmulti tooling-msg-handle :type)
+
 (defn normalize-ip-address [address]
   (if (= "0.0.0.0" address) "127.0.0.1" address))
 
@@ -69,8 +81,3 @@
                       :ns (str *ns*)
                       :result (pr-str result)})))
             (prn result))))
-
-(defmulti repl-dispatch (fn [{:keys [type cljs-env]}]
-                          [type cljs-env]))
-
-(defmulti tooling-msg-handle :type)
