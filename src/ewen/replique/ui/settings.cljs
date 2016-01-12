@@ -25,11 +25,11 @@
                          clj-file-names)
                     (into {})))
 
-(def cljs-versions #{"1.7.170"})
-(def cljs-file-names {"1.7.170" "cljs-1.7.170.jar"})
-(def current-cljs-v "1.7.170")
+(def cljs-versions #{"1.7.228"})
+(def cljs-file-names {"1.7.228" "cljs-1.7.228.jar"})
+(def current-cljs-v "1.7.228")
 (def cljs-file-name (get cljs-file-names current-cljs-v))
-(def cljs-urls {"1.7.170" "https://github.com/clojure/clojurescript/releases/download/r1.7.170/cljs.jar"})
+(def cljs-urls {"1.7.228" "https://github.com/clojure/clojurescript/releases/download/r1.7.228/cljs.jar"})
 (def cljs-paths (->> (map (fn [[v f]]
                            [v (str replique-root-dir "/runnables/" f)])
                          cljs-file-names)

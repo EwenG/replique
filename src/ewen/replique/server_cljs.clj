@@ -48,23 +48,26 @@
         (.exists (io/file f)) (io/file f)
         :else (io/resource f)))
 
-(defn repl-compile-cljs [repl-env f opts]
-  (let [src (f->src f)
-        compiled (binding [ana/*reload-macros* true]
-                   (closure/compile
-                    src
-                    (assoc opts
-                           :output-file
-                           (closure/src-file->target-file src)
-                           :force true
-                           :mode :interactive)))]
-    ;; copy over the original source file if source maps enabled
-    (when-let [ns (and (:source-map opts) (first (:provides compiled)))]
-      (spit
-       (io/file (io/file (util/output-directory opts))
-                (util/ns->relpath ns (util/ext (:source-url compiled))))
-       (slurp src)))
-    compiled))
+(defn repl-compile-cljs
+  ([repl-env f opts]
+   (repl-compile-cljs repl-env f opts true))
+  ([repl-env f opts reload-macros]
+   (let [src (f->src f)
+         compiled (binding [ana/*reload-macros* reload-macros]
+                    (closure/compile
+                     src
+                     (assoc opts
+                            :output-file
+                            (closure/src-file->target-file src)
+                            :force true
+                            :mode :interactive)))]
+     ;; copy over the original source file if source maps enabled
+     (when-let [ns (and (:source-map opts) (first (:provides compiled)))]
+       (spit
+        (io/file (io/file (util/output-directory opts))
+                 (util/ns->relpath ns (util/ext (:source-url compiled))))
+        (slurp src)))
+     compiled)))
 
 (defn repl-cljs-on-disk [compiled repl-env opts]
   (let [sources (closure/add-dependencies
@@ -222,9 +225,9 @@
             repl-src "clojure/browser/repl.cljs"
             benv-src "ewen/replique/cljs_env/browser.cljs"
             repl-compiled (repl-compile-cljs
-                           repl-env repl-src comp-opts)
+                           repl-env repl-src comp-opts false)
             benv-compiled (repl-compile-cljs
-                           repl-env benv-src comp-opts)]
+                           repl-env benv-src comp-opts false)]
         (repl-cljs-on-disk repl-compiled repl-env comp-opts)
         (repl-cljs-on-disk benv-compiled repl-env comp-opts)
         (->> (refresh-cljs-deps comp-opts)
