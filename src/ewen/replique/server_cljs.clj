@@ -17,7 +17,8 @@
   (:import [java.io File]
            [java.util.concurrent SynchronousQueue]
            [java.net SocketException]
-           [clojure.lang IExceptionInfo]))
+           [clojure.lang IExceptionInfo]
+           [java.util.concurrent.locks ReentrantLock]))
 
 (comment
   (let [res1 (future (cljs.repl/-evaluate ewen.replique.server-cljs/repl-env nil nil "3"))
@@ -31,6 +32,16 @@
 (defonce eval-queue (SynchronousQueue. true))
 (defonce evaled-queue (SynchronousQueue. true))
 (defonce cljs-outs (atom #{}))
+
+(defmacro ^:private with-lock
+  [lock-expr & body]
+  `(let [lockee# ~(with-meta lock-expr
+                    {:tag 'java.util.concurrent.locks.ReentrantLock})]
+     (.lock lockee#)
+     (try
+       ~@body
+       (finally
+         (.unlock lockee#)))))
 
 (defn f->src [f]
   (cond (util/url? f) f
@@ -123,7 +134,7 @@
      ;; output stream of the "currently active" cljs REPL
      (doseq [[out out-lock] @cljs-outs]
        (binding [*out* out]
-         (locking out-lock
+         (with-lock out-lock
            (print (read-string content))
            (.flush *out*))))))
   (cljs.repl.server/send-and-close conn 200 "ignore__"))
@@ -266,7 +277,7 @@
 
 (defn repl-caught [e repl-env opts]
   (binding [*out* server/tooling-err]
-    (locking server/tooling-err-lock
+    (with-lock server/tooling-err-lock
       (-> (assoc {:type :eval
                   :error true
                   :repl-type :cljs
@@ -289,7 +300,7 @@
        (#'cljs.repl/eval-cljs repl-env env form opts)))))
 
 (defmethod server/repl :cljs [type]
-  (let [out-lock (Object.)]
+  (let [out-lock (ReentrantLock.)]
     (swap! cljs-outs conj [*out* out-lock])
     (when-not (:connection @(:server-state repl-env))
       (println "Waiting for browser to connect ..."))
@@ -303,13 +314,13 @@
             :caught repl-caught
             :print (fn [result]
                      (binding [*out* server/tooling-out]
-                       (locking server/tooling-out-lock
+                       (with-lock server/tooling-out-lock
                          (prn {:type :eval
                                :repl-type :cljs
                                :session *session*
                                :ns (str ana/*cljs-ns*)
                                :result result})))
-                     (locking out-lock
+                     (with-lock out-lock
                        (println result)))
             :eval eval-cljs})
           (apply concat)))
@@ -317,7 +328,7 @@
 
 (defmethod server/repl-dispatch [:cljs :browser]
   [{:keys [port type cljs-env] :as opts}]
-  (init-class-loader)
+  #_(init-class-loader)
   (let [{:keys [comp-opts repl-opts]} (init-opts opts)]
     (init-browser-env comp-opts repl-opts)
     (output-index-html comp-opts)

@@ -1,13 +1,24 @@
 (ns ewen.replique.server
   (:require [clojure.main]
             [clojure.core.server :refer [*session*]]
-            [clojure.java.io :refer [file]]))
+            [clojure.java.io :refer [file]])
+  (:import [java.util.concurrent.locks ReentrantLock]))
 
 (def directory nil)
 (defonce tooling-out nil)
-(defonce tooling-out-lock (Object.))
+(defonce tooling-out-lock (ReentrantLock.))
 (defonce tooling-err nil)
-(defonce tooling-err-lock (Object.))
+(defonce tooling-err-lock (ReentrantLock.))
+
+(defmacro ^:private with-lock
+  [lock-expr & body]
+  `(let [lockee# ~(with-meta lock-expr
+                    {:tag 'java.util.concurrent.locks.ReentrantLock})]
+     (.lock lockee#)
+     (try
+       ~@body
+       (finally
+         (.unlock lockee#)))))
 
 (defmulti repl-dispatch (fn [{:keys [type cljs-env]}]
                           [type cljs-env]))
@@ -41,16 +52,16 @@
               (prn result)))))
 
 (defn shared-tooling-repl []
-  (locking tooling-out-lock
+  (with-lock tooling-out-lock
     (alter-var-root #'tooling-out (constantly *out*)))
-  (locking tooling-err-lock
+  (with-lock tooling-err-lock
     (alter-var-root #'tooling-err (constantly *err*)))
   (let [init-fn (fn [] (in-ns 'ewen.replique.server))]
     (clojure.main/repl
      :init init-fn
      :prompt #()
      :print (fn [result]
-              (locking tooling-out-lock
+              (with-lock tooling-out-lock
                 (prn result))))))
 
 (defn shutdown []
@@ -64,7 +75,7 @@
    :init clojure.core.server/repl-init
    :caught (fn [e]
              (binding [*out* tooling-err]
-               (locking tooling-err-lock
+               (with-lock tooling-err-lock
                  (prn {:type :eval
                        :error true
                        :repl-type :clj
@@ -74,7 +85,7 @@
              (clojure.main/repl-caught e))
    :print (fn [result]
             (binding [*out* tooling-out]
-              (locking tooling-out-lock
+              (with-lock tooling-out-lock
                 (prn {:type :eval
                       :repl-type :clj
                       :session *session*

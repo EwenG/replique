@@ -15,11 +15,11 @@
 (def dialog (.require remote "dialog"))
 (def replique-root-dir (.getGlobal remote "repliqueRootDir"))
 
-(def clj-versions #{"1.8.0-RC4"})
-(def clj-file-names {"1.8.0-RC4" "clojure-1.8.0-RC4.jar"})
-(def current-clj-v "1.8.0-RC4")
+(def clj-versions #{"1.8.0-RC5"})
+(def clj-file-names {"1.8.0-RC5" "clojure-1.8.0-RC5.jar"})
+(def current-clj-v "1.8.0-RC5")
 (def clj-file-name (get clj-file-names current-clj-v))
-(def clj-urls {"1.8.0-RC4" "https://repo1.maven.org/maven2/org/clojure/clojure/1.8.0-RC4/clojure-1.8.0-RC4.jar"})
+(def clj-urls {"1.8.0-RC5" "https://repo1.maven.org/maven2/org/clojure/clojure/1.8.0-RC5/clojure-1.8.0-RC5.jar"})
 (def clj-paths (->> (map (fn [[v f]]
                            [v (str replique-root-dir "/runnables/" f)])
                          clj-file-names)
@@ -229,6 +229,8 @@
            (.abort req)
            (.unlink fs path)))
     (.on file "finish"
+         ;; Refresh only the field concerned by the downloaded file
+         ;; since the user may have changed other fields meanwhile
          (fn []
            (notif/clear-notif id)
            (notif/single-notif
