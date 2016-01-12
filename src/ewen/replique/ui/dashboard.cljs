@@ -213,14 +213,16 @@
 
 (defn stop-repl [overview {:keys [repls] :as state} id]
   (let [{:keys [proc repl-port directory]} (get repls id)]
-    (let [client (.connect net #js {:port repl-port})]
-      (.on client "connect"
-           (fn []
-             (.write client (format "(ewen.replique.server/tooling-msg-handle %s)\n" (str {:type :shutdown})))
-             (.end client)))
-      (.on client "error"
-           (fn [err]
-             (tree-kill (aget proc "pid")))))
+    (if repl-port
+        (let [client (.connect net #js {:port repl-port})]
+          (.on client "connect"
+               (fn []
+                 (.write client (format "(ewen.replique.server/tooling-msg-handle %s)\n" (str {:type :shutdown})))
+                 (.end client)))
+          (.on client "error"
+               (fn [err]
+                 (tree-kill (aget proc "pid")))))
+        (tree-kill (aget proc "pid")))
     (try
       (.unlink fs (str directory "/.replique-port"))
       (catch js/Error e nil))))
