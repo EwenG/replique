@@ -254,11 +254,10 @@
 </html>")))
 
 (def special-fns
-  (merge cljs.repl/default-special-fns
-         {'ewen.replique.server-cljs/server-connection?
-          (fn [repl-env env form opts]
-            (prn (if (:connection @(:server-state repl-env))
-                   true false)))}))
+  {'ewen.replique.server-cljs/server-connection?
+   (fn [repl-env env form opts]
+     (prn (if (:connection @(:server-state repl-env))
+            true false)))})
 
 ;; Customize repl-read to avoid quitting the REPL on :clj/quit
 ;; Unfortunatly, this is cannot be handled by the cljs :read hook
@@ -294,14 +293,6 @@
           prn)))
   (cljs.repl/repl-caught e repl-env opts))
 
-(let [is-special-fn? (set (keys special-fns))]
-  (defn eval-cljs
-    "Custom eval REPL fn which prints the result of special fns"
-    ([repl-env env form opts]
-     (if (and (seq? form) (is-special-fn? (first form)))
-       ((get special-fns (first form)) repl-env env form opts)
-       (#'cljs.repl/eval-cljs repl-env env form opts)))))
-
 (defmethod server/repl :cljs [type]
   (let [out-lock (ReentrantLock.)]
     (swap! cljs-outs conj [*out* out-lock])
@@ -310,7 +301,7 @@
     (apply
      (partial cljs.repl/repl repl-env)
      (->> (merge
-           (:options compiler-env)
+           (:options @compiler-env)
            {:compiler-env compiler-env
             :read repl-read
             :quit-prompt #()
@@ -324,8 +315,7 @@
                                :ns (str ana/*cljs-ns*)
                                :result result})))
                      (with-lock out-lock
-                       (println result)))
-            :eval eval-cljs})
+                       (println result)))})
           (apply concat)))
     (swap! cljs-outs disj [*out* out-lock])))
 
