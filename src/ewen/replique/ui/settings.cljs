@@ -190,7 +190,7 @@
 
 (defn download-jar [url path file-name]
   (let [file (.createWriteStream fs path #js {:flags "wx"})
-        id (.getNextUniqueId utils/id-gen)
+        id (.getNextUniqueId utils/next-id)
         req (.get https url
                   (fn [resp]
                     (let [status (aget resp "statusCode")]
@@ -253,16 +253,19 @@
                    :msg (str "Error while downloading the file: " file-name)})
                  (.unlink fs path)))))))
 
-(defhtml settings [{dirty :dirty settings :settings}]
+(defhtml save-tmpl [dirty]
+  [:a.button.save
+   (merge {:href "#"}
+          (if dirty
+            {:class "button save"}
+            {:class "button save disabled"}))
+   "Save"])
+
+(defhtml settings [{settings :settings dirty :dirty}]
   (html [:div#settings
          [:a.back-nav {:href "#"}]
          [:form
-          [:a.button.save
-           (merge {:href "#"}
-                  (if dirty
-                    {:class "button save"}
-                    {:class "button save disabled"}))
-           "Save"]
+          (save-tmpl dirty)
           (clj-jar-tmpl settings)
           (cljs-jar-tmpl settings)
           (lein-tmpl settings)]]))
@@ -353,7 +356,15 @@
                       (field-reader))
                     (into {}))
         new (merge settings fields)]
-    (swap! core/state assoc :settings new)))
+    (swap! core/state assoc
+           :settings new)
+    (try
+      (core/persist-state @core/state)
+      (catch js/Error e
+        (.log js/console (str "Error while saving settings: " e))
+        (notif/single-notif
+         {:type :err
+          :msg (str "Error while saving settings")})))))
 
 (defn back-clicked []
   (swap! core/state assoc
@@ -364,9 +375,7 @@
   (let [class-list (-> (aget e "target")
                        (aget "classList"))]
     (cond (.contains class-list "save")
-          (do
-            (save-settings)
-            (swap! core/state dissoc :dirty))
+          (save-settings)
           (.contains class-list "download-clj-jar")
           (download-jar (get clj-urls current-clj-v)
                         (get clj-paths current-clj-v)
@@ -495,8 +504,3 @@
                  (-> (aget save-node "classList")
                      (.add "disabled")))
                :else nil)))
-
-(add-watch core/state :settings-watcher
-           (fn [r k o n]
-             (when (not= (:settings o) (:settings n))
-               #_(core/persist-state n))))

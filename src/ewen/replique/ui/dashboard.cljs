@@ -11,7 +11,8 @@
             [ewen.replique.ui.edit-repl]
             [ewen.replique.ui.settings :as settings]
             [ewen.replique.ui.shortcuts]
-            [ewen.replique.ui.notifications :as notif])
+            [ewen.replique.ui.notifications :as notif]
+            [cljs-uuid-utils.core :as uuid])
   (:import [goog.string format])
   (:require-macros [hiccup.core :refer [html]]
                    [hiccup.def :refer [defhtml]]))
@@ -53,13 +54,20 @@
            (repl-overview repl id))]))
 
 (defn add-new-repl []
-  (let [id (.getNextUniqueId utils/id-gen)]
+  (let [id (uuid/uuid-string (uuid/make-random-uuid))]
     (swap! core/state assoc-in [:repls id]
            {:directory nil
             :type :clj :cljs-env :browser
             :browser-env-random-port true
             :webapp-env-random-port true
-            :random-port true})))
+            :random-port true})
+    (try
+      (core/persist-state @core/state)
+      (catch js/Error e
+        (.log js/console (str "Error while saving settings: " e))
+        (notif/single-notif
+         {:type :err
+          :msg (str "Error while saving settings")})))))
 
 (defn settings-button-clicked []
   (swap! core/state assoc :view :settings))
@@ -235,7 +243,14 @@
                 id (.getAttribute overview "data-repl-id")
                 {:keys [proc]} (get (:repls @core/state) id)]
             (when proc (tree-kill (aget proc "pid")))
-            (swap! core/state update-in [:repls] dissoc id))
+            (swap! core/state update-in [:repls] dissoc id)
+            (try
+              (core/persist-state @core/state)
+              (catch js/Error e
+                (.log js/console (str "Error while saving settings: " e))
+                (notif/single-notif
+                 {:type :err
+                  :msg (str "Error while saving settings")}))))
           (.contains class-list "edit")
           (let [id (.getAttribute overview "data-repl-id")]
             (swap! core/state assoc :repl-id id)
@@ -277,7 +292,6 @@
 (add-watch core/state :repls-watcher
            (fn [r k o n]
              (when (not= (:repls o) (:repls n))
-               #_(core/persist-state n)
                (core/refresh-view n))))
 
 (comment

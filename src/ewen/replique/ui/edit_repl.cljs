@@ -292,7 +292,14 @@
         fields (->> (for [field-reader @repl-field-readers]
                       (field-reader))
                     (into {}))]
-    (swap! core/state update-in [:repls repl-id] merge fields)))
+    (swap! core/state update-in [:repls repl-id] merge fields)
+    (try
+      (core/persist-state @core/state)
+      (catch js/Error e
+        (.log js/console (str "Error while saving settings: " e))
+        (notif/single-notif
+         {:type :err
+          :msg (str "Error while saving settings")})))))
 
 (defn valid-port? [port]
   (try (let [port-nb (js/parseInt port)]

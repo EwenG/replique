@@ -3,8 +3,7 @@
             [goog.dom.classlist]
             [goog.async.Throttle :as Throttle]
             [cljs.nodejs :as node])
-  (:import [goog.async Throttle]
-           [goog.ui IdGenerator]))
+  (:import [goog.async Throttle]))
 
 (def fs (node/require "fs"))
 
@@ -34,8 +33,6 @@
       (vreset! args new-args)
       (.fire throttle))))
 
-(def id-gen (IdGenerator.))
-
 (defn file-exists [path]
   (try
     (do (.lstatSync fs path)
@@ -44,3 +41,7 @@
       (if (= "ENOENT" (aget e "code"))
         false
         (throw e)))))
+
+(let [counter (atom 0)]
+  (defn next-id []
+    (swap! counter inc)))

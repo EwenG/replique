@@ -3,6 +3,8 @@
   (:require [cljs.env :as cljs-env]
             [cljs.closure :as closure]
             [cljs.util :as util]
+            [cljs.analyzer :as ana]
+            [cljs.compiler :as comp]
             [cljs.repl]
             [ewen.replique.server-cljs :refer [compiler-env repl-env
                                                repl-cljs-on-disk
@@ -48,3 +50,20 @@
 
 (defmacro load-file [& args]
   (apply load-file* args))
+
+;; It seems that calling this macro "in-ns" make the cljs compiler
+;; to crash
+(defmacro cljs-in-ns [ns-quote]
+  (let [[quote ns-name] (vec ns-quote)]
+    (when-not (and (= 'quote quote) (symbol? ns-name))
+      (throw (IllegalArgumentException.
+              "Argument to in-ns must be a symbol.")))
+    (when-not (ana/get-namespace ns-name)
+      (swap! cljs-env/*compiler*
+             assoc-in [::ana/namespaces ns-name]
+             {:name ns-name})
+      (cljs.repl/-evaluate
+       repl-env "<cljs repl>" 1
+       (str "goog.provide('" (comp/munge ns-name) "');")))
+    (let [in-ns-res (set! ana/*cljs-ns* ns-name)]
+      `(quote ~in-ns-res))))

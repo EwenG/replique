@@ -1,7 +1,14 @@
 (ns ewen.replique.ui.core
   (:require [cljs.reader :as reader]
             [ewen.replique.ui.remote :refer [remote]]
-            [goog.dom :as dom]))
+            [goog.dom :as dom]
+            [cljs.nodejs :as node]
+            [cljs.reader :as reader]))
+
+(def version "0.0.1")
+
+(def replique-dir (.getGlobal remote "repliqueRootDir"))
+(def fs (node/require "fs"))
 
 (def init-state {:repls {}
                  :view :dashboard
@@ -33,27 +40,59 @@
              (when (not= (:view o) (:view n))
                (refresh-view n))))
 
-#_(defn persist-state [{:keys [repls settings]}]
-  (loop [index 0
-         repls repls]
-    (cond
-      (first repls)
-      (do (.setItem js/localStorage (str "repl" index)
-                    (-> (first repls)
-                        (dissoc :proc :proc-port)
-                        pr-str))
-          (recur (inc index) (rest repls)))
-      (.getItem js/localStorage (str "repl" index))
-      (do (.removeItem js/localStorage (str "repl" index))
-          (recur (inc index) nil))
-      :else true))
-  (.setItem js/localStorage "settings" (str settings)))
+(defn persist-state [{:keys [settings repls]}]
+  (let [cleaned-repls (into
+                       {}
+                       (for [[id repl] repls]
+                         [id (select-keys
+                              repl
+                              [:directory :type :cljs-env
+                               :browser-env-random-port
+                               :webapp-env-random-port
+                               :random-port])]))
+        cleaned-state {:settings (dissoc settings :dirty :saving)
+                       :repls cleaned-repls
+                       :version version}]
+    (.writeFileSync
+     fs
+     (str replique-dir "/data/" version "/replique-tmp.edn")
+     (str cleaned-state)
+     #js {:flag "w"})
+    (try
+      (.unlinkSync fs (str replique-dir "/data/" version "/replique.edn"))
+      (catch js/Error e
+        (if (= "ENOENT" (aget e "code"))
+          ;; The file does not exists, there is no need to remove it
+          nil
+          (throw e))))
+    (.linkSync
+     fs
+     (str replique-dir "/data/" version "/replique-tmp.edn")
+     (str replique-dir "/data/" version "/replique.edn"))
+    (try (.unlinkSync fs (str replique-dir "/data/"
+                              version "/replique-tmp.edn"))
+         (catch js/Error e
+           ;; Ignore errors
+           nil))))
 
-#_(defn load-state []
-  (loop [i 0
-         repls '()]
-    (if-let [repl-str (.getItem js/localStorage
-                                (str "repl" i))]
-      (let [repl (reader/read-string repl-str)]
-        (recur (inc i) (conj repls repl)))
-      (swap! state assoc :repls (reverse repls)))))
+(defn load-state []
+  (let [loaded-state (try (.readFileSync
+                           fs (str replique-dir "/data/"
+                                   version "/replique.edn"))
+                          (catch js/Error e
+                            (if (= "ENOENT" (aget e "code"))
+                              ;; The file does not exists. Try to load the
+                              ;; temp data file, if any.
+                              (try (.readFileSync
+                                    fs (str replique-dir "/data/"
+                                            version "/replique-temp.edn"))
+                                   (catch js/Error e
+                                     (if (= "ENOENT" (aget e "code"))
+                                       ;; The file does not exists.
+                                       ;; There is nothing to load
+                                       nil
+                                       (throw e))))
+                              (throw e))))]
+    (when loaded-state
+      (reset! state (assoc (reader/read-string (str loaded-state))
+                           :view :dashboard)))))
