@@ -5,6 +5,7 @@
   (:import [java.util.concurrent.locks ReentrantLock]))
 
 (def directory nil)
+(def sass-bin nil)
 (defonce tooling-out nil)
 (defonce tooling-out-lock (ReentrantLock.))
 (defonce tooling-err nil)

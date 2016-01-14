@@ -4,7 +4,8 @@
             [clojure.java.io :as io :refer [file]]))
 
 (defmethod server/repl-dispatch [:clj nil]
-  [{:keys [port type cljs-env] :as opts}]
+  [{:keys [port type cljs-env directory] :as opts}]
+  (alter-var-root #'server/directory (constantly directory))
   (start-server {:port port :name :replique
                  :accept 'clojure.core.server/repl
                  :server-daemon false})

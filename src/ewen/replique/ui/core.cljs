@@ -14,7 +14,11 @@
                  :view :dashboard
                  :settings {:clj-jar-source "embedded"
                             :cljs-jar-source "embedded"
-                            :lein-source "embedded"}})
+                            :lein-source "embedded"
+                            :sass-bin
+                            (str
+                             replique-dir
+                             "/runnables/replique_sass_3.2.5_0.0.1")}})
 
 (defonce state
   (atom init-state))

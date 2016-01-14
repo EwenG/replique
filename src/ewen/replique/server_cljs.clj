@@ -322,7 +322,9 @@
     (swap! cljs-outs disj [*out* out-lock])))
 
 (defmethod server/repl-dispatch [:cljs :browser]
-  [{:keys [port type cljs-env] :as opts}]
+  [{:keys [port type cljs-env directory sass-bin] :as opts}]
+  (alter-var-root #'server/directory (constantly directory))
+  (alter-var-root #'server/sass-bin (constantly sass-bin))
   #_(init-class-loader)
   (let [{:keys [comp-opts repl-opts]} (init-opts opts)]
     (init-browser-env comp-opts repl-opts)
@@ -463,4 +465,22 @@
   (server/tooling-msg-handle
    {:type :list-sass
     :file-path "/home/egr/replique.el/lein-project/out/ee.scss"})
+  )
+
+(defn compile-sass [sass-path input-path output-path]
+  (let [pb (ProcessBuilder.
+            (list sass-path input-path output-path))
+        p (.start pb)
+        out (.getInputStream p)]
+    (if (= 0 (.waitFor p))
+      [true (slurp out)]
+      [false (-> (slurp out)
+                 ewen.replique.sourcemap/json-read-str
+                 pr-str)])))
+
+(comment
+  (compile-sass
+   server/sass-bin
+   "/home/egr/clojure/wreak-todomvc/test.scss"
+   "test.css")
   )

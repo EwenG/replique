@@ -4,12 +4,10 @@
 (defmulti require-dispatch :type)
 
 (defmethod require-dispatch :clj [{:keys [directory] :as opts}]
-  (alter-var-root #'ewen.replique.server/directory (constantly directory))
   (require 'ewen.replique.server-clj)
   (repl-dispatch opts))
 
 (defmethod require-dispatch :cljs [{:keys [directory] :as opts}]
-  (alter-var-root #'ewen.replique.server/directory (constantly directory))
   (require 'ewen.replique.server-cljs)
   (repl-dispatch opts))
 

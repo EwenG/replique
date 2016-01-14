@@ -113,7 +113,7 @@
        :msg "Output file for Clojurescript web application environment has not been configured"}
       :else nil)))
 
-(defn repl-cmd-raw [{:keys [repls] :as state} id]
+(defn repl-cmd-raw [{:keys [repls settings] :as state} id]
   (let [{:keys [directory type cljs-env port random-port
                 browser-env-port browser-env-random-port
                 webapp-env-port webapp-env-random-port]
@@ -133,11 +133,12 @@
                       "-m" "ewen.replique.main"
                       (-> (merge repl {:port port :cljs-env cljs-env
                                        :browser-env-port browser-env-port
-                                       :webapp-env-port webapp-env-port})
+                                       :webapp-env-port webapp-env-port
+                                       :sass-bin (:sass-bin settings)})
                           str)]]
     ["java" cmd-args #js {:cwd directory}]))
 
-(defn repl-cmd-lein [{:keys [repls] :as state} id]
+(defn repl-cmd-lein [{:keys [repls settings] :as state} id]
   (let [{:keys [directory type cljs-env port random-port
                 browser-env-port browser-env-random-port
                 webapp-env-port webapp-env-random-port]
@@ -152,7 +153,8 @@
                       "--" "run" "-m" "ewen.replique.main/-main"
                       (-> (merge repl {:port port :cljs-env cljs-env
                                        :browser-env-port browser-env-port
-                                       :webapp-env-port webapp-env-port})
+                                       :webapp-env-port webapp-env-port
+                                       :sass-bin (:sass-bin settings)})
                           str)]]
     [(settings/get-lein-script state)
      cmd-args #js {:cwd directory}]))

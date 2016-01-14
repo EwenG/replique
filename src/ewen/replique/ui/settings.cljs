@@ -356,8 +356,8 @@
                       (field-reader))
                     (into {}))
         new (merge settings fields)]
-    (swap! core/state assoc
-           :settings new)
+    (swap! core/state assoc :settings new)
+    (swap! core/state dissoc :dirty)
     (try
       (core/persist-state @core/state)
       (catch js/Error e
