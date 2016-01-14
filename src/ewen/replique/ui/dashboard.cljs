@@ -206,8 +206,6 @@
            (.log js/console (str err))))
     (.on proc "close"
          (fn [code signal]
-           ;; When killed with the stop button, the process returns
-           ;; code 143 or signal SIGTERM
            (when (or (not= 0 code) signal)
              (.log js/console
                    "REPL error. Code " code ". Signal " signal)

@@ -49,6 +49,10 @@
                               [:directory :type :cljs-env
                                :browser-env-random-port
                                :webapp-env-random-port
+                               :browser-env-port :browser-env-main
+                               :webapp-env-port :webapp-env-main
+                               :browser-env-out
+                               :webapp-env-out
                                :random-port])]))
         cleaned-state {:settings (dissoc settings :dirty :saving)
                        :repls cleaned-repls

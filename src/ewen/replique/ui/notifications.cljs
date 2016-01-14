@@ -20,7 +20,7 @@
              :else nil))]))
 
 (defn single-notif [notif-msg]
-  (let [notif-key {:id (.getNextUniqueId utils/id-gen)
+  (let [notif-key {:id (utils/next-id)
                    :timestamp (js/Date.now)}]
     (swap! core/state update-in [:notifications] assoc notif-key notif-msg)
     (js/setTimeout
