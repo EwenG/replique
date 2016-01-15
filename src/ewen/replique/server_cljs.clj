@@ -467,9 +467,9 @@
     :file-path "/home/egr/replique.el/lein-project/out/ee.scss"})
   )
 
-(defn compile-sass [sass-path input-path output-path]
+(defn compile-sass [input-path output-path]
   (let [pb (ProcessBuilder.
-            (list sass-path input-path output-path))
+            (list server/sass-bin input-path output-path))
         p (.start pb)
         out (.getInputStream p)]
     (if (= 0 (.waitFor p))
@@ -480,7 +480,62 @@
 
 (comment
   (compile-sass
-   server/sass-bin
    "/home/egr/clojure/wreak-todomvc/test.scss"
    "test.css")
   )
+
+(defn remove-path-extension [path]
+  (let [last-separator-index (.lastIndexOf path File/separator)
+        file-name (if (= -1 last-separator-index)
+                    path
+                    (.substring path (+ 1 last-separator-index)))
+        extension-index (.lastIndexOf file-name ".")
+        extension-index (cond
+                          (= -1 extension-index)
+                          -1
+                          (= -1 last-separator-index)
+                          (.lastIndexOf file-name ".")
+                          :else (-> (.lastIndexOf file-name ".")
+                                    (+ (count path))
+                                    (- (count file-name))))]
+    (if (= -1 extension-index)
+      path
+      (.substring path 0 extension-index))))
+
+(defn compile-sass-data
+  [repl-env {:keys [scheme file-path main-source sass-path]
+             :as msg}]
+  (let [[success css-text]
+        (compile-sass
+         main-source
+         (str (remove-path-extension file-path) ".css"))]
+    (if success
+      (->> (ewen.replique.sourcemap/encode-base-64 css-text)
+           (str "data:text/css;base64,")
+           (assoc msg :uri))
+      (assoc msg :error css-text))))
+
+(defn compile-sass-http
+  [repl-env {:keys [scheme file-path main-source sass-path uri]
+             :as msg}]
+  (let [[success css-text] (compile-sass main-source file-path)]
+    (when success (spit file-path css-text))
+    (if success
+      msg
+      (merge msg {:error css-text}))))
+
+(defmethod server/tooling-msg-handle :load-sass
+  [{:keys [scheme] :as msg}]
+
+  (with-tooling-response msg
+    (let [msg (if (= scheme "data")
+                (compile-sass-data repl-env msg)
+                (compile-sass-http repl-env msg))]
+      (if (:error msg)
+        msg
+        (->> msg pr-str pr-str
+             (format "ewen.replique.cljs_env.browser.reload_css(%s);")
+             (cljs.repl/-evaluate
+              repl-env "<cljs repl>" 1)
+             :value
+             (hash-map :result))))))
