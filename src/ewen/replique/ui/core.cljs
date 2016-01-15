@@ -18,7 +18,7 @@
                             :sass-bin
                             (str
                              replique-dir
-                             "/runnables/replique_sass_3.2.5_0.0.1")}})
+                             "/runnables/replique_sass_3.2.5_" version)}})
 
 (defonce state
   (atom init-state))

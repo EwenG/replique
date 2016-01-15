@@ -409,8 +409,7 @@
     (assoc css-infos :child-source path)
     (let [css-file (-> (or css-file file-path)
                        ewen.replique.sourcemap/str->path)
-          paths (->> (:sources sourcemap)
-                     (map #(str (:sourceRoot sourcemap) %))
+          paths (->> (get sourcemap "sources")
                      (map #(ewen.replique.sourcemap/str->path %)))
           path (ewen.replique.sourcemap/str->path path)
           compare-fn #(let [ref (.normalize path)
@@ -422,12 +421,17 @@
         (assoc css-infos :child-source child-source)
         nil))))
 
+(comment
+  (assoc-child-source "/home/egr/replique.el/lein-project/resources/ff.scss"
+                      {:scheme "http", :uri "http://localhost:36466/ff.css", :css-file "/home/egr/replique.el/lein-project/out/ff.css", :sourcemap {"version" 3, "file" "ff.css", "sources" ["../resources/ff.scss"], "sourcesContent" ["body {\n\n}\n"], "mappings" "", "names" []}})
+  )
+
 (defn assoc-main-source [path {:keys [child-source sourcemap]
                                :as css-infos}]
   (if (nil? sourcemap)
     (assoc css-infos :main-source path)
     (let [path (ewen.replique.sourcemap/str->path path)
-          main-path (-> (:sources sourcemap) first
+          main-path (-> (get sourcemap "sources") first
                         ewen.replique.sourcemap/str->path)
           child-path (ewen.replique.sourcemap/str->path child-source)
           relative-path (.relativize child-path main-path)]
@@ -464,7 +468,7 @@
 (comment
   (server/tooling-msg-handle
    {:type :list-sass
-    :file-path "/home/egr/replique.el/lein-project/out/ee.scss"})
+    :file-path "/home/egr/replique.el/lein-project/resources/ff.scss"})
   )
 
 (defn compile-sass [input-path output-path]
@@ -524,9 +528,8 @@
       msg
       (merge msg {:error css-text}))))
 
-(defmethod server/tooling-msg-handle :load-sass
+(defmethod server/tooling-msg-handle :load-scss
   [{:keys [scheme] :as msg}]
-
   (with-tooling-response msg
     (let [msg (if (= scheme "data")
                 (compile-sass-data repl-env msg)
@@ -539,3 +542,11 @@
               repl-env "<cljs repl>" 1)
              :value
              (hash-map :result))))))
+
+(comment
+  (server/tooling-msg-handle {:type :load-scss
+                              :scheme "http"
+                              :uri "http://localhost:36466/ff.css"
+                              :file-path "/home/egr/replique.el/lein-project/out/ff.css"
+                              :main-source nil})
+  )
