@@ -9,5 +9,5 @@
   (:require-macros [hiccup.core :refer [html]]))
 
 (dom/appendChild
- js/document.head (utils/make-node (html (include-css "out/main.css"))))
+ js/document.head (utils/make-node (html (include-css "main.css"))))
 (core/load-state)

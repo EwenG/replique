@@ -74,14 +74,14 @@ label.disabled {
     top:0.5rem;
     left:0.5rem;
     cursor: pointer;
-    background-image: url('/resources/images/start.png');
+    background-image: url('../resources/images/start.png');
     background-repeat: no-repeat;
     background-size: 1.3rem 1.5rem;
     &:hover {
       opacity: 0.75;
     }
     &.disabled {
-      background-image: url('/resources/images/start-disabled.png');
+      background-image: url('../resources/images/start-disabled.png');
       cursor: default;
       &:hover {
         opacity: 1;
@@ -95,14 +95,14 @@ label.disabled {
     top:0.5rem;
     left:2.5rem;
     cursor: pointer;
-    background-image: url('/resources/images/stop.png');
+    background-image: url('../resources/images/stop.png');
     background-repeat: no-repeat;
     background-size: 1.5rem 1.5rem;
     &:hover {
       opacity: 0.75;
     }
     &.disabled {
-      background-image: url('/resources/images/stop-disabled.png');
+      background-image: url('../resources/images/stop-disabled.png');
       cursor: default;
       &:hover {
         opacity: 1;
@@ -184,7 +184,7 @@ label.disabled {
   position:fixed;
   height:100%;
   width:3rem;
-  background-image: url('resources/images/back.png');
+  background-image: url('../resources/images/back.png');
   background-repeat: no-repeat;
   background-position: 50% 50%;
   background-size:3rem;
