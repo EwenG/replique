@@ -172,7 +172,7 @@
       nil)))
 
 (defn start-repl [overview {:keys [repls] :as state} id]
-  (let [{:keys [directory port] :as repl}
+  (let [{:keys [directory port cljs-env] :as repl}
         (get repls id)
         repl-cmd (if (is-lein-project state id)
                    (repl-cmd-lein state id)
@@ -195,9 +195,14 @@
                                   repl)))
                       2000)
                      (if-let [repl-desc (read-port-desc directory)]
-                       (swap! core/state update-in [:repls id] assoc
-                              :cljs-env-port (:cljs-env repl-desc)
-                              :repl-port (:repl repl-desc))
+                       (do
+                         (swap! core/state update-in [:repls id] assoc
+                                  :cljs-env-port (:cljs-env repl-desc)
+                                  :repl-port (:repl repl-desc))
+                         #_(when (= :replique cljs-env)
+                           (brepl/connect
+                            (str "http://localhost:"
+                                 (:cljs-env repl-desc) "/repl"))))
                        (notif/single-notif
                         {:type :err
                          :msg "REPL error"})))
@@ -293,13 +298,3 @@
            (fn [r k o n]
              (when (not= (:repls o) (:repls n))
                (core/refresh-view n))))
-
-(comment
-
-  (dom/appendChild
-   js/document.head (utils/make-node (html (include-css "main.css"))))
-  (core/refresh-view @core/state)
-  (core/load-state)
-
-
- )
