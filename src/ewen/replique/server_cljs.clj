@@ -126,7 +126,7 @@
                          {:main browser-env-main}))
      :repl-opts {:analyze-path []
                  :port browser-env-port
-                 :server-static true
+                 :serve-static true
                  :static-dir ["." output-dir]
                  :src []}}))
 
@@ -136,11 +136,10 @@
                                     (file output-dir "main.js"))
                         :output-dir (.getAbsolutePath output-dir)
                         :optimizations :none
-                        :recompile-dependents false
-                        :main 'ewen.replique.ui.core})
+                        :recompile-dependents false})
      :repl-opts {:analyze-path []
                  :port 0
-                 :server-static true
+                 :serve-static true
                  :static-dir [output-dir]
                  :src []}}))
 
@@ -188,11 +187,22 @@
   (-get-error [this e env opts]
     (cljs.repl/-get-error wrapped e env opts)))
 
+;; Used instead of cljs.repl.browser to avoid compiling client.js.
+;; client.js is not needed because the browser repl uses xhr with cors
+;; instead of crosspagechannel
+(defn setup [repl-env opts]
+  (binding [cljs.repl.browser/browser-state (:browser-state repl-env)
+            cljs.repl.browser/ordering (:ordering repl-env)
+            cljs.repl.browser/es (:es repl-env)
+            cljs.repl.server/state (:server-state repl-env)]
+    (println "Waiting for browser to connect ...")
+    (cljs.repl.server/start repl-env)))
+
 (defn custom-benv [benv setup-ret]
   (merge (BrowserEnv. benv setup-ret) benv))
 
 (defn setup-benv [repl-env]
-  (let [setup-ret (cljs.repl.browser/setup repl-env nil)]
+  (let [setup-ret (setup repl-env nil)]
     (doto (Thread.
            (fn []
              (binding [cljs.repl.browser/browser-state
@@ -207,7 +217,7 @@
                                 (catch SocketException e
                                   {:status :error
                                    :value "Connection broken"}))]
-                      (.put evaled-queue evaled))
+                   (.put evaled-queue evaled))
                  (recur))))
            "repl-env-eval")
       (.setDaemon true)
@@ -217,7 +227,7 @@
 (defn init-browser-env
   ([comp-opts repl-opts]
    (init-browser-env comp-opts repl-opts true))
-  ([comp-opts repl-opts connect-repl]
+  ([comp-opts repl-opts output-main-file?]
    (alter-var-root #'compiler-env (-> comp-opts
                                       closure/add-implicit-options
                                       cljs-env/default-compiler-env
@@ -231,8 +241,6 @@
              (alter-var-root
               #'repl-env
               (constantly (custom-benv repl-env* setup-ret))))))
-       ;; Compile ewen.replique.cljs-env.browser, clojure.browser.repl,
-       ;; output a main file and call clojure.browser.repl.connect.
        (let [port (-> @(:server-state repl-env)
                       :socket
                       (.getLocalPort))
@@ -241,7 +249,7 @@
                       (.getInetAddress) (.getHostAddress)
                       server/normalize-ip-address)
              url (str "http://" host ":" port "/repl")
-             repl-src "clojure/browser/repl.cljs"
+             repl-src "ewen/replique/cljs_env/repl.cljs"
              benv-src "ewen/replique/cljs_env/browser.cljs"
              repl-compiled (repl-compile-cljs
                             repl-env repl-src comp-opts false)
@@ -258,14 +266,11 @@
            util/mkdirs
            (spit (slurp (io/resource "goog/deps.js"))))
          (closure/output-main-file comp-opts)
-         (spit (io/file (:output-to comp-opts))
-               (str "document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"clojure.browser.repl\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');\n"
-                    "document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"ewen.replique.cljs_env.browser\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');\n")
-               :append true)
-         (when connect-repl
+         (when output-main-file?
            (spit (io/file (:output-to comp-opts))
-                 (str "document.write('<script>clojure.browser.repl.connect(\"" url "\");</script>');\n")
-                 :append true)))))))
+                 (str "document.write('<script src=\"" url "\"></script>');\n"
+                      (when (:main comp-opts)
+                        "document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"" (comp/munge (:main comp-opts)) "\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');\n")))))))))
 
 (defn output-index-html [{:keys [output-dir]}]
   (closure/output-one-file {:output-to (str output-dir "/index.html")}

@@ -34,7 +34,9 @@
 (defmulti tooling-msg-handle :type)
 
 (defn normalize-ip-address [address]
-  (if (= "0.0.0.0" address) "127.0.0.1" address))
+  (cond (= "0.0.0.0" address) "127.0.0.1"
+        (= "0:0:0:0:0:0:0:1" address) "127.0.0.1"
+        :else address))
 
 (defn repl-infos []
   (let [server-infos (:replique @#'clojure.core.server/servers)]

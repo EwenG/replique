@@ -12,7 +12,8 @@
             [ewen.replique.ui.settings :as settings]
             [ewen.replique.ui.shortcuts]
             [ewen.replique.ui.notifications :as notif]
-            [cljs-uuid-utils.core :as uuid])
+            [cljs-uuid-utils.core :as uuid]
+            [ewen.replique.cljs-env.repl :as repl])
   (:import [goog.string format])
   (:require-macros [hiccup.core :refer [html]]
                    [hiccup.def :refer [defhtml]]))
@@ -48,7 +49,7 @@
 (defhtml dashboard [{:keys [repls]}]
   (html [:div#dashboard
          [:div.settings-wrapper
-          [:img.settings-button {:src "/resources/images/settings.png"}]]
+          [:img.settings-button {:src "resources/images/settings.png"}]]
          (new-repl)
          (for [[id repl] repls]
            (repl-overview repl id))]))
@@ -199,8 +200,8 @@
                          (swap! core/state update-in [:repls id] assoc
                                   :cljs-env-port (:cljs-env repl-desc)
                                   :repl-port (:repl repl-desc))
-                         #_(when (= :replique cljs-env)
-                           (brepl/connect
+                         (when (= :replique cljs-env)
+                           (repl/connect
                             (str "http://localhost:"
                                  (:cljs-env repl-desc) "/repl"))))
                        (notif/single-notif

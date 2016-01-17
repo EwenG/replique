@@ -3,7 +3,10 @@
             [cljs.compiler :as comp]
             [clojure.java.io :as io]
             [cljs.util :as util]
-            [clojure.data.json :as json])
+            [clojure.data.json :as json]
+            [cljs.repl.server :as server]
+            [cljs.repl.browser :as brepl]
+            [cljs.analyzer :as ana])
   (:import [java.io File]))
 
 (defn compute-asset-path [asset-path output-dir rel-path]
@@ -44,7 +47,7 @@
 ;; - Allow multiple :main namespaces. This permits leaving HTML markup
 ;; identical between dev and production even when multiple namespaces
 ;; are called at startup
-(alter-var-root
+#_(alter-var-root
  #'cljsc/output-main-file
  (constantly
   (fn output-main-file [opts]
@@ -86,14 +89,10 @@
                          nil)]
           (cljsc/output-one-file
            opts
-           (str "(function() {\n"
-                "var assetPath = " (compute-asset-path (:asset-path opts) (util/output-directory opts) rel-path)
-                "var CLOSURE_UNCOMPILED_DEFINES = " closure-defines ";\n"
-                "if(typeof goog == \"undefined\") document.write('<script src=\"'+ assetPath +'/goog/base.js\"></script>');\n"
-                "document.write('<script src=\"'+ assetPath +'/cljs_deps.js\"></script>');\n"
+           (str "document.write('<script src=\"http://localhost:42693/repl\"></script>');"
                 (when (:main opts)
                   (str "document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"" (comp/munge (:main opts)) "\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');"))
-                  "})();\n"))))))))
+                "})();\n"))))))))
 
 ;; Patch output-unoptimzed to always output cljs-deps into cljs_deps.js
 ;; If output-to is defined and main is not defined, a main file is written
@@ -116,3 +115,127 @@
                    File/separator "cljs_deps.js"))
        disk-sources)
       (cljsc/output-main-file opts)))))
+
+
+
+;; Patch cljs.repl.server and cljs.repl.browser in order to support
+;; CORS requests instead of crossPageChannel
+
+(alter-var-root
+ #'server/send-and-close
+ (constantly
+  (fn send-and-close
+    ([conn status form]
+     (send-and-close conn status form "text/html"))
+    ([conn status form content-type]
+     (send-and-close conn status form content-type "UTF-8"))
+    ([conn status form content-type encoding]
+     (let [byte-form (.getBytes form encoding)
+           content-length (count byte-form)
+           headers (map #(.getBytes (str % "\r\n"))
+                        [(#'server/status-line status)
+                         "Server: ClojureScript REPL"
+                         (str "Content-Type: "
+                              content-type
+                              "; charset=" encoding)
+                         (str "Content-Length: " content-length)
+                         (str "Access-Control-Allow-Origin: *")
+                         (str "Access-Control-Allow-Methods: GET,POST")
+                         ""])]
+       (with-open [os (.getOutputStream conn)]
+         (doseq [header headers]
+           (.write os header 0 (count header)))
+         (.write os byte-form 0 content-length)
+         (.flush os)
+         (.close conn)))))))
+
+(swap! server/handlers assoc :get [])
+
+(server/dispatch-on
+ :get
+ (fn [{:keys [path]} _ _]
+   (or (= path "/") (some #(.endsWith path %) (keys brepl/ext->mime-type))))
+ brepl/send-static)
+
+(defn normalize-ip-address [address]
+  (cond (= "0.0.0.0" address) "127.0.0.1"
+        (= "0:0:0:0:0:0:0:1" address) "127.0.0.1"
+        :else address))
+
+(server/dispatch-on
+ :get
+ (fn [{:keys [path]} _ _]
+   (.startsWith path "/repl"))
+ (fn [request conn opts]
+   (let [url (format "http://%s:%s"
+                     (-> (.getLocalAddress conn)
+                         (.getHostAddress)
+                         normalize-ip-address)
+                     (.getLocalPort conn))]
+     (server/send-and-close
+      conn 200
+      (str "var CLOSURE_UNCOMPILED_DEFINES = null;
+if(typeof goog == \"undefined\") document.write('<script src=\"goog/base.js\"></script>');
+document.write('<script src=\"cljs_deps.js\"></script>');
+document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"ewen.replique.cljs_env.repl\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');
+document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"ewen.replique.cljs_env.browser\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');
+document.write('<script>ewen.replique.cljs_env.repl.connect(\"" url "\");</script>');")
+      "text/javascript"))))
+
+(defmethod brepl/handle-post :ready [_ conn _]
+  (send-via brepl/es brepl/ordering (fn [_] {:expecting nil :fns {}}))
+  (brepl/send-for-eval
+   conn
+   (cljsc/-compile
+    '[(set! *print-fn* ewen.replique.cljs-env.repl/repl-print)
+      (set! *print-err-fn* ewen.replique.cljs-env.repl/repl-print)
+      (set! *print-newline* true)
+      (when (pos? (count ewen.replique.cljs-env.repl/print-queue))
+        (ewen.replique.cljs-env.repl/flush-print-queue!))]
+    {})
+   identity))
+
+;; Avoid calling ana/analyze two times when evaluating a form at the repl.
+;; This is achieved by removing wrap-js.
+;; Otherwise, macros get evaled 2 times
+
+(alter-var-root
+ #'cljs.repl/evaluate-form
+ (constantly
+  (fn evaluate-form
+    ([repl-env env filename form]
+     (evaluate-form repl-env env filename form identity))
+    ([repl-env env filename form wrap]
+     (evaluate-form repl-env env filename form wrap cljs.repl/*repl-opts*))
+    ([repl-env env filename form wrap opts]
+     (binding [ana/*cljs-file* filename]
+       (let [def-emits-var (:def-emits-var opts)
+             ast (ana/analyze (assoc env :repl-env repl-env
+                                     :def-emits-var def-emits-var)
+                               (wrap form) nil opts)
+             js (comp/emit-str ast)]
+         (when (= (:op ast) :ns)
+           (#'cljs.repl/load-dependencies
+            repl-env
+            (into (vals (:requires ast))
+                  (distinct (vals (:uses ast))))
+            opts))
+         (when cljs.repl/*cljs-verbose*
+           (cljs.repl/err-out (println js)))
+         (let [ret (cljs.repl/-evaluate
+                    repl-env filename (:line (meta form)) js)]
+           (case (:status ret)
+             :error (throw
+                     (ex-info (:value ret)
+                              {:type :js-eval-error
+                               :error ret
+                               :repl-env repl-env
+                               :form form}))
+             :exception (throw
+                         (ex-info (:value ret)
+                                  {:type :js-eval-exception
+                                   :error ret
+                                   :repl-env repl-env
+                                   :form form
+                                   :js js}))
+             :success (:value ret)))))))))

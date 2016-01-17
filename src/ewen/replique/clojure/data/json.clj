@@ -520,8 +520,6 @@
       (pprint/with-pprint-dispatch pprint-dispatch
         (pprint/pprint x)))))
 
-(load "json_compat_0_1")
-
 ;; Local Variables:
 ;; mode: clojure
 ;; eval: (define-clojure-indent (codepoint-case (quote defun)))
