@@ -89,15 +89,19 @@
                          nil)]
           (cljsc/output-one-file
            opts
-           (str "document.write('<script src=\"http://localhost:42693/repl\"></script>');"
+           (str "(function() {\n"
+                "var assetPath = " (compute-asset-path (:asset-path opts) (util/output-directory opts) rel-path)
+                "var CLOSURE_UNCOMPILED_DEFINES = " closure-defines ";\n"
+                "if(typeof goog == \"undefined\") document.write('<script src=\"'+ assetPath +'/goog/base.js\"></script>');\n"
+                "document.write('<script src=\"'+ assetPath +'/cljs_deps.js\"></script>');\n"
                 (when (:main opts)
                   (str "document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"" (comp/munge (:main opts)) "\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');"))
-                "})();\n"))))))))
+                  "})();\n"))))))))
 
 ;; Patch output-unoptimzed to always output cljs-deps into cljs_deps.js
 ;; If output-to is defined and main is not defined, a main file is written
 ;; which does not goog.require any namespace
-(alter-var-root
+#_(alter-var-root
  #'cljsc/output-unoptimized
  (constantly
   (fn output-unoptimized
@@ -154,7 +158,7 @@
 (server/dispatch-on
  :get
  (fn [{:keys [path]} _ _]
-   (or (= path "/") (some #(.endsWith path %) (keys brepl/ext->mime-type))))
+   (some #(.endsWith path %) (keys brepl/ext->mime-type)))
  brepl/send-static)
 
 (defn normalize-ip-address [address]
@@ -165,22 +169,29 @@
 (server/dispatch-on
  :get
  (fn [{:keys [path]} _ _]
-   (.startsWith path "/repl"))
+   (= path "/"))
  (fn [request conn opts]
-   (let [url (format "http://%s:%s"
-                     (-> (.getLocalAddress conn)
-                         (.getHostAddress)
-                         normalize-ip-address)
-                     (.getLocalPort conn))]
+   (let [url (format "http://%s" (:host (:headers request)))]
      (server/send-and-close
       conn 200
-      (str "var CLOSURE_UNCOMPILED_DEFINES = null;
-if(typeof goog == \"undefined\") document.write('<script src=\"goog/base.js\"></script>');
-document.write('<script src=\"cljs_deps.js\"></script>');
-document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"ewen.replique.cljs_env.repl\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');
-document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"ewen.replique.cljs_env.browser\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');
-document.write('<script>ewen.replique.cljs_env.repl.connect(\"" url "\");</script>');")
-      "text/javascript"))))
+      (str "<html>
+<head></head>
+<body>
+<script>var CLOSURE_UNCOMPILED_DEFINES = null;</script>
+<script src=\"goog/base.js\"></script>
+<script src=\"cljs_deps.js\"></script>
+<script>
+goog.require(\"ewen.replique.cljs_env.repl\");
+</script>
+<script>
+goog.require(\"ewen.replique.cljs_env.browser\");
+</script>
+<script>
+ewen.replique.cljs_env.repl.connect(\"" url "\");
+</script>
+</body>
+</html>")
+      "text/html"))))
 
 (defmethod brepl/handle-post :ready [_ conn _]
   (send-via brepl/es brepl/ordering (fn [_] {:expecting nil :fns {}}))

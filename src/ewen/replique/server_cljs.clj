@@ -13,8 +13,10 @@
             [clojure.string :as string]
             [cljs.js-deps :as deps]
             [clojure.tools.reader :as reader]
+            [cljs.closure :as cljsc]
             [ewen.replique.cljs]
-            [ewen.replique.sourcemap])
+            [ewen.replique.sourcemap]
+            [clojure.data.json :as json])
   (:import [java.io File]
            [java.net URL]
            [java.util.concurrent SynchronousQueue]
@@ -224,6 +226,67 @@
       (.start))
     setup-ret))
 
+(defn compute-asset-path [asset-path output-dir rel-path]
+  (let [asset-path (if asset-path (str "\"" asset-path "\"") "null")
+        output-dir (if output-dir (str "\"" output-dir "\"") "null")
+        rel-path (if rel-path (str "\"" rel-path "\"") "null")]
+    (str "(function(assetPath, outputDir, relPath) {
+          if(assetPath) {
+            return assetPath;
+          }
+          var computedAssetPath = assetPath? assetPath : outputDir;
+          if(!outputDir ||  !relPath) {
+            return computedAssetpath;
+          }
+          var endsWith = function(str, suffix) {
+            return str.indexOf(suffix, str.length - suffix.length) !== -1;
+          }
+          var origin = window.location.protocol + \"//\" + window.location.hostname + (window.location.port ? ':' + window.location.port: '');
+          var scripts = document.getElementsByTagName(\"script\");
+          for(var i = 0; i < scripts.length; ++i) {
+            var src = scripts[i].src;
+            if(src && endsWith(src, relPath)) {
+              var relPathIndex = src.indexOf(relPath);
+              var originIndex = src.indexOf(origin);
+              if(originIndex === 0) {
+                return src.substring(origin.length+1, relPathIndex);
+              }
+            }
+          }
+          return computedAssetPath;
+        })(" asset-path ", " output-dir ", " rel-path ");\n")))
+
+(defn output-main-file [{:keys [closure-defines output-dir output-to]
+                         :as opts}]
+  (let [closure-defines (json/write-str closure-defines)
+        output-dir-uri (-> output-dir (File.) (.toURI))
+        output-to-uri (-> output-to (File.) (.toURI))
+        output-dir-path (-> (.normalize output-dir-uri)
+                            (.toString))
+        output-to-path (-> (.normalize output-to-uri)
+                           (.toString))
+        ;; If output-dir is not a parent dir of output-to, then
+        ;; we don't try to infer the asset path because it may not
+        ;; be possible.
+        rel-path (if (and (.startsWith output-to-path
+                                       output-dir-path)
+                          (not= output-dir-path output-to-path))
+                   (-> (.relativize output-dir-uri output-to-uri)
+                       (.toString))
+                   nil)]
+    (cljsc/output-one-file
+     opts
+     (str "(function() {\n"
+          "var assetPath = " (compute-asset-path (:asset-path opts) (util/output-directory opts) rel-path)
+          "var CLOSURE_UNCOMPILED_DEFINES = " closure-defines ";\n"
+          "if(typeof goog == \"undefined\") document.write('<script src=\"'+ assetPath +'/goog/base.js\"></script>');\n"
+          "document.write('<script src=\"'+ assetPath +'/cljs_deps.js\"></script>');\n"
+          "document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"ewen.replique.cljs_env.repl\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');\n"
+          "document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"ewen.replique.cljs_env.browser\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');\n"
+          (when (:main opts)
+            (str "document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"" (comp/munge (:main opts)) "\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');"))
+          "})();\n"))))
+
 (defn init-browser-env
   ([comp-opts repl-opts]
    (init-browser-env comp-opts repl-opts true))
@@ -265,12 +328,8 @@
          (doto (io/file (util/output-directory comp-opts) "goog" "deps.js")
            util/mkdirs
            (spit (slurp (io/resource "goog/deps.js"))))
-         (closure/output-main-file comp-opts)
          (when output-main-file?
-           (spit (io/file (:output-to comp-opts))
-                 (str "document.write('<script src=\"" url "\"></script>');\n"
-                      (when (:main comp-opts)
-                        "document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"" (comp/munge (:main comp-opts)) "\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');\n")))))))))
+           (output-main-file comp-opts)))))))
 
 (defn output-index-html [{:keys [output-dir]}]
   (closure/output-one-file {:output-to (str output-dir "/index.html")}
@@ -352,8 +411,7 @@
   (alter-var-root #'server/sass-bin (constantly sass-bin))
   #_(init-class-loader)
   (let [{:keys [comp-opts repl-opts]} (init-opts opts)]
-    (init-browser-env comp-opts repl-opts)
-    (output-index-html comp-opts)
+    (init-browser-env comp-opts repl-opts false)
     (start-server {:port port :name :replique
                    :accept 'clojure.core.server/repl
                    :server-daemon false})
@@ -431,10 +489,17 @@
                   :value)}))
 
 (defn assoc-css-file [output-dir {:keys [uri] :as css-infos}]
-  (assoc css-infos :css-file
-         (->> uri (URL.) (.getPath)
-              (File. output-dir)
-              (.getAbsolutePath))))
+  (let [url (URL. uri)]
+    (if (and (= "file" (.getProtocol url))
+             (.exists (File. (.toURI url))))
+      (assoc css-infos :css-file
+             (->> (.getPath url)
+                  (File.)
+                  (.getAbsolutePath)))
+      (assoc css-infos :css-file
+             (->> (.getPath url)
+                  (File. output-dir)
+                  (.getAbsolutePath))))))
 
 (defn assoc-sourcemap [{:keys [scheme css-file uri] :as css-infos}]
   (cond (= "http" scheme)
@@ -511,7 +576,7 @@
 (comment
   (server/tooling-msg-handle
    {:type :list-sass
-    :file-path "/home/egr/replique.el/lein-project/resources/ff.scss"})
+    :file-path "/home/egr/electron/resources/replique/resources/stylesheet/main.scss"})
   )
 
 (defn compile-sass [input-path output-path]
