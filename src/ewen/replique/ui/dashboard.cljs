@@ -12,8 +12,7 @@
             [ewen.replique.ui.settings :as settings]
             [ewen.replique.ui.shortcuts]
             [ewen.replique.ui.notifications :as notif]
-            [cljs-uuid-utils.core :as uuid]
-            [ewen.replique.cljs-env.repl :as repl])
+            [cljs-uuid-utils.core :as uuid])
   (:import [goog.string format])
   (:require-macros [hiccup.core :refer [html]]
                    [hiccup.def :refer [defhtml]]))
@@ -196,14 +195,9 @@
                                   repl)))
                       2000)
                      (if-let [repl-desc (read-port-desc directory)]
-                       (do
-                         (swap! core/state update-in [:repls id] assoc
-                                  :cljs-env-port (:cljs-env repl-desc)
-                                  :repl-port (:repl repl-desc))
-                         (when (= :replique cljs-env)
-                           (repl/connect
-                            (str "http://localhost:"
-                                 (:cljs-env repl-desc) "/repl"))))
+                       (swap! core/state update-in [:repls id] assoc
+                              :cljs-env-port (:cljs-env repl-desc)
+                              :repl-port (:repl repl-desc))
                        (notif/single-notif
                         {:type :err
                          :msg "REPL error"})))
@@ -293,6 +287,8 @@
                         (partial overview-clicked overview))))
      (when-let [node (.querySelector root "#dashboard")]
        (dom/removeNode node)))))
+
+
 
 
 (add-watch core/state :repls-watcher
