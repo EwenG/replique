@@ -6,7 +6,8 @@
             [ewen.replique.ui.utils :as utils]
             [ewen.replique.cljs-env.browser]
             [goog.dom :as dom]
-            [hiccup.page :refer [include-css]])
+            [hiccup.page :refer [include-css]]
+            [ewen.replique.cljs-env.repl])
   (:require-macros [hiccup.core :refer [html]]))
 
 (dom/appendChild
