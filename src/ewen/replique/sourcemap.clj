@@ -1,5 +1,5 @@
 (ns ewen.replique.sourcemap
-  (:require [ewen.replique.clojure.data.json :as json]
+  (:require [clojure.data.json :as json]
             [clojure.java.io :refer [as-file]])
   (:import [java.util Base64]
            [java.nio.charset StandardCharsets]
