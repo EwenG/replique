@@ -195,9 +195,11 @@
                                   repl)))
                       2000)
                      (if-let [repl-desc (read-port-desc directory)]
-                       (swap! core/state update-in [:repls id] assoc
-                              :cljs-env-port (:cljs-env repl-desc)
-                              :repl-port (:repl repl-desc))
+                       (let [cljs-env-port (:cljs-env repl-desc)]
+                         (swap! core/state update-in [:repls id] assoc
+                                  :cljs-env-port cljs-env-port
+                                  :repl-port (:repl repl-desc))
+                         (.log js/console (format "ewen.replique.cljs_env.repl.connect(\"http://localhost:%s\")" cljs-env-port)))
                        (notif/single-notif
                         {:type :err
                          :msg "REPL error"})))

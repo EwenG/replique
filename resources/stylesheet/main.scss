@@ -325,24 +325,4 @@ select {
   }
 }
 
-#notifications {
-  position: absolute;
-  top:0;
-  right:0;
-  .notif {
-    padding: 1rem;
-    border-radius: 0.3rem;
-  }
-  .err {
-    background-color: $light-red;
-    color: $dark-red;
-  }
-  .download {
-    background-color: $light-blue;
-    color: $dark-blue;
-  }
-  .success {
-    background-color: $light-green;
-    color: $dark-green;
-  }
-}
+@import "notifications";

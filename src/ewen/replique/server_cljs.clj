@@ -7,6 +7,7 @@
             [cljs.closure :as closure]
             [cljs.env :as cljs-env]
             [cljs.analyzer :as ana]
+            [cljs.analyzer.api :as ana-api]
             [cljs.compiler :as comp]
             [cljs.util :as util]
             [cljs.repl]
@@ -16,6 +17,9 @@
             [cljs.closure :as cljsc]
             [ewen.replique.cljs]
             [ewen.replique.sourcemap]
+            [ewen.replique.compliment.context :as context]
+            [ewen.replique.compliment.sources.local-bindings
+             :refer [bindings-from-context]]
             [clojure.data.json :as json])
   (:import [java.io File]
            [java.net URL]
@@ -544,6 +548,7 @@
           child-path (ewen.replique.sourcemap/str->path child-source)
           relative-path (.relativize child-path main-path)]
       (->> (.resolve path relative-path)
+           (.normalize)
            str
            (assoc css-infos :main-source)))))
 
@@ -652,9 +657,117 @@
              (hash-map :result))))))
 
 (comment
-  (server/tooling-msg-handle {:type :load-scss
-                              :scheme "http"
-                              :uri "http://localhost:36466/ff.css"
-                              :file-path "/home/egr/replique.el/lein-project/out/ff.css"
-                              :main-source nil})
+  (server/tooling-msg-handle
+   {:type :load-scss
+    :scheme "http"
+    :uri "http://localhost:36466/ff.css"
+    :file-path "/home/egr/replique.el/lein-project/out/ff.css"
+    :main-source nil})
+  )
+
+(defn resolve-ns-alias [comp-env current-ns alias]
+  (get-in @comp-env [::ana/namespaces
+                     current-ns :requires alias]))
+
+(comment
+  (get (get @compiler-env :js-dependency-index) "goog.string.format")
+  )
+
+(defn resolve-var
+  [comp-env current-ns sym]
+  (if (= "js" (namespace sym))
+    {:not-found :js}
+    (let [s (str sym)]
+      (cond
+        (not (nil? (namespace sym)))
+        (let [ns (namespace sym)
+              ns (if (= "clojure.core" ns) "cljs.core" ns)
+              ns (symbol ns)
+              full-ns (resolve-ns-alias comp-env current-ns ns)]
+          (merge (ana/gets @comp-env ::ana/namespaces full-ns
+                           :defs (symbol (name sym)))
+                 {:name (symbol (str full-ns) (str (name sym)))
+                  :ns full-ns}))
+
+        (and (.contains s ".") (not (.contains s "..")))
+        (let [idx (.indexOf s ".")
+              prefix (symbol (subs s 0 idx))
+              suffix (subs s (inc idx))]
+          (let [full-ns (ana/gets @comp-env
+                                  ::ana/namespaces current-ns
+                                  :imports prefix)]
+            (if-not (nil? full-ns)
+              {:name (symbol (str full-ns) suffix)}
+              (let [info (ana/gets @comp-env
+                                   ::ana/namespaces current-ns
+                                   :defs prefix)]
+                (if-not (nil? info)
+                  (merge info
+                         {:name (symbol (str current-ns) (str sym))
+                          :ns current-ns})
+                  (merge (ana/gets @comp-env
+                                   ::ana/namespaces prefix
+                                   :defs (symbol suffix))
+                         {:name (if (= "" prefix)
+                                  (symbol suffix)
+                                  (symbol (str prefix) suffix))
+                          :ns prefix}))))))
+
+        (not (nil? (ana/gets @comp-env
+                             ::ana/namespaces current-ns
+                             :uses sym)))
+        (let [full-ns (ana/gets @comp-env
+                                ::ana/namespaces current-ns
+                                :uses sym)]
+          (merge
+           (ana/gets @comp-env ::ana/namespaces full-ns :defs sym)
+           {:name (symbol (str full-ns) (str sym))
+            :ns full-ns}))
+
+        (not (nil? (ana/gets @comp-env
+                             ::ana/namespaces current-ns
+                             :imports sym)))
+        (recur comp-env current-ns (ana/gets @comp-env
+                                             ::ana/namespaces current-ns
+                                             :imports sym))
+
+        :else
+        (let [full-ns (cond
+                        (not (nil? (ana/gets @comp-env
+                                             ::ana/namespaces current-ns
+                                             :defs sym)))
+                        current-ns
+                        (cljs-env/with-compiler-env comp-env
+                          (ana/core-name? env sym))
+                        'cljs.core
+                        :else current-ns)]
+          (merge (ana/gets @comp-env
+                           ::ana/namespaces full-ns :defs sym)
+                 {:name (symbol (str full-ns) (str sym))
+                  :ns full-ns}))))))
+
+(defmethod server/tooling-msg-handle :cljs-var-meta
+  [{:keys [context ns symbol keys] :as msg}]
+  (with-tooling-response msg
+    (let [ctx (context/parse-context context)
+          bindings (bindings-from-context ctx)]
+      (cond
+        (or (nil? ns) (nil? symbol))
+        {:meta nil}
+        (and ctx (contains? (name symbol) (into #{} bindings)))
+        {:local-binding true}
+        :else
+        (let [v (resolve-var compiler-env ns symbol)
+              {v-ns :ns v-name :name} v]
+          (if (nil? v)
+            {:meta nil}
+            {:meta v #_(ana/gets @compiler-env ::ana/namespaces
+                             v-ns :defs)}))))))
+
+(comment
+  (server/tooling-msg-handle {:type :cljs-var-meta
+                              :context nil
+                              :ns 'ewen.replique.ui.dashboard
+                              :symbol 'goog.string.format
+                              :keys [:column :line :file]})
   )
