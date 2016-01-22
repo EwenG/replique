@@ -290,9 +290,6 @@
      (when-let [node (.querySelector root "#dashboard")]
        (dom/removeNode node)))))
 
-
-
-
 (add-watch core/state :repls-watcher
            (fn [r k o n]
              (when (not= (:repls o) (:repls n))

@@ -20,7 +20,8 @@
             [ewen.replique.compliment.context :as context]
             [ewen.replique.compliment.sources.local-bindings
              :refer [bindings-from-context]]
-            [clojure.data.json :as json])
+            [clojure.data.json :as json]
+            [cljs.tagged-literals :as tags])
   (:import [java.io File]
            [java.net URL]
            [java.util.concurrent SynchronousQueue]
@@ -749,24 +750,43 @@
 (defmethod server/tooling-msg-handle :cljs-var-meta
   [{:keys [context ns symbol keys] :as msg}]
   (with-tooling-response msg
-    (let [ctx (context/parse-context (read-string context))
-          bindings (bindings-from-context ctx)]
+    (let [ctx (when context (binding [reader/*data-readers*
+                                      tags/*cljs-data-readers*]
+                              (reader/read-string context)))
+          ctx (context/parse-context ctx)
+          bindings (bindings-from-context ctx)
+          keys (into #{} keys)]
       (cond
         (or (nil? ns) (nil? symbol))
         {:meta nil}
-        (and ctx (contains? (name symbol) (into #{} bindings)))
-        {:local-binding true}
+        (and ctx (contains? (into #{} bindings) (name symbol)))
+        {:not-found :local-binding}
         :else
-        (let [v (resolve-var compiler-env ns symbol)
-              {v-ns :ns v-name :name} v]
-          (if (nil? v)
+        (let [v (when (symbol? symbol)
+                  (resolve-var compiler-env ns symbol))
+              meta (when v
+                     (server/format-meta
+                      v keys (:output-dir (:options @compiler-env))))]
+          (if (empty? meta)
             {:meta nil}
-            {:meta (select-keys v keys)}))))))
+            {:meta meta}))))))
 
 (comment
   (server/tooling-msg-handle {:type :cljs-var-meta
                               :context nil
                               :ns 'ewen.replique.ui.dashboard
                               :symbol 'goog.string.format
+                              :keys [:column :line :file]})
+
+  (server/tooling-msg-handle {:type :cljs-var-meta
+                              :context nil
+                              :ns 'ewen.replique.ui.dashboard
+                              :symbol 'node/require
+                              :keys [:column :line :file]})
+
+  (server/tooling-msg-handle {:type :cljs-var-meta
+                              :context nil
+                              :ns 'ewen.replique.ui.dashboard
+                              :symbol 'add-watch
                               :keys [:column :line :file]})
   )

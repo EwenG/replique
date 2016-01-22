@@ -4,7 +4,9 @@
             [clojure.java.io :refer [file]]
             [ewen.replique.compliment.context :as context]
             [ewen.replique.compliment.sources.local-bindings
-             :refer [bindings-from-context]])
+             :refer [bindings-from-context]]
+            [ewen.replique.compliment.core :as compliment]
+            [ewen.replique.compliment.sources :as compliment-sources])
   (:import [java.util.concurrent.locks ReentrantLock]
            [java.io File]))
 
@@ -100,10 +102,20 @@
                       :result (pr-str result)})))
             (prn result))))
 
-(defn format-meta [{:keys [file] :as meta} keys]
-  (if (and file (.exists (File. file)))
-    (select-keys meta keys)
-    (select-keys meta (disj keys :file :line :column))))
+(defn format-meta
+  ([{:keys [file] :as meta} keys]
+   (format-meta meta keys nil))
+  ([{:keys [file] :as meta} keys base-dir]
+   (let [f (and file (File. file))
+         f (if (and f (.exists f))
+             f
+             (and file base-dir (File. base-dir file)))]
+     (if (and f (.exists f))
+       (select-keys (assoc
+                     meta :file
+                     (.getAbsolutePath f))
+                    keys)
+       (select-keys meta (disj keys :file :line :column))))))
 
 (defmethod tooling-msg-handle :clj-var-meta
   [{:keys [context ns symbol keys] :as msg}]
@@ -113,7 +125,7 @@
           bindings (bindings-from-context ctx)
           keys (into #{} keys)]
       (cond
-        (or (nil? ns) (nil? symbol))
+        (or (nil? ns) (nil? symbol) (nil? (find-ns ns)))
         {:meta nil}
         (and ctx (contains? (into #{} bindings) (name symbol)))
         {:not-found :local-binding}
@@ -138,4 +150,24 @@
                        :ns 'ewen.replique.server
                        :symbol 'tooling-msg-handle
                        :keys '(:column :line :file)})
+
+  (tooling-msg-handle {:type :clj-var-meta
+                       :context nil
+                       :ns 'ewen.replique.compliment.core
+                       :symbol 'all-sources
+                       :keys '(:column :line :file)})
+
+  )
+
+(defmethod tooling-msg-handle :clj-completion
+  [{:keys [context ns prefix] :as msg}]
+  (with-tooling-response msg
+    (let [ctx (when context (read-string context))]
+      {:candidates (compliment/completions prefix {:ns ns :context ctx :sources [:ewen.replique.compliment.sources.ns-mappings/ns-mappings]})})))
+
+(comment
+  (tooling-msg-handle {:type :clj-completion
+                       :context nil
+                       :ns 'ewen.replique.server
+                       :prefix "tooli"})
   )

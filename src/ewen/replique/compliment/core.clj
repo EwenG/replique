@@ -12,8 +12,7 @@
                                               keywords
                                               special-forms
                                               local-bindings
-                                              resources)
-            [defprecated.core :as depr])
+                                              resources))
   (:use [ewen.replique.compliment.sources :only [all-sources]]
         [ewen.replique.compliment.context :only [cache-context]]
         [clojure.string :only [join]])
