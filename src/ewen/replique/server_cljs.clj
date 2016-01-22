@@ -689,30 +689,6 @@
                  {:name (symbol (str full-ns) (str (name sym)))
                   :ns full-ns}))
 
-        (and (.contains s ".") (not (.contains s "..")))
-        (let [idx (.indexOf s ".")
-              prefix (symbol (subs s 0 idx))
-              suffix (subs s (inc idx))]
-          (let [full-ns (ana/gets @comp-env
-                                  ::ana/namespaces current-ns
-                                  :imports prefix)]
-            (if-not (nil? full-ns)
-              {:name (symbol (str full-ns) suffix)}
-              (let [info (ana/gets @comp-env
-                                   ::ana/namespaces current-ns
-                                   :defs prefix)]
-                (if-not (nil? info)
-                  (merge info
-                         {:name (symbol (str current-ns) (str sym))
-                          :ns current-ns})
-                  (merge (ana/gets @comp-env
-                                   ::ana/namespaces prefix
-                                   :defs (symbol suffix))
-                         {:name (if (= "" prefix)
-                                  (symbol suffix)
-                                  (symbol (str prefix) suffix))
-                          :ns prefix}))))))
-
         (not (nil? (ana/gets @comp-env
                              ::ana/namespaces current-ns
                              :uses sym)))
@@ -730,6 +706,30 @@
         (recur comp-env current-ns (ana/gets @comp-env
                                              ::ana/namespaces current-ns
                                              :imports sym))
+
+        (not (nil? (ana/gets @comp-env :js-dependency-index s)))
+        (merge (select-keys (ana/gets @comp-env :js-dependency-index s)
+                            [:file])
+               {:name s})
+
+        (and (.contains s ".") (not (.contains s "..")))
+        (let [idx (.indexOf s ".")
+              prefix (symbol (subs s 0 idx))
+              suffix (subs s (inc idx))]
+          (let [info (ana/gets @comp-env
+                               ::ana/namespaces current-ns
+                               :defs prefix)]
+            (if-not (nil? info)
+              (merge info
+                     {:name (symbol (str current-ns) (str sym))
+                      :ns current-ns})
+              (merge (ana/gets @comp-env
+                               ::ana/namespaces prefix
+                               :defs (symbol suffix))
+                     {:name (if (= "" prefix)
+                              (symbol suffix)
+                              (symbol (str prefix) suffix))
+                      :ns prefix}))))
 
         :else
         (let [full-ns (cond
@@ -749,7 +749,7 @@
 (defmethod server/tooling-msg-handle :cljs-var-meta
   [{:keys [context ns symbol keys] :as msg}]
   (with-tooling-response msg
-    (let [ctx (context/parse-context context)
+    (let [ctx (context/parse-context (read-string context))
           bindings (bindings-from-context ctx)]
       (cond
         (or (nil? ns) (nil? symbol))
@@ -761,8 +761,7 @@
               {v-ns :ns v-name :name} v]
           (if (nil? v)
             {:meta nil}
-            {:meta v #_(ana/gets @compiler-env ::ana/namespaces
-                             v-ns :defs)}))))))
+            {:meta (select-keys v keys)}))))))
 
 (comment
   (server/tooling-msg-handle {:type :cljs-var-meta

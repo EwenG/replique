@@ -1,11 +1,15 @@
 (ns ewen.replique.server
   (:require [clojure.main]
             [clojure.core.server :refer [*session*]]
-            [clojure.java.io :refer [file]])
-  (:import [java.util.concurrent.locks ReentrantLock]))
+            [clojure.java.io :refer [file]]
+            [ewen.replique.compliment.context :as context]
+            [ewen.replique.compliment.sources.local-bindings
+             :refer [bindings-from-context]])
+  (:import [java.util.concurrent.locks ReentrantLock]
+           [java.io File]))
 
-(def directory nil)
-(def sass-bin nil)
+(defonce directory nil)
+(defonce sass-bin nil)
 (defonce tooling-out nil)
 (defonce tooling-out-lock (ReentrantLock.))
 (defonce tooling-err nil)
@@ -95,3 +99,43 @@
                       :ns (str *ns*)
                       :result (pr-str result)})))
             (prn result))))
+
+(defn format-meta [{:keys [file] :as meta} keys]
+  (if (and file (.exists (File. file)))
+    (select-keys meta keys)
+    (select-keys meta (disj keys :file :line :column))))
+
+(defmethod tooling-msg-handle :clj-var-meta
+  [{:keys [context ns symbol keys] :as msg}]
+  (with-tooling-response msg
+    (let [ctx (when context (read-string context))
+          ctx (context/parse-context ctx)
+          bindings (bindings-from-context ctx)
+          keys (into #{} keys)]
+      (cond
+        (or (nil? ns) (nil? symbol))
+        {:meta nil}
+        (and ctx (contains? (into #{} bindings) (name symbol)))
+        {:not-found :local-binding}
+        :else
+        (let [v (when (symbol? symbol)
+                  (try (ns-resolve ns symbol)
+                       (catch ClassNotFoundException e
+                         nil)))
+              meta (when (and v (meta v))
+                     (format-meta (meta v) keys))]
+          (if (empty? meta)
+            {:meta nil}
+            {:meta meta}))))))
+
+(comment
+  (let [tooling-msg-handle "e"]
+    tooling-msg-handle))
+
+(comment
+  (tooling-msg-handle {:type :clj-var-meta
+                       :context nil
+                       :ns 'ewen.replique.server
+                       :symbol 'tooling-msg-handle
+                       :keys '(:column :line :file)})
+  )
