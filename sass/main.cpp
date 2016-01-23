@@ -30,7 +30,7 @@ int main( int argc, const char* argv[] ) {
     //const char* include_path = argv[3];
 
     // the sourcemap file
-    char* source_map_file = new char[strlen(output_path) + 3];
+    char* source_map_file = new char[strlen(output_path) + 4];
     strcpy(source_map_file, output_path);
     strcat(source_map_file, ".map");
 
