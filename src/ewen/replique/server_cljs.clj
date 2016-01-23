@@ -403,7 +403,7 @@
                          (prn {:type :eval
                                :repl-type :cljs
                                :session *session*
-                               :ns (str ana/*cljs-ns*)
+                               :ns ana/*cljs-ns*
                                :result result})))
                      (with-lock out-lock
                        (println result)))})

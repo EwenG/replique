@@ -89,7 +89,7 @@
                        :error true
                        :repl-type :clj
                        :session *session*
-                       :ns (str *ns*)
+                       :ns (ns-name *ns*)
                        :value (.getMessage e)})))
              (clojure.main/repl-caught e))
    :print (fn [result]
@@ -163,7 +163,8 @@
   [{:keys [context ns prefix] :as msg}]
   (with-tooling-response msg
     (let [ctx (when context (read-string context))]
-      {:candidates (compliment/completions prefix {:ns ns :context ctx :sources [:ewen.replique.compliment.sources.ns-mappings/ns-mappings]})})))
+      {:candidates (compliment/completions prefix {:ns ns :context ctx #_:sources #_[:ewen.replique.compliment.sources.ns-mappings/ns-mappings]})})))
+
 
 (comment
   (tooling-msg-handle {:type :clj-completion
