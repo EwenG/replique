@@ -138,6 +138,21 @@
                  :static-dir ["." output-dir]
                  :src []}}))
 
+(defmethod init-opts :webapp [{:keys [webapp-env-port
+                                      webapp-env-out
+                                      webapp-env-main] :as opts}]
+  (let [output-dir (.getParent (file webapp-env-out))]
+    {:comp-opts (merge {:output-to webapp-env-out
+                        :output-dir output-dir
+                        :optimizations :none
+                        :recompile-dependents false}
+                       (when webapp-env-main
+                         {:main webapp-env-main}))
+     :repl-opts {:analyze-path []
+                 :port webapp-env-port
+                 :serve-static false
+                 :src []}}))
+
 (defmethod init-opts :replique [{:keys [directory] :as opts}]
   (let [output-dir (file directory "out")]
     {:comp-opts (merge {:output-to (.getAbsolutePath
@@ -263,7 +278,7 @@
         })(" asset-path ", " output-dir ", " rel-path ");\n")))
 
 (defn output-main-file [{:keys [closure-defines output-dir output-to]
-                         :as opts}]
+                         :as opts} port]
   (let [closure-defines (json/write-str closure-defines)
         output-dir-uri (-> output-dir (File.) (.toURI))
         output-to-uri (-> output-to (File.) (.toURI))
@@ -279,7 +294,8 @@
                           (not= output-dir-path output-to-path))
                    (-> (.relativize output-dir-uri output-to-uri)
                        (.toString))
-                   nil)]
+                   nil)
+        _ (prn (:main opts))]
     (cljsc/output-one-file
      opts
      (str "(function() {\n"
@@ -290,7 +306,11 @@
           "document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"ewen.replique.cljs_env.repl\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');\n"
           "document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"ewen.replique.cljs_env.browser\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');\n"
           (when (:main opts)
-            (str "document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"" (comp/munge (:main opts)) "\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');"))
+            (when-let [main (try (-> (:main opts)
+                                     ana-api/parse-ns :ns)
+                                 (catch Exception e nil))]
+              (str "document.write('<script>if (typeof goog != \"undefined\") { goog.require(\"" (comp/munge main) "\"); } else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');\n"
+                   "document.write('<script>if (typeof goog != \"undefined\") {ewen.replique.cljs_env.repl.connect(\"http://localhost:" port "\");} else { console.warn(\"ClojureScript could not load :main, did you forget to specify :asset-path?\"); };</script>');")))
           "})();\n"))))
 
 (defn init-browser-env
@@ -313,11 +333,6 @@
        (let [port (-> @(:server-state repl-env)
                       :socket
                       (.getLocalPort))
-             host (-> @(:server-state repl-env)
-                      :socket
-                      (.getInetAddress) (.getHostAddress)
-                      server/normalize-ip-address)
-             url (str "http://" host ":" port "/repl")
              repl-src "ewen/replique/cljs_env/repl.cljs"
              benv-src "ewen/replique/cljs_env/browser.cljs"
              repl-compiled (repl-compile-cljs
@@ -335,7 +350,7 @@
            util/mkdirs
            (spit (slurp (io/resource "goog/deps.js"))))
          (when output-main-file?
-           (output-main-file comp-opts)))))))
+           (output-main-file comp-opts port)))))))
 
 (defn output-index-html [{:keys [output-dir]}]
   (closure/output-one-file {:output-to (str output-dir "/index.html")}
@@ -418,6 +433,24 @@
   #_(init-class-loader)
   (let [{:keys [comp-opts repl-opts]} (init-opts opts)]
     (init-browser-env comp-opts repl-opts false)
+    (start-server {:port port :name :replique
+                   :accept 'clojure.core.server/repl
+                   :server-daemon false})
+    (doto (file ".replique-port")
+      (spit (str {:repl (-> @#'clojure.core.server/servers
+                            (get :replique) :socket (.getLocalPort))
+                  :cljs-env (-> @(:server-state repl-env)
+                                :socket (.getLocalPort))}))
+      (.deleteOnExit))
+    (println "REPL started")))
+
+(defmethod server/repl-dispatch [:cljs :webapp]
+  [{:keys [port type cljs-env directory sass-bin] :as opts}]
+  (alter-var-root #'server/directory (constantly directory))
+  (alter-var-root #'server/sass-bin (constantly sass-bin))
+  #_(init-class-loader)
+  (let [{:keys [comp-opts repl-opts]} (init-opts opts)]
+    (init-browser-env comp-opts repl-opts)
     (start-server {:port port :name :replique
                    :accept 'clojure.core.server/repl
                    :server-daemon false})
@@ -590,12 +623,11 @@
   (let [pb (ProcessBuilder.
             (list server/sass-bin input-path output-path))
         p (.start pb)
-        out (.getInputStream p)]
+        out (.getInputStream p)
+        err (.getErrorStream p)]
     (if (= 0 (.waitFor p))
       [true (slurp out)]
-      [false (-> (slurp out)
-                 ewen.replique.sourcemap/json-read-str
-                 pr-str)])))
+      [false (slurp err)])))
 
 (comment
   (compile-sass
