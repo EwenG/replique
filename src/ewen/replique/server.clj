@@ -98,7 +98,7 @@
                 (prn {:type :eval
                       :repl-type :clj
                       :session *session*
-                      :ns (str *ns*)
+                      :ns (ns-name *ns*)
                       :result (pr-str result)})))
             (prn result))))
 
@@ -163,7 +163,7 @@
   [{:keys [context ns prefix] :as msg}]
   (with-tooling-response msg
     (let [ctx (when context (read-string context))]
-      {:candidates (compliment/completions prefix {:ns ns :context ctx #_:sources #_[:ewen.replique.compliment.sources.ns-mappings/ns-mappings]})})))
+      {:candidates (compliment/completions prefix {:ns ns :context ctx})})))
 
 
 (comment
@@ -171,4 +171,18 @@
                        :context nil
                        :ns 'ewen.replique.server
                        :prefix "tooli"})
+
+  (tooling-msg-handle {:type :clj-completion
+                       :context nil
+                       :ns 'ewen.replique.compliment.sources
+                       :prefix "all-s"})
+
+  (tooling-msg-handle {:type :clj-completion
+                       :context "(let [eeeeee \"e\"]
+    __prefix__)"
+                       :ns 'ewen.replique.server
+                       :prefix "ee"})
+
+  (let [eeeeee "e"]
+    eee)
   )

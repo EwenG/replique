@@ -1,5 +1,6 @@
 (ns ewen.replique.compliment.utils
   "Functions and utilities for source implementations."
+  (:require [ewen.replique.namespace :as replique-ns])
   (:import java.io.File
            [java.util.jar JarFile JarEntry]))
 
@@ -45,8 +46,11 @@
 (defn resolve-namespace
   "Tries to resolve a namespace from the given symbol, either from a
   fully qualified name or an alias in the given namespace."
-  [sym ns]
-  (or (find-ns sym) ((ns-aliases ns) sym)))
+  ([sym ns]
+   (resolve-namespace sym ns nil))
+  ([sym ns cljs-comp-env]
+   (or (replique-ns/find-ns sym cljs-comp-env)
+       (get (replique-ns/ns-aliases ns cljs-comp-env) sym))))
 
 (defmacro ^{:doc "Defines a memoized function."
             :forms '([name doc-string? [params*] body])}

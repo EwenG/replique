@@ -6,13 +6,14 @@
 (ns ewen.replique.compliment.core
   "Core namespace. Most interactions with Compliment should happen
   through functions defined here."
-  (:require (ewen.replique.compliment.sources ns-mappings
-                                              namespaces-and-classes
-                                              class-members
-                                              keywords
-                                              special-forms
-                                              local-bindings
-                                              resources))
+  (:require [ewen.replique.compliment.sources.ns-mappings]
+            [ewen.replique.compliment.sources.namespaces-and-classes]
+            [ewen.replique.compliment.sources.class-members]
+            [ewen.replique.compliment.sources.keywords]
+            [ewen.replique.compliment.sources.special-forms]
+            [ewen.replique.compliment.sources.local-bindings]
+            [ewen.replique.compliment.sources.resources]
+            [ewen.replique.namespace :as replique-ns])
   (:use [ewen.replique.compliment.sources :only [all-sources]]
         [ewen.replique.compliment.context :only [cache-context]]
         [clojure.string :only [join]])
@@ -37,9 +38,12 @@
 (defn ensure-ns
   "Takes either a namespace object or a symbol and returns the corresponding
   namespace if it exists, otherwise returns `user` namespace."
-  [ns]
+  [ns cljs-comp-env]
   (cond (instance? clojure.lang.Namespace ns) ns
-        (symbol? ns) (or (find-ns ns) (find-ns 'user))
+        (symbol? ns) (or (replique-ns/find-ns ns cljs-comp-env)
+                         (if cljs-comp-env
+                           (replique-ns/find-ns 'cljs.user cljs-comp-env)
+                           (replique-ns/find-ns 'user nil)))
         :else *ns*))
 
 (defn- tag-candidates
@@ -61,28 +65,35 @@
   - :sort-order (either :by-length or :by-name);
   - :tag-candidates - if true, returns maps with extra data instead of strings;
   - :extra-metadata - set of extra fields to add to the maps;
-  - :sources - list of source keywords to use."
+  - :sources - list of source keywords to use;
+  - :cljs-comp-env - the cljs compilation environment to be used when
+  completion is requested from clojurescript."
   ([prefix]
    (completions prefix {}))
   ([prefix options-map]
    (if (string? options-map)
      (completions prefix {:context options-map})
-     (let [{:keys [ns context sort-order sources]
+     (let [{:keys [ns context sort-order sources cljs-comp-env]
             :or {sort-order :by-length}} options-map
-            ns (ensure-ns ns)
-            options-map (assoc options-map :ns ns)
-            tag? (:tag-candidates options-map)
-            ctx (cache-context context)
-            sort-fn (if (= sort-order :by-name)
-                      (if tag?
-                        (partial sort-by :candidate) sort)
-                      (partial sort-by-length tag?))]
-       (-> (for [[_ {:keys [candidates enabled tag-fn]}] (if sources
-                                                           (all-sources sources)
-                                                           (all-sources))
+           ns (ensure-ns ns cljs-comp-env)
+           options-map (assoc options-map :ns ns)
+           tag? (:tag-candidates options-map)
+           ctx (cache-context context)
+           sort-fn (if (= sort-order :by-name)
+                     (if tag?
+                       (partial sort-by :candidate) sort)
+                     (partial sort-by-length tag?))]
+       (-> (for [[_ {:keys [candidates enabled tag-fn]}]
+                 (if sources
+                   (all-sources sources)
+                   (all-sources))
                  :when enabled
-                 :let [cands (cond-> (candidates prefix ns ctx)
-                                     tag? (tag-candidates tag-fn options-map))]
+                 :let [cands (if cljs-comp-env
+                               (candidates prefix ns ctx cljs-comp-env)
+                               (candidates prefix ns ctx))
+                       cands (if tag?
+                               (tag-candidates tag-fn options-map)
+                               cands)]
                  :when cands]
              cands)
            flatten

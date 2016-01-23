@@ -1,8 +1,8 @@
 (ns ewen.replique.compliment.sources
   "Tools for defining sources for the completion.")
 
-(def ^{:doc "Stores defined sources."
-       :private true}
+(defonce ^{:doc "Stores defined sources."
+           :private true}
   sources (atom nil))
 
 (defn all-sources

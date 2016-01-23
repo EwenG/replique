@@ -21,7 +21,8 @@
             [ewen.replique.compliment.sources.local-bindings
              :refer [bindings-from-context]]
             [clojure.data.json :as json]
-            [cljs.tagged-literals :as tags])
+            [cljs.tagged-literals :as tags]
+            [ewen.replique.compliment.core :as compliment])
   (:import [java.io File]
            [java.net URL]
            [java.util.concurrent SynchronousQueue]
@@ -789,4 +790,23 @@
                               :ns 'ewen.replique.ui.dashboard
                               :symbol 'add-watch
                               :keys [:column :line :file]})
+  )
+
+(defmethod server/tooling-msg-handle :cljs-completion
+  [{:keys [context ns prefix] :as msg}]
+  (with-tooling-response msg
+    (let [ctx (when context (binding [reader/*data-readers*
+                                      tags/*cljs-data-readers*]
+                              (reader/read-string context)))]
+      {:candidates (compliment/completions
+                    prefix {:ns ns :context ctx
+                            :cljs-comp-env compiler-env
+                            :sources [:ewen.replique.compliment.sources.ns-mappings/ns-mappings]})})))
+
+
+(comment
+  (server/tooling-msg-handle {:type :cljs-completion
+                              :context nil
+                              :ns 'ewen.replique.ui.dashboard
+                              :prefix "replique-d"})
   )

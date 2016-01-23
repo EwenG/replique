@@ -24,7 +24,7 @@
           :when (vars/dash-matches? prefix form)]
       form)))
 
-(defn doc
+#_(defn doc
   "Documentation function for special forms."
   [symbol-str _]
   (when (and (vars/var-symbol? symbol-str) (special-forms symbol-str))
@@ -32,7 +32,7 @@
 
 (defsource ::special-forms
   :candidates #'candidates
-  :doc doc
+  :doc (constantly nil)
   :tag-fn (fn [m _] (assoc m :type :special-form)))
 
 (defn literal-candidates
