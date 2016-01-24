@@ -14,11 +14,11 @@
 (def dialog (.require remote "dialog"))
 (def replique-root-dir (.getGlobal remote "repliqueRootDir"))
 
-(def clj-versions #{"1.8.0-RC5"})
-(def clj-file-names {"1.8.0-RC5" "clojure-1.8.0-RC5.jar"})
-(def current-clj-v "1.8.0-RC5")
+(def clj-versions #{"1.8.0"})
+(def clj-file-names {"1.8.0" "clojure-1.8.0.jar"})
+(def current-clj-v "1.8.0")
 (def clj-file-name (get clj-file-names current-clj-v))
-(def clj-urls {"1.8.0-RC5" "https://repo1.maven.org/maven2/org/clojure/clojure/1.8.0-RC5/clojure-1.8.0-RC5.jar"})
+(def clj-urls {"1.8.0" "https://repo1.maven.org/maven2/org/clojure/clojure/1.8.0/clojure-1.8.0.jar"})
 (def clj-paths (->> (map (fn [[v f]]
                            [v (str replique-root-dir "/runnables/" f)])
                          clj-file-names)
@@ -189,7 +189,7 @@
 
 (defn download-jar [url path file-name]
   (let [file (.createWriteStream fs path #js {:flags "wx"})
-        id (.getNextUniqueId utils/next-id)
+        id (utils/next-id)
         req (.get https url
                   (fn [resp]
                     (let [status (aget resp "statusCode")]
