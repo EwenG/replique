@@ -1,5 +1,6 @@
 (ns ewen.replique.ui.dashboard
-  (:require [hiccup.core]
+  (:require [hiccup.core :refer-macros [html]]
+            [hiccup.def :refer-macros [defhtml]]
             [hiccup.page :refer [include-css]]
             [goog.dom :as dom]
             [goog.events :as events]
@@ -13,9 +14,7 @@
             [ewen.replique.ui.shortcuts]
             [ewen.replique.ui.notifications :as notif]
             [cljs-uuid-utils.core :as uuid])
-  (:import [goog.string format])
-  (:require-macros [hiccup.core :refer [html]]
-                   [hiccup.def :refer [defhtml]]))
+  (:import [goog.string format]))
 
 (def replique-dir (.getGlobal remote "repliqueRootDir"))
 

@@ -1,5 +1,6 @@
 (ns ewen.replique.ui.edit-repl
-  (:require [hiccup.core]
+  (:require [hiccup.core :refer-macros [html]]
+            [hiccup.def :refer-macros [defhtml]]
             [hiccup.page :refer [include-css]]
             [goog.dom :as dom]
             [goog.events :as events]
@@ -7,9 +8,7 @@
             [ewen.replique.ui.remote :refer [remote]]
             [ewen.replique.ui.core :as core]
             [ewen.replique.ui.utils :as utils]
-            [ewen.replique.ui.notifications :as notif])
-  (:require-macros [hiccup.core :refer [html]]
-                   [hiccup.def :refer [defhtml]]))
+            [ewen.replique.ui.notifications :as notif]))
 
 (def replique-dir (.getGlobal remote "repliqueRootDir"))
 (def dialog (.require remote "dialog"))

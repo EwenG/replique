@@ -1,11 +1,10 @@
 (ns ewen.replique.ui.notifications
-  (:require [hiccup.core]
+  (:require [hiccup.core :refer-macros [html]]
+            [hiccup.def :refer-macros [defhtml]]
             [goog.dom :as dom]
             [goog.events :as events]
             [ewen.replique.ui.core :as core]
-            [ewen.replique.ui.utils :as utils])
-  (:require-macros [hiccup.core :refer [html]]
-                   [hiccup.def :refer [defhtml]]))
+            [ewen.replique.ui.utils :as utils]))
 
 (defhtml notifications-tmpl [{notifications :notifications}]
   (html [:div#notifications

@@ -1,14 +1,13 @@
 (ns ewen.replique.ui.settings
-  (:require [hiccup.core]
+  (:require [hiccup.core :refer-macros [html]]
+            [hiccup.def :refer-macros [defhtml]]
             [goog.dom :as dom]
             [goog.events :as events]
             [ewen.replique.ui.remote :refer [remote]]
             [ewen.replique.ui.core :as core]
             [ewen.replique.ui.utils :as utils]
             [ewen.replique.ui.notifications :as notif]
-            [cljs.nodejs :as node])
-  (:require-macros [hiccup.core :refer [html]]
-                   [hiccup.def :refer [defhtml]]))
+            [cljs.nodejs :as node]))
 
 (def fs (node/require "fs"))
 (def https (node/require "https"))
