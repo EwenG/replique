@@ -670,7 +670,10 @@
   [repl-env {:keys [scheme file-path main-source sass-path uri]
              :as msg}]
   (let [[success css-text] (compile-sass main-source file-path)]
-    (when success (spit file-path css-text))
+    (when success
+      (doto (io/file file-path)
+        util/mkdirs
+        (spit css-text)))
     (if success
       msg
       (merge msg {:error css-text}))))
