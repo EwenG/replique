@@ -1,5 +1,4 @@
 (ns ewen.replique.namespace
-  (:require [cljs.analyzer.api :as ana-api])
   (:refer-clojure :exclude [find-ns ns-publics ns-map ns-aliases all-ns]))
 
 (defn all-ns
@@ -8,7 +7,7 @@
   ([cljs-comp-env]
    (if-not cljs-comp-env
      (clojure.core/all-ns)
-     (ana-api/all-ns cljs-comp-env))))
+     (keys (:cljs.analyzer/namespaces cljs-comp-env)))))
 
 (defrecord CljsNamespace [name doc excludes use-macros require-macros uses
                           requires imports defs])
