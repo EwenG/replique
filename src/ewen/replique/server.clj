@@ -60,6 +60,10 @@
      :print (fn [result]
               (prn result)))))
 
+(comment
+  (clojure.main/repl :prompt #())
+  )
+
 (defn shared-tooling-repl []
   (with-lock tooling-out-lock
     (alter-var-root #'tooling-out (constantly *out*)))
@@ -102,20 +106,14 @@
                       :result (pr-str result)})))
             (prn result))))
 
-(defn format-meta
-  ([{:keys [file] :as meta} keys]
-   (format-meta meta keys nil))
-  ([{:keys [file] :as meta} keys base-dir]
-   (let [f (and file (File. file))
-         f (if (and f (.exists f))
-             f
-             (and file base-dir (File. base-dir file)))]
-     (if (and f (.exists f))
-       (select-keys (assoc
-                     meta :file
-                     (.getAbsolutePath f))
-                    keys)
-       (select-keys meta (disj keys :file :line :column))))))
+(defn format-meta [{:keys [file] :as meta} keys]
+  (let [f (and file (File. file))]
+    (if (and f (.exists f))
+      (select-keys (assoc
+                    meta :file
+                    (.getAbsolutePath f))
+                   keys)
+      (select-keys meta (disj keys :file :line :column)))))
 
 (defmethod tooling-msg-handle :clj-var-meta
   [{:keys [context ns symbol keys] :as msg}]
@@ -157,6 +155,12 @@
                        :symbol 'all-sources
                        :keys '(:column :line :file)})
 
+  (tooling-msg-handle {:type :clj-var-meta
+                       :context nil
+                       :ns 'ewen.foo
+                       :symbol 'foo-bar
+                       :keys '(:column :line :file)})
+
   )
 
 (defmethod tooling-msg-handle :clj-completion
@@ -178,10 +182,9 @@
                        :prefix "all-s"})
 
   (tooling-msg-handle {:type :clj-completion
-                       :context "(let [eeeeee \"e\"]
-    __prefix__)"
-                       :ns 'ewen.replique.server
-                       :prefix "ee"})
+                       :context nil
+                       :ns 'ewen.foo
+                       :prefix "foo"})
 
   (let [eeeeee "e"]
     eee)

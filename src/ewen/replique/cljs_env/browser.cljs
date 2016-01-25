@@ -5,7 +5,6 @@
             [goog.Uri])
   (:require-macros [ewen.replique.cljs-env.macros]))
 
-
 (defn remove-query-string [uri]
   (-> (goog.Uri.parse uri)
       (.setQuery "")

@@ -33,8 +33,9 @@
    (cond (= :cljs type)
          (cljs-env/with-compiler-env compiler-env
            (let [opts (:options @compiler-env)
-                 compiled (repl-compile-cljs repl-env file-path opts)]
-             (repl-cljs-on-disk compiled repl-env opts)
+                 compiled (repl-compile-cljs file-path opts)]
+             (repl-cljs-on-disk
+              compiled (#'cljs.repl/env->opts repl-env) opts)
              (->> (refresh-cljs-deps opts)
                   (closure/output-deps-file
                    (assoc opts :output-to

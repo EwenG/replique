@@ -13,3 +13,8 @@
 
 (defn -main [opts]
   (require-dispatch (read-string opts)))
+
+(defn compile-ui []
+  (require 'ewen.replique.server-cljs)
+  (let [compile-ui (resolve 'ewen.replique.server-cljs/compile-ui)]
+    (compile-ui)))

@@ -59,9 +59,9 @@
         :else (io/resource f)))
 
 (defn repl-compile-cljs
-  ([repl-env f opts]
-   (repl-compile-cljs repl-env f opts true))
-  ([repl-env f opts reload-macros]
+  ([f opts]
+   (repl-compile-cljs f opts true))
+  ([f opts reload-macros]
    (let [src (f->src f)
          compiled (binding [ana/*reload-macros* reload-macros]
                     (closure/compile
@@ -79,10 +79,9 @@
         (slurp src)))
      compiled)))
 
-(defn repl-cljs-on-disk [compiled repl-env opts]
+(defn repl-cljs-on-disk [compiled repl-opts opts]
   (let [sources (closure/add-dependencies
-                 (merge
-                  (#'cljs.repl/env->opts repl-env) opts)
+                 (merge repl-opts opts)
                  compiled)]
     (doseq [source sources]
       (closure/source-on-disk opts source))))
@@ -294,8 +293,7 @@
                           (not= output-dir-path output-to-path))
                    (-> (.relativize output-dir-uri output-to-uri)
                        (.toString))
-                   nil)
-        _ (prn (:main opts))]
+                   nil)]
     (cljsc/output-one-file
      opts
      (str "(function() {\n"
@@ -335,12 +333,12 @@
                       (.getLocalPort))
              repl-src "ewen/replique/cljs_env/repl.cljs"
              benv-src "ewen/replique/cljs_env/browser.cljs"
-             repl-compiled (repl-compile-cljs
-                            repl-env repl-src comp-opts false)
-             benv-compiled (repl-compile-cljs
-                            repl-env benv-src comp-opts false)]
-         (repl-cljs-on-disk repl-compiled repl-env comp-opts)
-         (repl-cljs-on-disk benv-compiled repl-env comp-opts)
+             repl-compiled (repl-compile-cljs repl-src comp-opts false)
+             benv-compiled (repl-compile-cljs benv-src comp-opts false)]
+         (repl-cljs-on-disk
+          repl-compiled (#'cljs.repl/env->opts repl-env) comp-opts)
+         (repl-cljs-on-disk
+          benv-compiled (#'cljs.repl/env->opts repl-env)comp-opts)
          (->> (refresh-cljs-deps comp-opts)
               (closure/output-deps-file
                (assoc comp-opts :output-to
@@ -351,6 +349,21 @@
            (spit (slurp (io/resource "goog/deps.js"))))
          (when output-main-file?
            (output-main-file comp-opts port)))))))
+
+(defn compile-ui []
+  (let [{:keys [comp-opts repl-opts]} (init-opts {:cljs-env :replique})]
+    (cljs-env/with-compiler-env (cljs-env/default-compiler-env)
+      (let [main-src "ewen/replique/ui/main.cljs"
+            main-compiled (repl-compile-cljs main-src comp-opts false)]
+        (repl-cljs-on-disk main-compiled {} comp-opts)
+        (->> (refresh-cljs-deps comp-opts)
+             (closure/output-deps-file
+              (assoc comp-opts :output-to
+                     (str (util/output-directory comp-opts)
+                          File/separator "cljs_deps.js"))))
+        (doto (io/file (util/output-directory comp-opts) "goog" "deps.js")
+          util/mkdirs
+          (spit (slurp (io/resource "goog/deps.js"))))))))
 
 (defn output-index-html [{:keys [output-dir]}]
   (closure/output-one-file {:output-to (str output-dir "/index.html")}
@@ -801,8 +814,7 @@
         (let [v (when (symbol? symbol)
                   (resolve-var compiler-env ns symbol))
               meta (when v
-                     (server/format-meta
-                      v keys (:output-dir (:options @compiler-env))))]
+                     (server/format-meta v keys))]
           (if (empty? meta)
             {:meta nil}
             {:meta meta}))))))
