@@ -60,11 +60,8 @@
 
 (add-watch core/state :notifications-watcher
            (fn [r k o n]
-             (if (nil? (:notifications n))
-               (swap! core/state assoc :notifications
-                      (sorted-map-by notif-comparator))
-               (when (not= (:notifications o) (:notifications n))
-                 (refresh-notifications
-                  (.getElementById js/document "root") n)))))
+             (when (not= (:notifications o) (:notifications n))
+               (when-let [root (.getElementById js/document "root")]
+                 (refresh-notifications root n)))))
 
 (swap! core/refresh-view-fns assoc :notifications refresh-notifications)

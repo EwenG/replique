@@ -18,7 +18,8 @@
                             :sass-bin
                             (str
                              replique-dir
-                             "/runnables/replique_sass_3.2.5_" version)}})
+                             "/runnables/replique_sass_3.2.5_" version)}
+                 :notifications {}})
 
 (defonce state
   (atom init-state))
@@ -32,7 +33,7 @@
   (let [root (or (.getElementById js/document "root")
                  (doto (dom/createDom "div" #js {:id "root"})
                    (#(dom/appendChild js/document.body %))))]
-    (doseq [[_ f] @refresh-view-fns]
+    (doseq [[k f] @refresh-view-fns]
       (f root state))))
 
 (comment
@@ -103,4 +104,5 @@
                               (throw e))))]
     (when loaded-state
       (reset! state (assoc (reader/read-string (str loaded-state))
-                           :view :dashboard)))))
+                           :view :dashboard)))
+    (refresh-view @state)))
