@@ -1,10 +1,10 @@
 (ns ewen.replique.ui.edit-repl
   (:require [hiccup.core :refer-macros [html]]
-            [hiccup.def :refer-macros [defhtml]]
             [hiccup.page :refer [include-css]]
             [goog.dom :as dom]
             [goog.events :as events]
             [cljs.reader :as reader]
+            [ewen.replique.ui.common :as common]
             [ewen.replique.ui.remote :refer [remote]]
             [ewen.replique.ui.core :as core]
             [ewen.replique.ui.utils :as utils]
@@ -13,16 +13,13 @@
 (def replique-dir (.getGlobal remote "repliqueRootDir"))
 (def dialog (.require remote "dialog"))
 
-(defn current-repl [{:keys [repls repl-id]}]
-  (get repls repl-id))
-
-(defn cljs-env-tmpl [{:keys [repls] :as state}]
+(defn cljs-env-tmpl [{:keys [repls repl-id] :as state}]
   (let [{:keys [directory type cljs-env
                 browser-env-port browser-env-random-port
                 webapp-env-port webapp-env-random-port
                 browser-env-main webapp-env-main
                 webapp-env-out browser-env-out]}
-        (current-repl state)]
+        (get repls repl-id)]
     (html [:fieldset.cljs-env
            [:legend "Clojurescript environment"]
            [:label {:for "browser-env"
@@ -43,7 +40,8 @@
                            (not= type :cljs)
                            (not= cljs-env :browser))}]
            [:label {:for "browser-env-random-port"
-                    :class (if (or (not= :cljs type) (not= :browser cljs-env))
+                    :class (if (or (not= :cljs type)
+                                   (not= :browser cljs-env))
                              "disabled" "")}
             "Random port"]
            [:input
@@ -135,8 +133,8 @@
              :checked (= cljs-env :replique)
              :disabled (not= :cljs type)}]])))
 
-(defn port-tmpl [{:keys [repls] :as state}]
-  (let [{:keys [port random-port]} (current-repl state)]
+(defn port-tmpl [{:keys [repls repl-id] :as state}]
+  (let [{:keys [port random-port]} (get repls repl-id)]
     (html [:fieldset.port
            [:legend "REPL port"]
            [:input (merge
@@ -153,18 +151,13 @@
                     (when random-port
                       {:checked true}))]])))
 
-(defn edit-repl [{:keys [dirty repls] :as state}]
+(defn edit-repl [{:keys [dirty repls repl-id] :as state}]
   (let [{:keys [directory type cljs-env port random-port]}
-        (current-repl state)]
+        (get repls repl-id)]
     (html [:div#edit-repl
-           [:a.back-nav {:href "#"}]
+           (common/back-button)
            [:form
-            [:a
-             (merge {:href "#"}
-                    (if dirty
-                      {:class "button save"}
-                      {:class "button save disabled"}))
-             "Save"]
+            (common/save-button dirty)
             [:fieldset.directory
              [:legend "REPL directory"]
              [:input.field {:type "text" :readonly true
@@ -176,124 +169,173 @@
              [:input.field
               {:type "radio"
                :id "type-clj"
-               :name "type"
+               :name "repl-type"
                :value "clj"
                :checked (= type :clj)}]
              [:label {:for "type-cljs"} "Clojure/Clojurescript"]
              [:input.field
               {:type "radio"
                :id "type-cljs"
-               :name "type"
+               :name "repl-type"
                :value "cljs"
                :checked (= type :cljs)}]]
             (cljs-env-tmpl state)
             (port-tmpl state)]])))
 
 (defn back-clicked []
-  (swap! core/state assoc :view :dashboard)
-  (swap! core/state dissoc :dirty))
+  (swap! core/state
+         (fn [state]
+           (-> (dissoc state :dirty)
+               (assoc :view :dashboard)))))
 
-(def repl-field-readers (atom #{}))
+(def fields (atom #{}))
 
-(swap! repl-field-readers conj
-       (fn []
-         (let [field (.querySelector
-                      js/document ".directory input[type=\"text\"]")]
-           [:directory (aget field "value")])))
+(def directory-field
+  (reify IDeref
+    (-deref [_]
+      (specify! (.querySelector js/document ".directory .field")
+        common/IField
+        (field-val [this] (aget this "value"))
+        (field-path [this] [:directory])))))
 
-(swap! repl-field-readers conj
-       (fn []
-         (let [type (-> (.querySelector
-                         js/document "input[name=\"type\"]:checked")
-                        (aget "value")
-                        keyword)]
-           [:type type])))
+(def repl-type-field
+  (reify IDeref
+    (-deref [_]
+      (specify! (.querySelector
+                  js/document ".type input[name=\"repl-type\"]:checked")
+        common/IField
+        (field-val [this] (keyword (aget this "value")))
+        (field-path [this] [:type])))))
 
-(swap! repl-field-readers conj
-       (fn []
-         (let [cljs-env (-> (.querySelector
-                             js/document "input[name=\"cljs-env\"]:checked")
-                            (aget "value")
-                            keyword)]
-           [:cljs-env cljs-env])))
+(def cljs-env-field
+  (reify IDeref
+    (-deref [_]
+      (specify! (.querySelector
+                  js/document ".cljs-env input[name=\"cljs-env\"]:checked")
+        common/IField
+        (field-val [this] (keyword (aget this "value")))
+        (field-path [this] [:cljs-env])))))
 
-(swap! repl-field-readers conj
-       (fn []
-         (let [val (-> (.querySelector
-                        js/document ".field.browser-env-port")
-                       (aget "value"))]
-           [:browser-env-port (if (= "" val) nil (js/parseInt val))])))
+(def browser-env-port-field
+  (reify IDeref
+    (-deref [_]
+      (specify! (.querySelector
+                  js/document ".cljs-env .browser-env-port")
+        common/IField
+        (field-val [this] (let [val (aget this "value")]
+                            (if (= "" val) nil (js/parseInt val))))
+        (field-path [this] [:browser-env-port])))))
 
-(swap! repl-field-readers conj
-       (fn []
-         (let [val (-> (.querySelector
-                        js/document ".field.browser-env-random-port")
-                       (aget "checked"))]
-           [:browser-env-random-port val])))
+(def browser-env-random-port-field
+  (reify IDeref
+    (-deref [_]
+      (specify! (.querySelector
+                  js/document ".cljs-env .browser-env-random-port")
+        common/IField
+        (field-val [this] (aget this "checked"))
+        (field-path [this] [:browser-env-random-port])))))
 
-(swap! repl-field-readers conj
-       (fn []
-         (let [val (-> (.querySelector
-                        js/document ".field.webapp-env-port")
-                       (aget "value"))]
-           [:webapp-env-port (if (= "" val) nil (js/parseInt val))])))
+(def webapp-env-port-field
+  (reify IDeref
+    (-deref [_]
+      (specify! (.querySelector
+                  js/document ".cljs-env .webapp-env-port")
+        common/IField
+        (field-val [this] (let [val (aget this "value")]
+                            (if (= "" val) nil (js/parseInt val))))
+        (field-path [this] [:webapp-env-port])))))
 
-(swap! repl-field-readers conj
-       (fn []
-         (let [val (-> (.querySelector
-                        js/document ".field.webapp-env-random-port")
-                       (aget "checked"))]
-           [:webapp-env-random-port val])))
+(def webapp-env-random-port-field
+  (reify IDeref
+    (-deref [_]
+      (specify! (.querySelector
+                  js/document ".cljs-env .webapp-env-random-port")
+        common/IField
+        (field-val [this] (aget this "checked"))
+        (field-path [this] [:webapp-env-random-port])))))
 
-(swap! repl-field-readers conj
-       (fn []
-         (let [val (-> (.querySelector
-                        js/document ".field.browser-env-out")
-                       (aget "value"))]
-           [:browser-env-out (if (= "" val) nil val)])))
+(def browser-env-out-field
+  (reify IDeref
+    (-deref [_]
+      (specify! (.querySelector
+                  js/document ".cljs-env .browser-env-out")
+        common/IField
+        (field-val [this] (let [val (aget this "value")]
+                            (if (= "" val) nil val)))
+        (field-path [this] [:browser-env-out])))))
 
-(swap! repl-field-readers conj
-       (fn []
-         (let [val (-> (.querySelector
-                        js/document ".field.webapp-env-out")
-                       (aget "value"))]
-           [:webapp-env-out (if (= "" val) nil val)])))
+(def webapp-env-out-field
+  (reify IDeref
+    (-deref [_]
+      (specify! (.querySelector
+                  js/document ".cljs-env .webapp-env-out")
+        common/IField
+        (field-val [this] (let [val (aget this "value")]
+                            (if (= "" val) nil val)))
+        (field-path [this] [:webapp-env-out])))))
 
-(swap! repl-field-readers conj
-       (fn []
-         (let [val (-> (.querySelector
-                        js/document ".field.browser-env-main")
-                       (aget "value"))]
-           [:browser-env-main (if (= "" val) nil val)])))
+(def browser-env-main-field
+  (reify IDeref
+    (-deref [_]
+      (specify! (.querySelector
+                  js/document ".cljs-env .browser-env-main")
+        common/IField
+        (field-val [this] (let [val (aget this "value")]
+                            (if (= "" val) nil val)))
+        (field-path [this] [:browser-env-main])))))
 
-(swap! repl-field-readers conj
-       (fn []
-         (let [val (-> (.querySelector
-                        js/document ".field.webapp-env-main")
-                       (aget "value"))]
-           [:webapp-env-main (if (= "" val) nil val)])))
+(def webapp-env-main-field
+  (reify IDeref
+    (-deref [_]
+      (specify! (.querySelector
+                  js/document ".cljs-env .webapp-env-main")
+        common/IField
+        (field-val [this] (let [val (aget this "value")]
+                            (if (= "" val) nil val)))
+        (field-path [this] [:webapp-env-main])))))
 
-(swap! repl-field-readers conj
-       (fn []
-         (let [port (-> (.querySelector js/document ".field.custom-port")
-                        (aget "value"))]
-           [:port (if (= "" port) nil (js/parseInt port))])))
+(def custom-port-field
+  (reify IDeref
+    (-deref [_]
+      (specify! (.querySelector
+                  js/document ".port .custom-port")
+        common/IField
+        (field-val [this] (let [val (aget this "value")]
+                            (if (= "" val) nil (js/parseInt val))))
+        (field-path [this] [:port])))))
 
-(swap! repl-field-readers conj
-       (fn []
-         (let [random-port (-> (.querySelector
-                                js/document ".field.random-port")
-                               (aget "checked"))]
-           [:random-port random-port])))
+(def random-port-field
+  (reify IDeref
+    (-deref [_]
+      (specify! (.querySelector
+                  js/document ".port .random-port")
+        common/IField
+        (field-val [this] (aget this "checked"))
+        (field-path [this] [:random-port])))))
+
+(swap! fields conj
+       directory-field repl-type-field cljs-env-field
+       browser-env-port-field browser-env-port-field
+       browser-env-random-port-field webapp-env-port-field
+       browser-env-out-field webapp-env-out-field
+       browser-env-main-field webapp-env-main-field
+       custom-port-field random-port-field)
 
 (defn save-repl []
-  (let [{:keys [repl-id repls]} @core/state
-        fields (->> (for [field-reader @repl-field-readers]
-                      (field-reader))
-                    (into {}))]
-    (swap! core/state update-in [:repls repl-id] merge fields)
+  (let [state @core/state
+        {:keys [repl-id repls]} state
+        fields (loop [new-fields {}
+                      field-getters @fields]
+                 (if-let [field (first field-getters)]
+                   (let [field @field]
+                     (recur (assoc-in new-fields
+                                      (common/field-path field)
+                                      (common/field-val field))
+                            (rest field-getters)))
+                   new-fields))
+        state (swap! core/state update-in [:repls repl-id] merge fields)]
     (try
-      (core/persist-state @core/state)
+      (core/persist-state state)
       (catch js/Error e
         (.log js/console (str "Error while saving settings: " e))
         (notif/single-notif
@@ -307,14 +349,13 @@
 
 (defn maybe-save-repl-error [edit-repl]
   (let [port (aget (.querySelector edit-repl ".port .field") "value")
-        random-port (aget (.querySelector edit-repl ".field.random-port")
-                          "checked")
-        browser-env-port (aget (.querySelector edit-repl ".browser-env-port") "value")
-        browser-env-random-port (aget (.querySelector edit-repl ".browser-env-random-port")
-                                      "checked")
-        webapp-env-port (aget (.querySelector edit-repl ".webapp-env-port") "value")
-        webapp-env-random-port (aget (.querySelector edit-repl ".webapp-env-random-port")
-                                     "checked")]
+        random-port (common/field-val @random-port-field)
+        browser-env-port (common/field-val @browser-env-port-field)
+        browser-env-random-port (common/field-val
+                                 @browser-env-random-port-field)
+        webapp-env-port (common/field-val @webapp-env-port-field)
+        webapp-env-random-port (common/field-val
+                                @webapp-env-random-port-field)]
     (if (or (and (not random-port) (not (valid-port? port)))
             (and (not browser-env-random-port)
                  (not (valid-port? browser-env-port)))
@@ -327,20 +368,13 @@
 (defn refresh-cljs-env
   ([state edit-repl]
    (refresh-cljs-env state edit-repl false))
-  ([state edit-repl keep-cljs-env?]
+  ([{:keys [repls repl-id] :as state} edit-repl keep-cljs-env?]
    (let [cljs-env-node (.querySelector edit-repl ".cljs-env")
-         directory (aget (.querySelector
-                          edit-repl ".directory input[type=\"text\"]")
-                         "value")
-         type (-> (.querySelector edit-repl "input[name=\"type\"]:checked")
-                  (aget "value")
-                  keyword)
+         directory (common/field-val @directory-field)
+         type (common/field-val @repl-type-field)
          cljs-env (if keep-cljs-env?
-                    (-> (.querySelector
-                         edit-repl "input[name=\"cljs-env\"]:checked")
-                        (aget "value")
-                        keyword)
-                    (:cljs-env (current-repl @core/state)))
+                    (common/field-val @cljs-env-field)
+                    (:cljs-env (get repls repl-id)))
          id (:repl-id state)]
      (dom/replaceNode (->> (update-in state [:repls id]
                                       assoc
@@ -352,33 +386,26 @@
                       cljs-env-node))))
 
 (defn edit-repl-clicked [edit-repl e]
-  (let [class-list (-> (aget e "target")
-                       (aget "classList"))]
+  (let [class-list (-> (aget e "target") (aget "classList"))]
     (cond (.contains class-list "save")
           (if-let [err (maybe-save-repl-error edit-repl)]
             (notif/single-notif err)
             (do (save-repl)
                 (swap! core/state dissoc :dirty)))
           (.contains class-list "new-directory")
-          (let [input (.querySelector
-                       edit-repl
-                       ".directory input[type=\"text\"]")
+          (let [input @directory-field
                 directory (first
                            (.showOpenDialog
                             dialog
                             #js {:properties #js ["openDirectory"]}))
-                browser-env-out (.querySelector
-                                 edit-repl ".browser-env-out")]
+                browser-env-out @browser-env-out-field]
             (aset input "value" directory)
             (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
           (and (.contains class-list "new-browser-env-out")
                (not (.contains class-list "disabled")))
-          (let [input (.querySelector edit-repl ".browser-env-out")
-                input-val (aget input "value")
-                input-val (if (= "" input-val) nil input-val)
-                directory (-> (.querySelector
-                               edit-repl ".directory input[type=\"text\"]")
-                              (aget "value"))
+          (let [input @browser-env-out-field
+                input-val (common/field-val input)
+                directory (common/field-val @directory-field)
                 out-file (.showSaveDialog
                           dialog
                           #js {:filters #js [#js {:name "javascript file"
@@ -388,12 +415,9 @@
             (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
           (and (.contains class-list "new-webapp-env-out")
                (not (.contains class-list "disabled")))
-          (let [input (.querySelector edit-repl ".webapp-env-out")
-                input-val (aget input "value")
-                input-val (if (= "" input-val) nil input-val)
-                directory (-> (.querySelector
-                               edit-repl ".directory input[type=\"text\"]")
-                              (aget "value"))
+          (let [input @webapp-env-out-field
+                input-val (common/field-val input)
+                directory (common/field-val @directory-field)
                 directory (if (= "" directory) nil directory)
                 out-file (.showSaveDialog
                           dialog
@@ -405,12 +429,9 @@
             (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
           (and (.contains class-list "new-browser-env-main")
                (not (.contains class-list "disabled")))
-          (let [input (.querySelector edit-repl ".browser-env-main")
-                input-val (aget input "value")
-                input-val (if (= "" input-val) nil input-val)
-                directory (-> (.querySelector
-                               edit-repl ".directory input[type=\"text\"]")
-                              (aget "value"))
+          (let [input @browser-env-main-field
+                input-val (common/field-val @browser-env-main-field)
+                directory (common/field-val @directory-field)
                 directory (if (= "" directory) nil directory)]
             (->> (.showOpenDialog
                   dialog #js {:filters #js [#js {:name "clojurescript file"
@@ -423,12 +444,9 @@
             (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
           (and (.contains class-list "new-webapp-env-main")
                (not (.contains class-list "disabled")))
-          (let [input (.querySelector edit-repl ".webapp-env-main")
-                input-val (aget input "value")
-                input-val (if (= "" input-val) nil input-val)
-                directory (-> (.querySelector
-                               edit-repl ".directory input[type=\"text\"]")
-                              (aget "value"))]
+          (let [input @webapp-env-main-field
+                input-val (common/field-val input)
+                directory (common/field-val @directory-field)]
             (->> (.showOpenDialog
                   dialog #js {:filters #js [#js {:name "clojurescript file"
                                                  :extensions
@@ -443,7 +461,7 @@
   (let [target (aget e "target")
         class-list (aget target "classList")
         id (:repl-id @core/state)]
-    (cond (= (.getAttribute target "name") "type")
+    (cond (= (.getAttribute target "name") "repl-type")
           (do (refresh-cljs-env @core/state edit-repl)
               (swap! core/state assoc :dirty true))
           (= (.getAttribute target "name") "cljs-env")
@@ -467,7 +485,7 @@
               (.removeAttribute port-node "disabled"))
             (swap! core/state assoc :dirty true))
           (.contains class-list "webapp-env-random-port")
-          (let [port-node (.querySelector edit-repl ".webapp-env-port")
+          (let [port-node @webapp-env-port-field
                 random-port (aget target "checked")]
             (if random-port
               (.setAttribute port-node "disabled" "disabled")
