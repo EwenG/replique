@@ -133,23 +133,22 @@
              :checked (= cljs-env :replique)
              :disabled (not= :cljs type)}]])))
 
-(defn port-tmpl [{:keys [repls repl-id] :as state}]
-  (let [{:keys [port random-port]} (get repls repl-id)]
-    (html [:fieldset.port
-           [:legend "REPL port"]
-           [:input (merge
-                    {:type "text" :maxlength "5"
-                     :class "custom-port field" :value port}
-                    (when random-port
-                      {:readonly true
-                       :disabled true}))]
-           [:label {:for "random-port"} "Random port"]
-           [:input (merge
-                    {:type "checkbox"
-                     :class "field random-port"
-                     :id "random-port"}
-                    (when random-port
-                      {:checked true}))]])))
+(defn port-tmpl [port random-port]
+  (html [:fieldset.port
+         [:legend "REPL port"]
+         [:input (merge
+                  {:type "text" :maxlength "5"
+                   :class "custom-port field" :value port}
+                  (when random-port
+                    {:readonly true
+                     :disabled true}))]
+         [:label {:for "random-port"} "Random port"]
+         [:input (merge
+                  {:type "checkbox"
+                   :class "field random-port"
+                   :id "random-port"}
+                  (when random-port
+                    {:checked true}))]]))
 
 (defn edit-repl [{:keys [dirty repls repl-id] :as state}]
   (let [{:keys [directory type cljs-env port random-port]}
@@ -180,7 +179,8 @@
                :value "cljs"
                :checked (= type :cljs)}]]
             (cljs-env-tmpl state)
-            (port-tmpl state)]])))
+            (let [{:keys [port random-port]} (get repls repl-id)]
+              (port-tmpl port random-port))]])))
 
 (defn back-clicked []
   (swap! core/state
@@ -348,7 +348,7 @@
        (catch js/Error e false)))
 
 (defn maybe-save-repl-error [edit-repl]
-  (let [port (aget (.querySelector edit-repl ".port .field") "value")
+  (let [port (common/field-val @custom-port-field)
         random-port (common/field-val @random-port-field)
         browser-env-port (common/field-val @browser-env-port-field)
         browser-env-random-port (common/field-val
@@ -460,7 +460,7 @@
 (defn edit-repl-changed [edit-repl e]
   (let [target (aget e "target")
         class-list (aget target "classList")
-        id (:repl-id @core/state)]
+        {:keys [repls repl-id]} @core/state]
     (cond (= (.getAttribute target "name") "repl-type")
           (do (refresh-cljs-env @core/state edit-repl)
               (swap! core/state assoc :dirty true))
@@ -468,17 +468,15 @@
           (do (refresh-cljs-env @core/state edit-repl true)
               (swap! core/state assoc :dirty true))
           (.contains class-list "random-port")
-          (let [port-node (.querySelector edit-repl ".port")
+          (let [port-node (.querySelector js/document ".port")
                 random-port (aget target "checked")]
-            (dom/replaceNode (->> (update-in
-                                   @core/state [:repls id] assoc
-                                   :random-port random-port)
-                                  port-tmpl
-                                  utils/make-node)
+            (dom/replaceNode (let [port (:port (get repls repl-id))]
+                               (utils/make-node
+                                (port-tmpl port random-port)))
                              port-node)
             (swap! core/state assoc :dirty true))
           (.contains class-list "browser-env-random-port")
-          (let [port-node (.querySelector edit-repl ".browser-env-port")
+          (let [port-node @browser-env-port-field
                 random-port (aget target "checked")]
             (if random-port
               (.setAttribute port-node "disabled" "disabled")
@@ -513,8 +511,7 @@
        (events/listen (.querySelector node "form")
                       events/EventType.CHANGE
                       (partial edit-repl-changed node))
-       (events/listen (.querySelector
-                       node ".port input.field[type=\"text\"]")
+       (events/listen @custom-port-field
                       events/EventType.INPUT
                       (partial edit-repl-changed node)))
      (when-let [node (.querySelector root "#edit-repl")]
