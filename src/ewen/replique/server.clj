@@ -83,6 +83,9 @@
 (defmulti repl (fn [type] type))
 
 (defmethod repl :clj [type]
+  ;; Make all threads print in this repl by default
+  (alter-var-root #'*out* (constantly *out*))
+  (alter-var-root #'*err* (constantly *err*))
   (println "Clojure" (clojure-version))
   (clojure.main/repl
    :init clojure.core.server/repl-init
