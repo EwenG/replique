@@ -2,8 +2,10 @@
   (:require [goog.dom :as dom]
             [goog.dom.classlist]
             [goog.async.Throttle :as Throttle]
-            [cljs.nodejs :as node])
-  (:import [goog.async Throttle]))
+            [cljs.nodejs :as node]
+            [clojure.string :refer [join]])
+  (:import [goog.async Throttle]
+           [goog.string format]))
 
 (def fs (node/require "fs"))
 
@@ -45,3 +47,14 @@
 (let [counter (atom 0)]
   (defn next-id []
     (swap! counter inc)))
+
+(defn fn-name [ns fn-name]
+  (str (munge ns) "." (munge fn-name)))
+
+(defn handler [ns]
+  (fn [fn-n & params]
+    (let [fn-n (fn-name ns fn-n)
+          params (if-not (empty? params)
+                   (str "," (join "," (map pr-str params)))
+                   "")]
+      (format "%s.call(null,event%s)" fn-n params))))

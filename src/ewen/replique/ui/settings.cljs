@@ -7,6 +7,7 @@
             [ewen.replique.ui.core :as core]
             [ewen.replique.ui.utils :as utils]
             [ewen.replique.ui.notifications :as notif]
+            [ewen.replique.ui.common :as common]
             [cljs.nodejs :as node]))
 
 (def fs (node/require "fs"))
@@ -32,7 +33,11 @@
 (def cljs-paths (->> (map (fn [[v f]]
                            [v (str replique-root-dir "/runnables/" f)])
                          cljs-file-names)
-                    (into {})))
+                     (into {})))
+
+(def handler (utils/handler (namespace ::e)))
+
+(defonce current-settings (atom nil))
 
 (defn runnable-files []
   (->> (.readdirSync fs (str replique-root-dir "/runnables"))
@@ -50,6 +55,67 @@
          (filter #(get cljs-file-names %))
          (into #{}))))
 
+(defn ^:export download-clj-jar-clicked [e]
+  (download-jar (get clj-urls current-clj-v)
+                (get clj-paths current-clj-v)
+                clj-file-name))
+
+(defn ^:export download-cljs-jar-clicked [e]
+  (download-jar (get cljs-urls current-cljs-v)
+                (get cljs-paths current-cljs-v)
+                cljs-file-name))
+
+(defn ^:export new-clj-jar-clicked [e]
+  (let [clj-jar-node (.querySelector js/document ".clj-jar")
+        clj-jar-file (->> (.showOpenDialog
+                           dialog #js {:filters #js [#js {:name "jar files"
+                                                          :extensions #js ["jar"]}]
+                                       :defaultPath replique-root-dir})
+                          first)
+        settings (swap! current-settings assoc
+                        :custom-clj-jar clj-jar-file)]
+    (-> (clj-jar-tmpl settings)
+        utils/make-node
+        (dom/replaceNode clj-jar-node))
+    (common/save-set-dirty)))
+
+(defn ^:export new-cljs-jar-clicked [e]
+  (let [cljs-jar-node (.querySelector js/document ".cljs-jar")
+        cljs-jar-file (->> (.showOpenDialog
+                           dialog #js {:filters
+                                       #js [#js {:name "jar files"
+                                                 :extensions #js ["jar"]}]
+                                       :defaultPath replique-root-dir})
+                          first)
+        settings (swap! current-settings assoc
+                        :custom-cljs-jar cljs-jar-file)]
+    (-> (cljs-jar-tmpl settings)
+        utils/make-node
+        (dom/replaceNode cljs-jar-node))
+    (common/save-set-dirty)))
+
+(defn ^:export clj-source-changed [e val]
+  (let [clj-jar-node (.querySelector js/document ".clj-jar")
+        settings (swap! current-settings assoc :clj-jar-source val)]
+    (-> (clj-jar-tmpl settings)
+        utils/make-node
+        (dom/replaceNode clj-jar-node))
+    (common/save-set-dirty)))
+
+(defn ^:export downloaded-changed [e k]
+  (let [k (keyword k)
+        val (.-value (.-target e))]
+    (swap! current-settings assoc k val)
+    (common/save-set-dirty)))
+
+(defn ^:export cljs-source-changed [e val]
+  (let [cljs-jar-node (.querySelector js/document ".cljs-jar")
+        settings (swap! current-settings assoc :cljs-jar-source val)]
+    (-> (cljs-jar-tmpl settings)
+        utils/make-node
+        (dom/replaceNode cljs-jar-node))
+    (common/save-set-dirty)))
+
 (defhtml clj-jar-tmpl [{:keys [clj-jar-source downloaded-clj-jar
                                custom-clj-jar]}]
   [:fieldset.clj-jar
@@ -58,7 +124,9 @@
    [:input.field (merge {:type "radio"
                          :name "clj-source"
                          :id "clj-embedded-source"
-                         :value "embedded"}
+                         :value "embedded"
+                         :onchange (handler
+                                    'clj-source-changed "embedded")}
                         (if (= "embedded" clj-jar-source)
                           {:checked true}
                           nil))]
@@ -66,12 +134,15 @@
    [:input.field (merge {:type "radio"
                          :name "clj-source"
                          :id "clj-custom-source"
-                         :value "custom"}
+                         :value "custom"
+                         :onchange (handler
+                                    'clj-source-changed "custom")}
                         (when (= "custom" clj-jar-source)
                           {:checked true}))] [:br]
    [:select.field.select-downloaded
-    (when (= "custom" clj-jar-source)
-      {:disabled true})
+    (if (= "custom" clj-jar-source)
+      {:disabled true}
+      {:onchange (handler 'downloaded-changed "downloaded-clj-jar")})
     (for [f (conj (clj-jar-files) downloaded-clj-jar nil)]
       [:option (merge {:value f}
                       (when (= f downloaded-clj-jar) {:selected true}))
@@ -79,7 +150,8 @@
    [:a (merge {:href "#"}
               (if (= "custom" clj-jar-source)
                 {:class "disabled button download-clj-jar"}
-                {:class "button download-clj-jar"}))
+                {:class "button download-clj-jar"
+                 :onclick (handler 'download-clj-jar-clicked)}))
     "Download Clojure jar"] [:br]
    [:input.field.custom-clj-jar
     (merge {:type "text" :readonly true
@@ -89,7 +161,8 @@
    [:a (merge {:href "#"}
               (if (= "embedded" clj-jar-source)
                 {:class "disabled button new-clj-jar"}
-                {:class "button new-clj-jar"}))
+                {:class "button new-clj-jar"
+                 :onclick (handler 'new-clj-jar-clicked)}))
     "Select Clojure jar"]])
 
 (defhtml cljs-jar-tmpl [{:keys [cljs-jar-source downloaded-cljs-jar
@@ -100,7 +173,9 @@
    [:input.field (merge {:type "radio"
                          :name "cljs-source"
                          :id "cljs-embedded-source"
-                         :value "embedded"}
+                         :value "embedded"
+                         :onchange (handler
+                                    'cljs-source-changed "embedded")}
                         (if (= "embedded" cljs-jar-source)
                           {:checked true}
                           nil))]
@@ -108,12 +183,15 @@
    [:input.field (merge {:type "radio"
                          :name "cljs-source"
                          :id "cljs-custom-source"
-                         :value "custom"}
+                         :value "custom"
+                         :onchange (handler
+                                    'cljs-source-changed "custom")}
                         (when (= "custom" cljs-jar-source)
                           {:checked true}))] [:br]
    [:select.field.select-downloaded
-    (when (= "custom" cljs-jar-source)
-      {:disabled true})
+    (if (= "custom" cljs-jar-source)
+      {:disabled true}
+      {:onchange (handler 'downloaded-changed "downloaded-cljs-jar")})
     (for [f (conj (cljs-jar-files) downloaded-cljs-jar nil)]
       [:option (merge {:value f}
                       (when (= f downloaded-cljs-jar) {:selected true}))
@@ -121,7 +199,8 @@
    [:a (merge {:href "#"}
               (if (= "custom" cljs-jar-source)
                 {:class "disabled button download-cljs-jar"}
-                {:class "button download-cljs-jar"}))
+                {:class "button download-cljs-jar"
+                 :onclick (handler 'download-cljs-jar-clicked)}))
     "Download Clojurescript jar"] [:br]
    [:input.field.custom-cljs-jar
     (merge {:type "text" :readonly true
@@ -131,8 +210,29 @@
    [:a (merge {:href "#"}
               (if (= "embedded" cljs-jar-source)
                 {:class "disabled button new-cljs-jar"}
-                {:class "button new-cljs-jar"}))
+                {:class "button new-cljs-jar"
+                 :onclick (handler 'new-cljs-jar-clicked)}))
     "Select Clojurescript jar"]])
+
+(defn ^:export new-lein-script-clicked [e]
+  (let [lein-node (.querySelector js/document ".lein")
+        lein-script (->> (.showOpenDialog
+                          dialog #js {:defaultPath replique-root-dir})
+                         first)
+        settings (swap! current-settings assoc
+                        :custom-lein-script lein-script)]
+    (-> (lein-tmpl settings)
+        utils/make-node
+        (dom/replaceNode lein-node))
+    (common/save-set-dirty)))
+
+(defn ^:export lein-source-changed [e val]
+  (let [lein-node (.querySelector js/document ".lein")
+        settings (swap! current-settings assoc :lein-source val)]
+    (-> (lein-tmpl settings)
+        utils/make-node
+        (dom/replaceNode lein-node))
+    (common/save-set-dirty)))
 
 (defhtml lein-tmpl [{:keys [lein-source custom-lein-script]}]
   [:fieldset.lein
@@ -141,7 +241,9 @@
    [:input.field (merge {:type "radio"
                          :name "lein-source"
                          :id "lein-embedded-source"
-                         :value "embedded"}
+                         :value "embedded"
+                         :onchange (handler
+                                    'lein-source-changed "embedded")}
                         (if (= "embedded" lein-source)
                           {:checked true}
                           nil))]
@@ -149,7 +251,9 @@
    [:input.field (merge {:type "radio"
                          :name "lein-source"
                          :id "lein-custom-source"
-                         :value "custom"}
+                         :value "custom"
+                         :onchange (handler
+                                    'lein-source-changed "custom")}
                         (when (= "custom" lein-source)
                           {:checked true}))] [:br]
    [:input.field.custom-lein-script
@@ -160,8 +264,18 @@
    [:a (merge {:href "#"}
               (if (= "embedded" lein-source)
                 {:class "disabled button new-lein-script"}
-                {:class "button new-lein-script"}))
+                {:class "button new-lein-script"
+                 :onclick (handler 'new-lein-script-clicked)}))
     "Select Leiningen script"]])
+
+(defhtml settings-tmpl [settings]
+  (html [:div#settings
+         (common/back-button "dashboard")
+         [:form
+          (common/save-button 'ewen.replique.ui.settings.save_settings)
+          (clj-jar-tmpl settings)
+          (cljs-jar-tmpl settings)
+          (lein-tmpl settings)]]))
 
 (defn start-progress [resp id file-name]
   (let [total-length (-> (aget resp "headers")
@@ -252,203 +366,17 @@
                    :msg (str "Error while downloading the file: " file-name)})
                  (.unlink fs path)))))))
 
-(defhtml save-tmpl [dirty]
-  [:a.button.save
-   (merge {:href "#"}
-          (if dirty
-            {:class "button save"}
-            {:class "button save disabled"}))
-   "Save"])
-
-(defhtml settings [{settings :settings dirty :dirty}]
-  (html [:div#settings
-         [:a.back-nav {:href "#"}]
-         [:form
-          (save-tmpl dirty)
-          (clj-jar-tmpl settings)
-          (cljs-jar-tmpl settings)
-          (lein-tmpl settings)]]))
-
-(def settings-field-readers (atom #{}))
-
-(swap! settings-field-readers conj
-       (fn []
-         (let [checked-source
-               (.querySelector
-                js/document
-                "#settings input[name=\"clj-source\"]:checked")]
-           [:clj-jar-source (.getAttribute checked-source "value")])))
-
-(swap! settings-field-readers conj
-       (fn []
-         (let [checked-source
-               (.querySelector
-                js/document
-                "#settings input[name=\"cljs-source\"]:checked")]
-           [:cljs-jar-source (.getAttribute checked-source "value")])))
-
-(swap! settings-field-readers conj
-       (fn []
-         (let [checked-source
-               (.querySelector
-                js/document
-                "#settings input[name=\"lein-source\"]:checked")]
-           [:lein-source (.getAttribute checked-source "value")])))
-
-(swap! settings-field-readers conj
-       (fn []
-         (let [downloaded-jar
-               (.querySelector
-                js/document
-                "#settings .clj-jar .select-downloaded option:checked")]
-           (if downloaded-jar
-             [:downloaded-clj-jar (let [val (.getAttribute
-                                             downloaded-jar "value")]
-                         (if (= "" val)
-                           nil val))]
-             [:downloaded-clj-jar nil]))))
-
-(swap! settings-field-readers conj
-       (fn []
-         (let [custom-jar
-               (-> (.querySelector js/document "#settings .custom-clj-jar")
-                   (aget "value"))]
-           (if (or (nil? custom-jar) (= custom-jar ""))
-             [:custom-clj-jar nil]
-             [:custom-clj-jar custom-jar]))))
-
-(swap! settings-field-readers conj
-       (fn []
-         (let [downloaded-jar
-               (.querySelector
-                js/document
-                "#settings .cljs-jar .select-downloaded option:checked")]
-           (if downloaded-jar
-             [:downloaded-cljs-jar (let [val (.getAttribute
-                                              downloaded-jar "value")]
-                                    (if (= "" val)
-                                      nil val))]
-             [:downloaded-cljs-jar nil]))))
-
-(swap! settings-field-readers conj
-       (fn []
-         (let [custom-jar
-               (-> (.querySelector js/document "#settings .custom-cljs-jar")
-                   (aget "value"))]
-           (if (or (nil? custom-jar) (= custom-jar ""))
-             [:custom-cljs-jar nil]
-             [:custom-cljs-jar custom-jar]))))
-
-(swap! settings-field-readers conj
-       (fn []
-         (let [custom-jar
-               (-> (.querySelector
-                    js/document "#settings .custom-lein-script")
-                   (aget "value"))]
-           (if (or (nil? custom-jar) (= custom-jar ""))
-             [:custom-lein-script nil]
-             [:custom-lein-script custom-jar]))))
-
-(defn save-settings []
-  (let [{:keys [settings]} @core/state
-        fields (->> (for [field-reader @settings-field-readers]
-                      (field-reader))
-                    (into {}))
-        new (merge settings fields)]
-    (swap! core/state assoc :settings new)
-    (swap! core/state dissoc :dirty)
-    (try
-      (core/persist-state @core/state)
-      (catch js/Error e
-        (.log js/console (str "Error while saving settings: " e))
-        (notif/single-notif
-         {:type :err
-          :msg (str "Error while saving settings")})))))
-
-(defn back-clicked []
-  (swap! core/state assoc
-         :view :dashboard
-         :dirty false))
-
-(defn settings-clicked [settings-node e]
-  (let [class-list (-> (aget e "target")
-                       (aget "classList"))]
-    (cond (.contains class-list "save")
-          (save-settings)
-          (.contains class-list "download-clj-jar")
-          (download-jar (get clj-urls current-clj-v)
-                        (get clj-paths current-clj-v)
-                        clj-file-name)
-          (.contains class-list "download-cljs-jar")
-          (download-jar (get cljs-urls current-cljs-v)
-                        (get cljs-paths current-cljs-v)
-                        cljs-file-name)
-          (.contains class-list "new-clj-jar")
-          (let [input (.querySelector
-                       settings-node ".custom-clj-jar")]
-            (->> (.showOpenDialog
-                  dialog #js {:filters #js [#js {:name "jar files"
-                                                 :extensions #js ["jar"]}]
-                              :defaultPath replique-root-dir})
-                 first
-                 (aset input "value"))
-            (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
-          (.contains class-list "new-cljs-jar")
-          (let [input (.querySelector
-                       settings-node ".custom-cljs-jar")]
-            (->> (.showOpenDialog
-                  dialog #js {:filters #js [#js {:name "jar files"
-                                                 :extensions #js ["jar"]}]
-                              :defaultPath replique-root-dir})
-                 first
-                 (aset input "value"))
-            (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
-          (.contains class-list "new-lein-script")
-          (let [input (.querySelector
-                       settings-node ".custom-lein-script")]
-            (->> (.showOpenDialog
-                  dialog #js {:defaultPath replique-root-dir})
-                 first
-                 (aset input "value"))
-            (.dispatchEvent input (js/Event. "change" #js {:bubbles true})))
-          :else nil)))
-
-(defn settings-changed [settings-node e]
-  (let [target (aget e "target")
-        class-list (aget target "classList")]
-    (cond (= "clj-source" (.getAttribute target "name"))
-          (let [source (.getAttribute target "value")
-                clj-jar-node (.querySelector settings-node ".clj-jar")]
-            (dom/replaceNode (utils/make-node
-                              (clj-jar-tmpl
-                               (->
-                                (:settings @core/state)
-                                (assoc :clj-jar-source source))))
-                             clj-jar-node)
-            (swap! core/state assoc :dirty true))
-          (= "cljs-source" (.getAttribute target "name"))
-          (let [source (.getAttribute target "value")
-                cljs-jar-node (.querySelector settings-node ".cljs-jar")]
-            (dom/replaceNode (utils/make-node
-                              (cljs-jar-tmpl
-                               (->
-                                (:settings @core/state)
-                                (assoc :cljs-jar-source source))))
-                             cljs-jar-node)
-            (swap! core/state assoc :dirty true))
-          (= "lein-source" (.getAttribute target "name"))
-          (let [source (.getAttribute target "value")
-                lein-node (.querySelector settings-node ".lein")]
-            (dom/replaceNode (utils/make-node
-                              (lein-tmpl
-                               (->
-                                (:settings @core/state)
-                                (assoc :lein-source source))))
-                             lein-node)
-            (swap! core/state assoc :dirty true))
-          (.contains class-list "field")
-          (swap! core/state assoc :dirty true)
-          :else nil)))
+(defn ^:export save-settings [e]
+  (swap! core/state assoc :settings @current-settings)
+  (try
+    (do (core/persist-state @core/state)
+        true)
+    (catch js/Error e
+      (.log js/console (str "Error while saving settings: " e))
+      (notif/single-notif
+       {:type :err
+        :msg (str "Error while saving settings")})
+      false)))
 
 (defn get-clj-jar [{{:keys [clj-jar-source downloaded-clj-jar
                             custom-clj-jar]} :settings}]
@@ -474,32 +402,12 @@
 
 (swap!
  core/refresh-view-fns assoc :settings
- (fn [root {:keys [view] :as state}]
+ (fn [root {:keys [view settings]}]
    (if (= :settings view)
-     (let [node (utils/replace-or-append
+     (let [current-settings (reset! current-settings settings)
+           node (utils/replace-or-append
                  root "#settings"
                  (dom/htmlToDocumentFragment
-                  (settings state)))]
-       (events/listen (.querySelector node ".back-nav")
-                      events/EventType.CLICK back-clicked)
-       (events/listen (.querySelector node "#settings form")
-                      events/EventType.CLICK (partial
-                                              settings-clicked node))
-       (events/listen (.querySelector node "#settings form")
-                      events/EventType.CHANGE (partial
-                                               settings-changed node)))
+                  (settings-tmpl current-settings)))])
      (when-let [node (.querySelector root "#settings")]
        (dom/removeNode node)))))
-
-(add-watch core/state :edit-watcher
-           (fn [r k o n]
-             (cond
-               (and (not (:dirty o)) (:dirty n))
-               (when-let [save-node (.querySelector js/document ".save")]
-                 (-> (aget save-node "classList")
-                     (.remove "disabled")))
-               (and (:dirty o) (not (:dirty n)))
-               (when-let [save-node (.querySelector js/document ".save")]
-                 (-> (aget save-node "classList")
-                     (.add "disabled")))
-               :else nil)))
