@@ -15,7 +15,7 @@
 (def replique-dir (.getGlobal remote "repliqueRootDir"))
 (def dialog (.require remote "dialog"))
 
-(def handler (utils/handler (namespace ::e)))
+(def handler (ddom/handler (namespace ::e)))
 
 (defonce current-repl (atom nil))
 

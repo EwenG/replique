@@ -8,7 +8,7 @@
             [ewen.ddom.core :as ddom]
             [ewen.replique.ui.core :as core]))
 
-(def handler (utils/handler (namespace ::e)))
+(def handler (ddom/handler (namespace ::e)))
 
 (defn ^:export back-clicked [e prev-view]
   (swap! core/state

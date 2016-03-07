@@ -47,14 +47,3 @@
 (let [counter (atom 0)]
   (defn next-id []
     (swap! counter inc)))
-
-(defn fn-name [ns fn-name]
-  (str (munge ns) "." (munge fn-name)))
-
-(defn handler [ns]
-  (fn [fn-n & params]
-    (let [fn-n (fn-name ns fn-n)
-          params (if-not (empty? params)
-                   (str "," (join "," (map pr-str params)))
-                   "")]
-      (format "%s.call(null,event%s)" fn-n params))))

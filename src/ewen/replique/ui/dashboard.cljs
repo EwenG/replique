@@ -13,6 +13,7 @@
             [ewen.replique.ui.settings :as settings]
             [ewen.replique.ui.shortcuts]
             [ewen.replique.ui.notifications :as notif]
+            [ewen.ddom.core :as ddom]
             [cljs-uuid-utils.core :as uuid])
   (:import [goog.string format]))
 
@@ -23,7 +24,7 @@
 (def fs (node/require "fs"))
 (def net (node/require "net"))
 
-(def handler (utils/handler (namespace ::e)))
+(def handler (ddom/handler (namespace ::e)))
 
 (defn ^:export add-new-repl []
   (let [id (uuid/uuid-string (uuid/make-random-uuid))]

@@ -8,6 +8,7 @@
             [ewen.replique.ui.utils :as utils]
             [ewen.replique.ui.notifications :as notif]
             [ewen.replique.ui.common :as common]
+            [ewen.ddom.core :as ddom]
             [cljs.nodejs :as node]))
 
 (def fs (node/require "fs"))
@@ -35,7 +36,7 @@
                          cljs-file-names)
                      (into {})))
 
-(def handler (utils/handler (namespace ::e)))
+(def handler (ddom/handler (namespace ::e)))
 
 (defonce current-settings (atom nil))
 
