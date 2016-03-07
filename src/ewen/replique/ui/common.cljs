@@ -5,6 +5,7 @@
             [goog.dom :as dom]
             [goog.events :as events]
             [ewen.replique.ui.utils :as utils]
+            [ewen.ddom.core :as ddom]
             [ewen.replique.ui.core :as core]))
 
 (def handler (utils/handler (namespace ::e)))
@@ -33,7 +34,3 @@
   [:a {:href "#" :class "button save disabled"
        :onclick (handler 'save-clicked save-fn)}
    "Save"])
-
-(defprotocol IField
-  (field-val [this])
-  (field-path [this]))

@@ -64,6 +64,10 @@
 (defn ^:export edit-clicked [e id]
   (swap! core/state assoc :repl-id id :view :edit-repl))
 
+(defn is-lein-project [{:keys [repls] :as state} id]
+  (let [{:keys [directory]} (get repls id)]
+    (and directory (utils/file-exists (str directory "/project.clj")))))
+
 (defn maybe-start-repl-error [{:keys [repls] :as state} id]
   (let [{:keys [directory type cljs-env browser-env-out webapp-env-out]}
         (get repls id)
@@ -100,6 +104,80 @@
       {:type :err
        :msg "Output file for Clojurescript web application environment has not been configured"}
       :else nil)))
+
+(defn repl-cmd-raw [{:keys [repls settings] :as state} id]
+  (let [{:keys [directory type cljs-env port random-port
+                browser-env-port browser-env-random-port
+                webapp-env-port webapp-env-random-port]
+         :as repl}
+        (get repls id)
+        cp (if (= :cljs type)
+              (str (settings/get-clj-jar state) ":"
+                   (settings/get-cljs-jar state) ":"
+                   (format "%s/src" replique-dir))
+              (str (settings/get-clj-jar state) ":"
+                   (format "%s/src" replique-dir)))
+        port (if random-port 0 port)
+        browser-env-port (if browser-env-random-port 0 browser-env-port)
+        webapp-env-port (if webapp-env-random-port 0 webapp-env-port)
+        cljs-env (if (= :clj type) nil cljs-env)
+        cmd-args #js ["-cp" cp "clojure.main"
+                      "-m" "ewen.replique.main"
+                      (-> (merge repl {:port port :cljs-env cljs-env
+                                       :browser-env-port browser-env-port
+                                       :webapp-env-port webapp-env-port
+                                       :sass-bin (:sass-bin settings)})
+                          str)]]
+    ["java" cmd-args #js {:cwd directory}]))
+
+(defn repl-cmd-lein [{:keys [repls settings] :as state} id]
+  (let [{:keys [directory type cljs-env port random-port
+                browser-env-port browser-env-random-port
+                webapp-env-port webapp-env-random-port]
+         :as repl}
+        (get repls id)
+        port (if random-port 0 port)
+        browser-env-port (if browser-env-random-port 0 browser-env-port)
+        webapp-env-port (if webapp-env-random-port 0 webapp-env-port)
+        cljs-env (if (= :clj type) nil cljs-env)
+        cmd-args #js ["update-in" ":source-paths" "conj"
+                      (pr-str (format "%s/src" replique-dir))
+                      "--" "run" "-m" "ewen.replique.main/-main"
+                      (-> (merge repl {:port port :cljs-env cljs-env
+                                       :browser-env-port browser-env-port
+                                       :webapp-env-port webapp-env-port
+                                       :sass-bin (:sass-bin settings)})
+                          str)]]
+    [(settings/get-lein-script state)
+     cmd-args #js {:cwd directory}]))
+
+;; lein update-in :source-paths conj "\"/home/egr/electron/resources/replique/src\"" -- run -m ewen.replique.main/-main "{:type :clj :port 9001}"
+
+(defn read-port-desc [directory]
+  (try
+    (->>
+     (str directory "/.replique-port")
+     (#(.readFileSync fs % "utf-8"))
+     (reader/read-string))
+    (catch js/Error e
+      (.log js/console e)
+      nil)))
+
+(defn stop-repl [overview {:keys [repls] :as state} id]
+  (let [{:keys [proc repl-port directory]} (get repls id)]
+    (if repl-port
+      (let [client (.connect net #js {:port repl-port})]
+        (.on client "connect"
+             (fn []
+               (.write client (format "(ewen.replique.server/tooling-msg-handle %s)\n" (str {:type :shutdown})))
+               (.end client)))
+        (.on client "error"
+             (fn [err]
+               (tree-kill (aget proc "pid")))))
+      (tree-kill (aget proc "pid")))
+    (try
+      (.unlink fs (str directory "/.replique-port"))
+      (catch js/Error e nil))))
 
 (defn start-repl [overview {:keys [repls] :as state} id]
   (let [{:keys [directory port cljs-env] :as repl}
@@ -191,96 +269,18 @@
    (when cljs-env-port
      [:span.cljs-env-port (str "Cljs environment port: " cljs-env-port)])])
 
-(defhtml dashboard [{:keys [repls]}]
-  (html [:div#dashboard
-         [:div.settings-wrapper
-          [:img.settings-button
-           {:src "resources/images/settings.png"
-            :onclick (handler 'settings-button-clicked)}]]
-         (new-repl)
-         (for [[id repl] repls]
-           (repl-overview repl id))]))
-
 (defn ^:export settings-button-clicked []
   (swap! core/state assoc :view :settings))
 
-(defn is-lein-project [{:keys [repls] :as state} id]
-  (let [{:keys [directory]} (get repls id)]
-    (and directory (utils/file-exists (str directory "/project.clj")))))
-
-(defn repl-cmd-raw [{:keys [repls settings] :as state} id]
-  (let [{:keys [directory type cljs-env port random-port
-                browser-env-port browser-env-random-port
-                webapp-env-port webapp-env-random-port]
-         :as repl}
-        (get repls id)
-        cp (if (= :cljs type)
-              (str (settings/get-clj-jar state) ":"
-                   (settings/get-cljs-jar state) ":"
-                   (format "%s/src" replique-dir))
-              (str (settings/get-clj-jar state) ":"
-                   (format "%s/src" replique-dir)))
-        port (if random-port 0 port)
-        browser-env-port (if browser-env-random-port 0 browser-env-port)
-        webapp-env-port (if webapp-env-random-port 0 webapp-env-port)
-        cljs-env (if (= :clj type) nil cljs-env)
-        cmd-args #js ["-cp" cp "clojure.main"
-                      "-m" "ewen.replique.main"
-                      (-> (merge repl {:port port :cljs-env cljs-env
-                                       :browser-env-port browser-env-port
-                                       :webapp-env-port webapp-env-port
-                                       :sass-bin (:sass-bin settings)})
-                          str)]]
-    ["java" cmd-args #js {:cwd directory}]))
-
-(defn repl-cmd-lein [{:keys [repls settings] :as state} id]
-  (let [{:keys [directory type cljs-env port random-port
-                browser-env-port browser-env-random-port
-                webapp-env-port webapp-env-random-port]
-         :as repl}
-        (get repls id)
-        port (if random-port 0 port)
-        browser-env-port (if browser-env-random-port 0 browser-env-port)
-        webapp-env-port (if webapp-env-random-port 0 webapp-env-port)
-        cljs-env (if (= :clj type) nil cljs-env)
-        cmd-args #js ["update-in" ":source-paths" "conj"
-                      (pr-str (format "%s/src" replique-dir))
-                      "--" "run" "-m" "ewen.replique.main/-main"
-                      (-> (merge repl {:port port :cljs-env cljs-env
-                                       :browser-env-port browser-env-port
-                                       :webapp-env-port webapp-env-port
-                                       :sass-bin (:sass-bin settings)})
-                          str)]]
-    [(settings/get-lein-script state)
-     cmd-args #js {:cwd directory}]))
-
-;; lein update-in :source-paths conj "\"/home/egr/electron/resources/replique/src\"" -- run -m ewen.replique.main/-main "{:type :clj :port 9001}"
-
-(defn read-port-desc [directory]
-  (try
-    (->>
-     (str directory "/.replique-port")
-     (#(.readFileSync fs % "utf-8"))
-     (reader/read-string))
-    (catch js/Error e
-      (.log js/console e)
-      nil)))
-
-(defn stop-repl [overview {:keys [repls] :as state} id]
-  (let [{:keys [proc repl-port directory]} (get repls id)]
-    (if repl-port
-        (let [client (.connect net #js {:port repl-port})]
-          (.on client "connect"
-               (fn []
-                 (.write client (format "(ewen.replique.server/tooling-msg-handle %s)\n" (str {:type :shutdown})))
-                 (.end client)))
-          (.on client "error"
-               (fn [err]
-                 (tree-kill (aget proc "pid")))))
-        (tree-kill (aget proc "pid")))
-    (try
-      (.unlink fs (str directory "/.replique-port"))
-      (catch js/Error e nil))))
+(defhtml dashboard [{:keys [repls]}]
+  [:div#dashboard
+   [:div.settings-wrapper
+    [:img.settings-button
+     {:src "resources/images/settings.png"
+      :onclick (handler 'settings-button-clicked)}]]
+   (new-repl)
+   (for [[id repl] repls]
+     (repl-overview repl id))])
 
 (swap!
  core/refresh-view-fns assoc :dashboard

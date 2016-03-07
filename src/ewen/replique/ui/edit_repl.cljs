@@ -9,6 +9,7 @@
             [ewen.replique.ui.remote :refer [remote]]
             [ewen.replique.ui.core :as core]
             [ewen.replique.ui.utils :as utils]
+            [ewen.ddom.core :as ddom]
             [ewen.replique.ui.notifications :as notif]))
 
 (def replique-dir (.getGlobal remote "repliqueRootDir"))
@@ -59,6 +60,7 @@
 (declare cljs-env-tmpl)
 (declare browser-cljs-env-tmpl)
 (declare webapp-cljs-env-tmpl)
+(declare port-tmpl)
 
 (defn refresh-cljs-env [cljs-env]
   (let [[class tmpl] (case cljs-env
@@ -214,59 +216,59 @@
                                         browser-env-random-port
                                         browser-env-main]}]
   [:div.browser-env
-    [:label {:for "browser-env"
-             :class (if (not= :cljs type) "disabled" "")}
-     "Browser"]
-    [:input.field
-     {:type "radio"
-      :id "browser-env"
-      :name "cljs-env"
-      :value "browser"
-      :checked (= cljs-env :browser)
-      :disabled (not= :cljs type)
-      :onchange (handler 'cljs-env-changed "browser")}]
-    [:input
-     (merge
-      {:type "text" :maxlength "5"
-       :class "browser-env-port field" :value browser-env-port
-       :placeholder "Port"}
-      (if (or browser-env-random-port
-              (not= type :cljs)
-              (not= cljs-env :browser))
-        {:disabled true}
-        {:oninput (handler 'port-changed
-                           "browser" "browser-env-port")}))]
-    [:label {:for "browser-env-random-port"
-             :class (if (or (not= :cljs type)
-                            (not= :browser cljs-env))
-                      "disabled" "")}
-     "Random port"]
-    [:input
-     {:type "checkbox"
-      :class "field browser-env-random-port"
-      :id "browser-env-random-port"
-      :checked browser-env-random-port
-      :disabled (or (not= cljs-env :browser) (not= type :cljs))
-      :onchange (handler 'random-port-changed
-                         "browser" "browser-env-random-port")}]
-    [:input.field.browser-env-out
-     {:type "text"
-      :readonly true
-      :value browser-env-out
-      :disabled (or (not= :cljs type)
-                    (not= :browser cljs-env))}]
+   [:label {:for "browser-env"
+            :class (if (not= :cljs type) "disabled" "")}
+    "Browser"]
+   [:input.field
+    {:type "radio"
+     :id "browser-env"
+     :name "cljs-env"
+     :value "browser"
+     :checked (= cljs-env :browser)
+     :disabled (not= :cljs type)
+     :onchange (handler 'cljs-env-changed "browser")}]
+   [:input
+    (merge
+     {:type "text" :maxlength "5"
+      :class "browser-env-port field" :value browser-env-port
+      :placeholder "Port"}
+     (if (or browser-env-random-port
+             (not= type :cljs)
+             (not= cljs-env :browser))
+       {:disabled true}
+       {:oninput (handler 'port-changed
+                          "browser" "browser-env-port")}))]
+   [:label {:for "browser-env-random-port"
+            :class (if (or (not= :cljs type)
+                           (not= :browser cljs-env))
+                     "disabled" "")}
+    "Random port"]
+   [:input
+    {:type "checkbox"
+     :class "field browser-env-random-port"
+     :id "browser-env-random-port"
+     :checked browser-env-random-port
+     :disabled (or (not= cljs-env :browser) (not= type :cljs))
+     :onchange (handler 'random-port-changed
+                        "browser" "browser-env-random-port")}]
+   [:input.field.browser-env-out
+    {:type "text"
+     :readonly true
+     :value browser-env-out
+     :disabled (or (not= :cljs type)
+                   (not= :browser cljs-env))}]
    [:a (merge {:href "#"}
               (if (or (not= :cljs type) (not= :browser cljs-env))
                 {:class "button new-browser-env-out disabled"}
                 {:class "button new-browser-env-out"
                  :onclick (handler 'new-out-file-clicked "browser")}))
-     "Select output file"]
-    [:input.field.browser-env-main
-     {:type "text"
-      :readonly true
-      :value browser-env-main
-      :disabled (or (not= :cljs type)
-                    (not= :browser cljs-env))}]
+    "Select output file"]
+   [:input.field.browser-env-main
+    {:type "text"
+     :readonly true
+     :value browser-env-main
+     :disabled (or (not= :cljs type)
+                   (not= :browser cljs-env))}]
    [:a (merge {:href "#"}
               (if (or (not= :cljs type) (not= :browser cljs-env))
                 {:class
@@ -280,68 +282,68 @@
                                        webapp-env-random-port
                                        webapp-env-main]}]
   [:div.webapp-env
-    [:label {:for "webapp-env"
-             :class (if (not= :cljs type) "disabled" "")}
-     "Web application"]
-    [:input.field
-     {:type "radio"
-      :id "webapp-env"
-      :name "cljs-env"
-      :value "webapp"
-      :checked (= cljs-env :webapp)
-      :disabled (not= :cljs type)
-      :onchange (handler 'cljs-env-changed "webapp")}]
-    [:input
-     (merge {:type "text" :maxlength "5"
-             :class "webapp-env-port field" :value webapp-env-port
-             :placeholder "Port"}
-            (if (or webapp-env-random-port
-                    (not= type :cljs)
-                    (not= cljs-env :webapp))
-              {:disabled true}
-              {:oninput (handler 'port-changed
-                                 "webapp" "webapp-env-port")}))]
-    [:label {:for "webapp-env-random-port"
-             :class (if (or (not= :cljs type) (not= :webapp cljs-env))
-                      "disabled" "")}
-     "Random port"]
-    [:input
-     {:type "checkbox"
-      :class "field webapp-env-random-port"
-      :id "webapp-env-random-port"
-      :checked webapp-env-random-port
-      :disabled (or (not= type :cljs)
-                    (not= cljs-env :webapp))
-      :onchange (handler 'random-port-changed
-                         "webapp" "webapp-env-random-port")}]
-    [:input.field.webapp-env-out
-     {:type "text"
-      :readonly true
-      :value webapp-env-out
-      :disabled (or (not= :cljs type) (not= :webapp cljs-env))}]
+   [:label {:for "webapp-env"
+            :class (if (not= :cljs type) "disabled" "")}
+    "Web application"]
+   [:input.field
+    {:type "radio"
+     :id "webapp-env"
+     :name "cljs-env"
+     :value "webapp"
+     :checked (= cljs-env :webapp)
+     :disabled (not= :cljs type)
+     :onchange (handler 'cljs-env-changed "webapp")}]
+   [:input
+    (merge {:type "text" :maxlength "5"
+            :class "webapp-env-port field" :value webapp-env-port
+            :placeholder "Port"}
+           (if (or webapp-env-random-port
+                   (not= type :cljs)
+                   (not= cljs-env :webapp))
+             {:disabled true}
+             {:oninput (handler 'port-changed
+                                "webapp" "webapp-env-port")}))]
+   [:label {:for "webapp-env-random-port"
+            :class (if (or (not= :cljs type) (not= :webapp cljs-env))
+                     "disabled" "")}
+    "Random port"]
+   [:input
+    {:type "checkbox"
+     :class "field webapp-env-random-port"
+     :id "webapp-env-random-port"
+     :checked webapp-env-random-port
+     :disabled (or (not= type :cljs)
+                   (not= cljs-env :webapp))
+     :onchange (handler 'random-port-changed
+                        "webapp" "webapp-env-random-port")}]
+   [:input.field.webapp-env-out
+    {:type "text"
+     :readonly true
+     :value webapp-env-out
+     :disabled (or (not= :cljs type) (not= :webapp cljs-env))}]
    [:a (merge {:href "#"}
               (if (or (not= :cljs type) (not= :webapp cljs-env))
                 {:class "button new-webapp-env-out disabled"}
                 {:class "button new-webapp-env-out"
                  :onclick (handler 'new-out-file-clicked "webapp")}))
     "Select output file"]
-    [:input.field.webapp-env-main
-     {:type "text"
-      :readonly true
-      :value webapp-env-main
-      :disabled (or (not= :cljs type) (not= :webapp cljs-env))}]
+   [:input.field.webapp-env-main
+    {:type "text"
+     :readonly true
+     :value webapp-env-main
+     :disabled (or (not= :cljs type) (not= :webapp cljs-env))}]
    [:a (merge {:href "#"}
               (if (or (not= :cljs type) (not= :webapp cljs-env))
                 {:class "button new-webapp-env-main disabled"}
                 {:class "button new-webapp-env-main"
                  :onclick (handler 'new-main-clicked "webapp")}))
-     "Choose main namespace"]])
+    "Choose main namespace"]])
 
 (defhtml replique-cljs-env-tmpl [{:keys [type cljs-env]}]
   [:div
    [:label {:for "replique-env"
-                 :class (if (not= :cljs type) "disabled" "")}
-         "Replique"]
+            :class (if (not= :cljs type) "disabled" "")}
+    "Replique"]
    [:input.field
     {:type "radio"
      :id "replique-env"
@@ -377,7 +379,7 @@
             (when random-port
               {:checked true}))]])
 
-(defhtml edit-repl [dirty {:keys [type directory] :as repl}]
+(defhtml edit-repl [{:keys [type directory] :as repl}]
   [:div#edit-repl
    (common/back-button "dashboard")
    [:form
@@ -389,7 +391,7 @@
 
 (swap!
  core/refresh-view-fns assoc :edit-repl
- (fn [root {:keys [view dirty repls repl-id] :as state}]
+ (fn [root {:keys [view repls repl-id] :as state}]
    (if (= :edit-repl view)
      (let [repl (-> (get repls repl-id)
                     (assoc :repl-id repl-id))
@@ -397,6 +399,19 @@
            node (utils/replace-or-append
                  root "#edit-repl"
                  (dom/htmlToDocumentFragment
-                  (edit-repl dirty current-repl)))])
+                  (edit-repl current-repl)))])
      (when-let [node (.querySelector root "#edit-repl")]
        (dom/removeNode node)))))
+
+(comment
+
+  (defhtml tt1 [] [:div])
+
+  (defhtml edit-repl* [{:keys [type directory] :as repl}]
+    [:div#edit-repl
+     (common/back-button "dashboard")
+     [:form
+      (common/save-button 'ewen.replique.ui.edit_repl.save_repl)
+      (repl-directory-tmpl repl)]])
+
+  )

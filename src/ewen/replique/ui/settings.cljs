@@ -55,6 +55,95 @@
          (filter #(get cljs-file-names %))
          (into #{}))))
 
+(defn start-progress [resp id file-name]
+  (let [total-length (-> (aget resp "headers")
+                         (aget "content-length")
+                         js/parseInt)
+        length (volatile! 0)
+        update-percent (fn [] (/ (* 100 @length) total-length))
+        percent (volatile! (update-percent))]
+    (.on resp "data"
+         (fn [chunk]
+           (let [compute-progress
+                 (utils/throttle
+                  #(let [prev-percent @percent
+                         updated-percent (update-percent)]
+                     (when (> (- updated-percent prev-percent) 5)
+                       (vreset! percent updated-percent)
+                       (notif/notif-with-id
+                        {:type :download
+                         :progress (js/Math.floor updated-percent)
+                         :file file-name }
+                        id)))
+                  1000)]
+             (vswap! length + (aget chunk "length"))
+             (compute-progress))))))
+
+(defn download-jar [url path file-name]
+  (let [file (.createWriteStream fs path #js {:flags "wx"})
+        id (utils/next-id)
+        req (.get https url
+                  (fn [resp]
+                    (let [status (aget resp "statusCode")]
+                      (cond
+                        (= status 302)
+                        (let [location (-> (aget resp "headers")
+                                           (aget "location"))]
+                          (.unlink fs path)
+                          (download-jar location path file-name))
+                        (not= status 200)
+                        (do
+                          (.log js/console (str "Error while downloading the file: " file-name ". Recevied HTTP status " status))
+                          (notif/single-notif
+                           {:type :err
+                            :msg (str "Error while downloading the file: " file-name)})
+                          (.unlink fs path))
+                        :else
+                        (do
+                          (start-progress resp id file-name)
+                          (.pipe resp file))))))]
+    (.on req "error"
+         (fn [err]
+           (.log js/console (str "Error while downloading the file: " file-name ". Recevied error " err))
+           (notif/clear-notif id)
+           (notif/single-notif
+            {:type :err
+             :msg (str "Error while downloading the file: " file-name)})
+           (.unlink fs path)))
+    (.on req "timeout"
+         (fn [err]
+           (.log js/console (str "Error while downloading the file: " file-name ". Timed out with error " err))
+           (notif/clear-notif id)
+           (notif/single-notif
+            {:type :err
+             :msg (str "Error while downloading the file: " file-name)})
+           (.abort req)
+           (.unlink fs path)))
+    (.on file "finish"
+         ;; Refresh only the field concerned by the downloaded file
+         ;; since the user may have changed other fields meanwhile
+         (fn []
+           (notif/clear-notif id)
+           (notif/single-notif
+            {:type :success
+             :msg (str file-name " successfully downloaded")})
+           (.close file)
+           (core/refresh-view @core/state)))
+    (.on file "error"
+         (fn [err]
+           (if (= (aget err "code") "EEXIST")
+             (do
+               (.abort req)
+               (notif/single-notif
+                {:type :err
+                 :msg "The most recent version has already been downloaded"}))
+             (do (.log js/console (str "Error while downloading the file: " file-name ". Recevied error " err))
+                 (notif/clear-notif id)
+                 (notif/single-notif
+                  {:type :err
+                   :msg (str "Error while downloading the file: " file-name)})
+                 (.unlink fs path)))))))
+
 (defn ^:export download-clj-jar-clicked [e]
   (download-jar (get clj-urls current-clj-v)
                 (get clj-paths current-clj-v)
@@ -64,6 +153,10 @@
   (download-jar (get cljs-urls current-cljs-v)
                 (get cljs-paths current-cljs-v)
                 cljs-file-name))
+
+(declare clj-jar-tmpl)
+(declare cljs-jar-tmpl)
+(declare lein-tmpl)
 
 (defn ^:export new-clj-jar-clicked [e]
   (let [clj-jar-node (.querySelector js/document ".clj-jar")
@@ -276,95 +369,6 @@
           (clj-jar-tmpl settings)
           (cljs-jar-tmpl settings)
           (lein-tmpl settings)]]))
-
-(defn start-progress [resp id file-name]
-  (let [total-length (-> (aget resp "headers")
-                         (aget "content-length")
-                         js/parseInt)
-        length (volatile! 0)
-        update-percent (fn [] (/ (* 100 @length) total-length))
-        percent (volatile! (update-percent))]
-    (.on resp "data"
-         (fn [chunk]
-           (let [compute-progress
-                 (utils/throttle
-                  #(let [prev-percent @percent
-                         updated-percent (update-percent)]
-                     (when (> (- updated-percent prev-percent) 5)
-                       (vreset! percent updated-percent)
-                       (notif/notif-with-id
-                        {:type :download
-                         :progress (js/Math.floor updated-percent)
-                         :file file-name }
-                        id)))
-                  1000)]
-             (vswap! length + (aget chunk "length"))
-             (compute-progress))))))
-
-(defn download-jar [url path file-name]
-  (let [file (.createWriteStream fs path #js {:flags "wx"})
-        id (utils/next-id)
-        req (.get https url
-                  (fn [resp]
-                    (let [status (aget resp "statusCode")]
-                      (cond
-                        (= status 302)
-                        (let [location (-> (aget resp "headers")
-                                           (aget "location"))]
-                          (.unlink fs path)
-                          (download-jar location path file-name))
-                        (not= status 200)
-                        (do
-                          (.log js/console (str "Error while downloading the file: " file-name ". Recevied HTTP status " status))
-                          (notif/single-notif
-                           {:type :err
-                            :msg (str "Error while downloading the file: " file-name)})
-                          (.unlink fs path))
-                        :else
-                        (do
-                          (start-progress resp id file-name)
-                          (.pipe resp file))))))]
-    (.on req "error"
-         (fn [err]
-           (.log js/console (str "Error while downloading the file: " file-name ". Recevied error " err))
-           (notif/clear-notif id)
-           (notif/single-notif
-            {:type :err
-             :msg (str "Error while downloading the file: " file-name)})
-           (.unlink fs path)))
-    (.on req "timeout"
-         (fn [err]
-           (.log js/console (str "Error while downloading the file: " file-name ". Timed out with error " err))
-           (notif/clear-notif id)
-           (notif/single-notif
-            {:type :err
-             :msg (str "Error while downloading the file: " file-name)})
-           (.abort req)
-           (.unlink fs path)))
-    (.on file "finish"
-         ;; Refresh only the field concerned by the downloaded file
-         ;; since the user may have changed other fields meanwhile
-         (fn []
-           (notif/clear-notif id)
-           (notif/single-notif
-            {:type :success
-             :msg (str file-name " successfully downloaded")})
-           (.close file)
-           (core/refresh-view @core/state)))
-    (.on file "error"
-         (fn [err]
-           (if (= (aget err "code") "EEXIST")
-             (do
-               (.abort req)
-               (notif/single-notif
-                {:type :err
-                 :msg "The most recent version has already been downloaded"}))
-             (do (.log js/console (str "Error while downloading the file: " file-name ". Recevied error " err))
-                 (notif/clear-notif id)
-                 (notif/single-notif
-                  {:type :err
-                   :msg (str "Error while downloading the file: " file-name)})
-                 (.unlink fs path)))))))
 
 (defn ^:export save-settings [e]
   (swap! core/state assoc :settings @current-settings)
