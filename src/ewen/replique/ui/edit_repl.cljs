@@ -9,13 +9,11 @@
             [ewen.replique.ui.remote :refer [remote]]
             [ewen.replique.ui.core :as core]
             [ewen.replique.ui.utils :as utils]
-            [ewen.ddom.core :as ddom]
+            [ewen.ddom.core :as ddom :refer-macros [defnx]]
             [ewen.replique.ui.notifications :as notif]))
 
 (def replique-dir (.getGlobal remote "repliqueRootDir"))
 (def dialog (.require remote "dialog"))
-
-(def handler (ddom/handler (namespace ::e)))
 
 (defonce current-repl (atom nil))
 
@@ -44,12 +42,11 @@
     (try
       (core/persist-state state)
       (catch js/Error e
-        (.log js/console (str "Error while saving settings: " e))
         (notif/single-notif
          {:type :err
           :msg (str "Error while saving settings")})))))
 
-(defn ^:export save-repl [e]
+(defnx save-repl [e]
   (if-let [err (maybe-save-repl-error @current-repl)]
     (do (notif/single-notif err)
         false)
@@ -73,7 +70,7 @@
         utils/make-node
         (dom/replaceNode cljs-env-node))))
 
-(defn ^:export new-directory-clicked [e]
+(defnx new-directory-clicked [e]
   (let [directory-node (.-currentTarget e)
         directory (first
                    (.showOpenDialog
@@ -86,7 +83,7 @@
     (common/save-set-dirty)))
 
 (defhtml repl-directory-tmpl [{:keys [directory]}]
-  [:fieldset.directory {:onclick (handler 'new-directory-clicked)}
+  [:fieldset.directory {:onclick (ddom/handler new-directory-clicked)}
    [:legend "REPL directory"]
    [:input.field {:type "text" :readonly true
                   :value directory}]
@@ -94,7 +91,7 @@
     {:href "#"}
     "Choose directory"]])
 
-(defn ^:export repl-type-changed [e browser-env]
+(defnx repl-type-changed [e browser-env]
   (let [current-repl (swap! current-repl assoc :type (keyword browser-env))
         cljs-env-node (.querySelector js/document ".cljs-env")]
     (-> (cljs-env-tmpl current-repl)
@@ -112,7 +109,7 @@
      :name "repl-type"
      :value "clj"
      :checked (= type :clj)
-     :onchange (handler 'repl-type-changed "clj")}]
+     :onchange (ddom/handler repl-type-changed "clj")}]
    [:label {:for "type-cljs"} "Clojure/Clojurescript"]
    [:input.field
     {:type "radio"
@@ -120,9 +117,9 @@
      :name "repl-type"
      :value "cljs"
      :checked (= type :cljs)
-     :onchange (handler 'repl-type-changed "cljs")}]])
+     :onchange (ddom/handler repl-type-changed "cljs")}]])
 
-(defn ^:export cljs-env-changed [e cljs-env]
+(defnx cljs-env-changed [e cljs-env]
   (let [cljs-env (keyword cljs-env)
         cljs-env-node (.querySelector js/document ".cljs-env")
         repl (swap! current-repl assoc :cljs-env cljs-env)]
@@ -131,7 +128,7 @@
         (dom/replaceNode cljs-env-node))
     (common/save-set-dirty)))
 
-(defn ^:export random-port-changed
+(defnx random-port-changed
   ([e]
    (let [port-node (.querySelector js/document ".port")
          repl (swap! current-repl assoc :random-port
@@ -147,7 +144,7 @@
      (refresh-cljs-env cljs-env)
      (common/save-set-dirty))))
 
-(defn ^:export port-changed
+(defnx port-changed
   ([e]
    (let [val (.-value (.-target e))
          val (if (= "" val) nil (js/parseInt val))]
@@ -161,7 +158,7 @@
      (swap! current-repl assoc port-key val)
      (common/save-set-dirty))))
 
-(defn ^:export new-out-file-clicked [e cljs-env]
+(defnx new-out-file-clicked [e cljs-env]
   (let [cljs-env (keyword cljs-env)
         [k class tmpl] (case cljs-env
                          :browser [:browser-env-out ".browser-env"
@@ -185,7 +182,7 @@
         (dom/replaceNode cljs-env-node))
     (common/save-set-dirty)))
 
-(defn ^:export new-main-clicked [e cljs-env]
+(defnx new-main-clicked [e cljs-env]
   (let [cljs-env (keyword cljs-env)
         [k class tmpl] (case cljs-env
                          :browser [:browser-env-main ".browser-env"
@@ -226,7 +223,7 @@
      :value "browser"
      :checked (= cljs-env :browser)
      :disabled (not= :cljs type)
-     :onchange (handler 'cljs-env-changed "browser")}]
+     :onchange (ddom/handler cljs-env-changed "browser")}]
    [:input
     (merge
      {:type "text" :maxlength "5"
@@ -236,7 +233,7 @@
              (not= type :cljs)
              (not= cljs-env :browser))
        {:disabled true}
-       {:oninput (handler 'port-changed
+       {:oninput (ddom/handler port-changed
                           "browser" "browser-env-port")}))]
    [:label {:for "browser-env-random-port"
             :class (if (or (not= :cljs type)
@@ -249,7 +246,7 @@
      :id "browser-env-random-port"
      :checked browser-env-random-port
      :disabled (or (not= cljs-env :browser) (not= type :cljs))
-     :onchange (handler 'random-port-changed
+     :onchange (ddom/handler random-port-changed
                         "browser" "browser-env-random-port")}]
    [:input.field.browser-env-out
     {:type "text"
@@ -261,7 +258,7 @@
               (if (or (not= :cljs type) (not= :browser cljs-env))
                 {:class "button new-browser-env-out disabled"}
                 {:class "button new-browser-env-out"
-                 :onclick (handler 'new-out-file-clicked "browser")}))
+                 :onclick (ddom/handler new-out-file-clicked "browser")}))
     "Select output file"]
    [:input.field.browser-env-main
     {:type "text"
@@ -274,7 +271,7 @@
                 {:class
                  "button new-browser-env-main disabled"}
                 {:class "button new-browser-env-main"
-                 :onclick (handler 'new-main-clicked "browser")}))
+                 :onclick (ddom/handler new-main-clicked "browser")}))
     "Choose main namespace"]])
 
 (defhtml webapp-cljs-env-tmpl [{:keys [type cljs-env webapp-env-port
@@ -292,7 +289,7 @@
      :value "webapp"
      :checked (= cljs-env :webapp)
      :disabled (not= :cljs type)
-     :onchange (handler 'cljs-env-changed "webapp")}]
+     :onchange (ddom/handler cljs-env-changed "webapp")}]
    [:input
     (merge {:type "text" :maxlength "5"
             :class "webapp-env-port field" :value webapp-env-port
@@ -301,7 +298,7 @@
                    (not= type :cljs)
                    (not= cljs-env :webapp))
              {:disabled true}
-             {:oninput (handler 'port-changed
+             {:oninput (ddom/handler port-changed
                                 "webapp" "webapp-env-port")}))]
    [:label {:for "webapp-env-random-port"
             :class (if (or (not= :cljs type) (not= :webapp cljs-env))
@@ -314,7 +311,7 @@
      :checked webapp-env-random-port
      :disabled (or (not= type :cljs)
                    (not= cljs-env :webapp))
-     :onchange (handler 'random-port-changed
+     :onchange (ddom/handler random-port-changed
                         "webapp" "webapp-env-random-port")}]
    [:input.field.webapp-env-out
     {:type "text"
@@ -325,7 +322,7 @@
               (if (or (not= :cljs type) (not= :webapp cljs-env))
                 {:class "button new-webapp-env-out disabled"}
                 {:class "button new-webapp-env-out"
-                 :onclick (handler 'new-out-file-clicked "webapp")}))
+                 :onclick (ddom/handler new-out-file-clicked "webapp")}))
     "Select output file"]
    [:input.field.webapp-env-main
     {:type "text"
@@ -336,7 +333,7 @@
               (if (or (not= :cljs type) (not= :webapp cljs-env))
                 {:class "button new-webapp-env-main disabled"}
                 {:class "button new-webapp-env-main"
-                 :onclick (handler 'new-main-clicked "webapp")}))
+                 :onclick (ddom/handler new-main-clicked "webapp")}))
     "Choose main namespace"]])
 
 (defhtml replique-cljs-env-tmpl [{:keys [type cljs-env]}]
@@ -351,7 +348,7 @@
      :value "replique"
      :checked (= cljs-env :replique)
      :disabled (not= :cljs type)
-     :onchange (handler 'cljs-env-changed "replique")}]])
+     :onchange (ddom/handler cljs-env-changed "replique")}]])
 
 (defhtml cljs-env-tmpl [{:keys [directory type cljs-env] :as repl}]
   [:fieldset.cljs-env
@@ -369,21 +366,21 @@
             (if random-port
               {:readonly true
                :disabled true}
-              {:oninput (handler 'port-changed)}))]
+              {:oninput (ddom/handler port-changed)}))]
    [:label {:for "random-port"} "Random port"]
    [:input (merge
             {:type "checkbox"
              :class "field random-port"
              :id "random-port"
-             :onchange (handler 'random-port-changed)}
+             :onchange (ddom/handler random-port-changed)}
             (when random-port
               {:checked true}))]])
 
 (defhtml edit-repl [{:keys [type directory] :as repl}]
   [:div#edit-repl
-   (common/back-button "dashboard")
+   (common/back-button :dashboard)
    [:form
-    (common/save-button 'ewen.replique.ui.edit_repl.save_repl)
+    (common/save-button save-repl)
     (repl-directory-tmpl repl)
     (repl-type-tmpl repl)
     (cljs-env-tmpl repl)
@@ -402,16 +399,3 @@
                   (edit-repl current-repl)))])
      (when-let [node (.querySelector root "#edit-repl")]
        (dom/removeNode node)))))
-
-(comment
-
-  (defhtml tt1 [] [:div])
-
-  (defhtml edit-repl* [{:keys [type directory] :as repl}]
-    [:div#edit-repl
-     (common/back-button "dashboard")
-     [:form
-      (common/save-button 'ewen.replique.ui.edit_repl.save_repl)
-      (repl-directory-tmpl repl)]])
-
-  )

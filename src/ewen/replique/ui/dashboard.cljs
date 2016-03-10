@@ -13,7 +13,7 @@
             [ewen.replique.ui.settings :as settings]
             [ewen.replique.ui.shortcuts]
             [ewen.replique.ui.notifications :as notif]
-            [ewen.ddom.core :as ddom]
+            [ewen.ddom.core :as ddom :refer-macros [defnx]]
             [cljs-uuid-utils.core :as uuid])
   (:import [goog.string format]))
 
@@ -24,9 +24,7 @@
 (def fs (node/require "fs"))
 (def net (node/require "net"))
 
-(def handler (ddom/handler (namespace ::e)))
-
-(defn ^:export add-new-repl []
+(defnx add-new-repl []
   (let [id (uuid/uuid-string (uuid/make-random-uuid))]
     (swap! core/state assoc-in [:repls id]
            {:directory nil
@@ -45,10 +43,10 @@
 (defhtml new-repl []
   [:a.dashboard-item.new-repl
    {:href "#"
-    :onclick (handler 'add-new-repl)}
+    :onclick (ddom/handler add-new-repl)}
    "New REPL"])
 
-(defn ^:export delete-clicked [e id]
+(defnx delete-clicked [e id]
   (let [overview (.querySelector
                   js/document (format "[data-repl-id=\"%s\"]" id))
         {:keys [proc]} (get (:repls @core/state) id)]
@@ -62,7 +60,7 @@
          {:type :err
           :msg (str "Error while saving settings")})))))
 
-(defn ^:export edit-clicked [e id]
+(defnx edit-clicked [e id]
   (swap! core/state assoc :repl-id id :view :edit-repl))
 
 (defn is-lein-project [{:keys [repls] :as state} id]
@@ -230,7 +228,7 @@
     (swap! core/state update-in [:repls id] assoc
            :proc proc :status "REPL starting ...")))
 
-(defn ^:export start-clicked [e id]
+(defnx start-clicked [e id]
   (let [state @core/state
         overview (.querySelector
                   js/document (format "[data-repl-id=\"%s\"]" id))]
@@ -238,7 +236,7 @@
       (notif/single-notif err)
       (start-repl overview state id))))
 
-(defn ^:export stop-clicked [e id]
+(defnx stop-clicked [e id]
   (let [state @core/state
         overview (.querySelector
                   js/document (format "[data-repl-id=\"%s\"]" id))]
@@ -252,15 +250,15 @@
    [:div (if proc
            {:class "start disabled"}
            {:class "start"
-            :onclick (handler 'start-clicked id)})]
+            :onclick (ddom/handler start-clicked id)})]
    [:div (if proc
            {:class "stop"
-            :onclick (handler 'stop-clicked id)}
+            :onclick (ddom/handler stop-clicked id)}
            {:class "stop disabled"})]
    [:img.delete {:src "resources/images/delete.png"
-                 :onclick (handler 'delete-clicked id)}]
+                 :onclick (ddom/handler delete-clicked id)}]
    [:img.edit {:src "resources/images/edit.png"
-               :onclick (handler 'edit-clicked id)}]
+               :onclick (ddom/handler edit-clicked id)}]
    [:span.repl-status status]
    [:div.repl-type
     [:img {:src "resources/images/clj-logo.gif"}]
@@ -270,7 +268,7 @@
    (when cljs-env-port
      [:span.cljs-env-port (str "Cljs environment port: " cljs-env-port)])])
 
-(defn ^:export settings-button-clicked []
+(defnx settings-button-clicked []
   (swap! core/state assoc :view :settings))
 
 (defhtml dashboard [{:keys [repls]}]
@@ -278,7 +276,7 @@
    [:div.settings-wrapper
     [:img.settings-button
      {:src "resources/images/settings.png"
-      :onclick (handler 'settings-button-clicked)}]]
+      :onclick (ddom/handler settings-button-clicked)}]]
    (new-repl)
    (for [[id repl] repls]
      (repl-overview repl id))])
