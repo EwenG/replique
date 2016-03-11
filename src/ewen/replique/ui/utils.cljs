@@ -2,15 +2,10 @@
   (:require [goog.dom :as dom]
             [goog.dom.classlist]
             [goog.async.Throttle :as Throttle]
-            [cljs.nodejs :as node]
-            [clojure.string :refer [join]])
-  (:import [goog.async Throttle]
-           [goog.string format]))
+            [cljs.nodejs :as node])
+  (:import [goog.async Throttle]))
 
 (def fs (node/require "fs"))
-
-(defn make-node [s]
-  (dom/htmlToDocumentFragment s))
 
 (defn add-class [elt class]
   (.add (aget elt "classList") class))

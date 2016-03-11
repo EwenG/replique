@@ -3,7 +3,6 @@
             [hiccup.def :refer-macros [defhtml]]
             [hiccup.page :refer [include-css]]
             [goog.dom :as dom]
-            [goog.events :as events]
             [cljs.reader :as reader]
             [ewen.replique.ui.remote :refer [remote]]
             [cljs.nodejs :as node]
@@ -287,7 +286,7 @@
    (if (= :dashboard view)
      (let [node (utils/replace-or-append
                  root "#dashboard"
-                 (dom/htmlToDocumentFragment
+                 (ddom/string->fragment
                   (dashboard state)))])
      (when-let [node (.querySelector root "#dashboard")]
        (dom/removeNode node)))))

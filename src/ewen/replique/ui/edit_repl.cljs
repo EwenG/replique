@@ -2,9 +2,8 @@
   (:require [hiccup.core :refer-macros [html]]
             [hiccup.def :refer-macros [defhtml]]
             [hiccup.page :refer [include-css]]
-            [goog.dom :as dom]
-            [goog.events :as events]
             [cljs.reader :as reader]
+            [goog.dom :as dom]
             [ewen.replique.ui.common :as common]
             [ewen.replique.ui.remote :refer [remote]]
             [ewen.replique.ui.core :as core]
@@ -67,8 +66,8 @@
                                (str "Invalid cljs-env: " cljs-env))))
         cljs-env-node (.querySelector js/document class)]
     (-> (tmpl @current-repl)
-        utils/make-node
-        (dom/replaceNode cljs-env-node))))
+        ddom/string->fragment
+        (ddom/replace-node cljs-env-node))))
 
 (defnx new-directory-clicked [e]
   (let [directory-node (.-currentTarget e)
@@ -78,8 +77,8 @@
                     #js {:properties #js ["openDirectory"]}))
         repl (swap! current-repl assoc :directory directory)]
     (-> (repl-directory-tmpl repl)
-        utils/make-node
-        (dom/replaceNode directory-node))
+        ddom/string->fragment
+        (ddom/replace-node directory-node))
     (common/save-set-dirty)))
 
 (defhtml repl-directory-tmpl [{:keys [directory]}]
@@ -95,8 +94,8 @@
   (let [current-repl (swap! current-repl assoc :type (keyword browser-env))
         cljs-env-node (.querySelector js/document ".cljs-env")]
     (-> (cljs-env-tmpl current-repl)
-        utils/make-node
-        (dom/replaceNode cljs-env-node))
+        ddom/string->fragment
+        (ddom/replace-node cljs-env-node))
     (common/save-set-dirty)))
 
 (defhtml repl-type-tmpl [{:keys [type] :as repl}]
@@ -124,8 +123,8 @@
         cljs-env-node (.querySelector js/document ".cljs-env")
         repl (swap! current-repl assoc :cljs-env cljs-env)]
     (-> (cljs-env-tmpl repl)
-        utils/make-node
-        (dom/replaceNode cljs-env-node))
+        ddom/string->fragment
+        (ddom/replace-node cljs-env-node))
     (common/save-set-dirty)))
 
 (defnx random-port-changed
@@ -134,8 +133,8 @@
          repl (swap! current-repl assoc :random-port
                      (.-checked (.-target e)))]
      (-> (port-tmpl repl)
-         utils/make-node
-         (dom/replaceNode port-node))
+         ddom/string->fragment
+         (ddom/replace-node port-node))
      (common/save-set-dirty)))
   ([e cljs-env random-port-key]
    (let [cljs-env (keyword cljs-env)
@@ -178,8 +177,8 @@
         repl (swap! current-repl assoc k out-file)
         cljs-env-node (.querySelector js/document class)]
     (-> (tmpl repl)
-        utils/make-node
-        (dom/replaceNode cljs-env-node))
+        ddom/string->fragment
+        (ddom/replace-node cljs-env-node))
     (common/save-set-dirty)))
 
 (defnx new-main-clicked [e cljs-env]
@@ -204,8 +203,8 @@
         repl (swap! current-repl assoc k out-file)
         cljs-env-node (.querySelector js/document class)]
     (-> (tmpl repl)
-        utils/make-node
-        (dom/replaceNode cljs-env-node))
+        ddom/string->fragment
+        (ddom/replace-node cljs-env-node))
     (common/save-set-dirty)))
 
 (defhtml browser-cljs-env-tmpl [{:keys [type cljs-env browser-env-port
@@ -395,7 +394,7 @@
            current-repl (reset! current-repl repl)
            node (utils/replace-or-append
                  root "#edit-repl"
-                 (dom/htmlToDocumentFragment
+                 (ddom/string->fragment
                   (edit-repl current-repl)))])
      (when-let [node (.querySelector root "#edit-repl")]
        (dom/removeNode node)))))

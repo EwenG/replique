@@ -2,9 +2,9 @@
   (:require [hiccup.core :refer-macros [html]]
             [hiccup.def :refer-macros [defhtml]]
             [goog.dom :as dom]
-            [goog.events :as events]
             [ewen.replique.ui.core :as core]
-            [ewen.replique.ui.utils :as utils]))
+            [ewen.replique.ui.utils :as utils]
+            [ewen.ddom.core :as ddom]))
 
 (defhtml notifications-tmpl [{notifications :notifications}]
   (html [:div#notifications
@@ -41,7 +41,7 @@
   (if notifications
     (let [node (utils/replace-or-append
                 root "#notifications"
-                (utils/make-node (notifications-tmpl state)))]
+                (ddom/string->fragment (notifications-tmpl state)))]
       node)
     (when-let [node (.querySelector root "#notifications")]
       (dom/removeNode node))))

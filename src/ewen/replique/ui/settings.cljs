@@ -2,7 +2,6 @@
   (:require [hiccup.core :refer-macros [html]]
             [hiccup.def :refer-macros [defhtml]]
             [goog.dom :as dom]
-            [goog.events :as events]
             [ewen.replique.ui.remote :refer [remote]]
             [ewen.replique.ui.core :as core]
             [ewen.replique.ui.utils :as utils]
@@ -167,8 +166,8 @@
         settings (swap! current-settings assoc
                         :custom-clj-jar clj-jar-file)]
     (-> (clj-jar-tmpl settings)
-        utils/make-node
-        (dom/replaceNode clj-jar-node))
+        ddom/string->fragment
+        (ddom/replace-node clj-jar-node))
     (common/save-set-dirty)))
 
 (defnx new-cljs-jar-clicked [e]
@@ -182,16 +181,16 @@
         settings (swap! current-settings assoc
                         :custom-cljs-jar cljs-jar-file)]
     (-> (cljs-jar-tmpl settings)
-        utils/make-node
-        (dom/replaceNode cljs-jar-node))
+        ddom/string->fragment
+        (ddom/replace-node cljs-jar-node))
     (common/save-set-dirty)))
 
 (defnx clj-source-changed [e val]
   (let [clj-jar-node (.querySelector js/document ".clj-jar")
         settings (swap! current-settings assoc :clj-jar-source val)]
     (-> (clj-jar-tmpl settings)
-        utils/make-node
-        (dom/replaceNode clj-jar-node))
+        ddom/string->fragment
+        (ddom/replace-node clj-jar-node))
     (common/save-set-dirty)))
 
 (defnx downloaded-changed [e k]
@@ -204,8 +203,8 @@
   (let [cljs-jar-node (.querySelector js/document ".cljs-jar")
         settings (swap! current-settings assoc :cljs-jar-source val)]
     (-> (cljs-jar-tmpl settings)
-        utils/make-node
-        (dom/replaceNode cljs-jar-node))
+        ddom/string->fragment
+        (ddom/replace-node cljs-jar-node))
     (common/save-set-dirty)))
 
 (defhtml clj-jar-tmpl [{:keys [clj-jar-source downloaded-clj-jar
@@ -314,16 +313,16 @@
         settings (swap! current-settings assoc
                         :custom-lein-script lein-script)]
     (-> (lein-tmpl settings)
-        utils/make-node
-        (dom/replaceNode lein-node))
+        ddom/string->fragment
+        (ddom/replace-node lein-node))
     (common/save-set-dirty)))
 
 (defnx lein-source-changed [e val]
   (let [lein-node (.querySelector js/document ".lein")
         settings (swap! current-settings assoc :lein-source val)]
     (-> (lein-tmpl settings)
-        utils/make-node
-        (dom/replaceNode lein-node))
+        ddom/string->fragment
+        (ddom/replace-node lein-node))
     (common/save-set-dirty)))
 
 (defhtml lein-tmpl [{:keys [lein-source custom-lein-script]}]
@@ -360,15 +359,6 @@
                  :onclick (ddom/handler new-lein-script-clicked)}))
     "Select Leiningen script"]])
 
-(defhtml settings-tmpl [settings]
-  (html [:div#settings
-         (common/back-button :dashboard)
-         [:form
-          (common/save-button save-settings)
-          (clj-jar-tmpl settings)
-          (cljs-jar-tmpl settings)
-          (lein-tmpl settings)]]))
-
 (defnx save-settings [e]
   (swap! core/state assoc :settings @current-settings)
   (try
@@ -380,6 +370,15 @@
        {:type :err
         :msg (str "Error while saving settings")})
       false)))
+
+(defhtml settings-tmpl [settings]
+  (html [:div#settings
+         (common/back-button :dashboard)
+         [:form
+          (common/save-button save-settings)
+          (clj-jar-tmpl settings)
+          (cljs-jar-tmpl settings)
+          (lein-tmpl settings)]]))
 
 (defn get-clj-jar [{{:keys [clj-jar-source downloaded-clj-jar
                             custom-clj-jar]} :settings}]
