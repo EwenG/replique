@@ -7,7 +7,9 @@
             [ewen.replique.ui.utils :as utils]
             [ewen.replique.ui.notifications :as notif]
             [ewen.replique.ui.common :as common]
-            [ewen.ddom.core :as ddom :refer-macros [defnx]]
+            [ewen.ddom.core :as ddom
+             :refer [*params*]
+             :refer-macros [defnx]]
             [cljs.nodejs :as node]))
 
 (def fs (node/require "fs"))
@@ -185,22 +187,25 @@
         (ddom/replace-node cljs-jar-node))
     (common/save-set-dirty)))
 
-(defnx clj-source-changed [e val]
-  (let [clj-jar-node (.querySelector js/document ".clj-jar")
+(defnx clj-source-changed [e]
+  (let [[val] *params*
+        clj-jar-node (.querySelector js/document ".clj-jar")
         settings (swap! current-settings assoc :clj-jar-source val)]
     (-> (clj-jar-tmpl settings)
         ddom/string->fragment
         (ddom/replace-node clj-jar-node))
     (common/save-set-dirty)))
 
-(defnx downloaded-changed [e k]
-  (let [k (keyword k)
+(defnx downloaded-changed [e]
+  (let [[k] *params*
+        k (keyword k)
         val (.-value (.-target e))]
     (swap! current-settings assoc k val)
     (common/save-set-dirty)))
 
-(defnx cljs-source-changed [e val]
-  (let [cljs-jar-node (.querySelector js/document ".cljs-jar")
+(defnx cljs-source-changed [e]
+  (let [[val] *params*
+        cljs-jar-node (.querySelector js/document ".cljs-jar")
         settings (swap! current-settings assoc :cljs-jar-source val)]
     (-> (cljs-jar-tmpl settings)
         ddom/string->fragment
@@ -216,7 +221,7 @@
                          :name "clj-source"
                          :id "clj-embedded-source"
                          :value "embedded"
-                         :onchange (ddom/handler
+                         ddom/h (ddom/handler :change
                                     clj-source-changed "embedded")}
                         (if (= "embedded" clj-jar-source)
                           {:checked true}
@@ -226,14 +231,15 @@
                          :name "clj-source"
                          :id "clj-custom-source"
                          :value "custom"
-                         :onchange (ddom/handler
+                         ddom/h (ddom/handler :change
                                     clj-source-changed "custom")}
                         (when (= "custom" clj-jar-source)
                           {:checked true}))] [:br]
    [:select.field.select-downloaded
     (if (= "custom" clj-jar-source)
       {:disabled true}
-      {:onchange (ddom/handler downloaded-changed "downloaded-clj-jar")})
+      {ddom/h (ddom/handler
+               :change downloaded-changed "downloaded-clj-jar")})
     (for [f (conj (clj-jar-files) downloaded-clj-jar nil)]
       [:option (merge {:value f}
                       (when (= f downloaded-clj-jar) {:selected true}))
@@ -242,7 +248,7 @@
               (if (= "custom" clj-jar-source)
                 {:class "disabled button download-clj-jar"}
                 {:class "button download-clj-jar"
-                 :onclick (ddom/handler download-clj-jar-clicked)}))
+                 ddom/h (ddom/handler :click download-clj-jar-clicked)}))
     "Download Clojure jar"] [:br]
    [:input.field.custom-clj-jar
     (merge {:type "text" :readonly true
@@ -253,7 +259,7 @@
               (if (= "embedded" clj-jar-source)
                 {:class "disabled button new-clj-jar"}
                 {:class "button new-clj-jar"
-                 :onclick (ddom/handler new-clj-jar-clicked)}))
+                 ddom/h (ddom/handler :click new-clj-jar-clicked)}))
     "Select Clojure jar"]])
 
 (defhtml cljs-jar-tmpl [{:keys [cljs-jar-source downloaded-cljs-jar
@@ -265,8 +271,8 @@
                          :name "cljs-source"
                          :id "cljs-embedded-source"
                          :value "embedded"
-                         :onchange (ddom/handler
-                                    cljs-source-changed "embedded")}
+                         ddom/h (ddom/handler
+                                 :change cljs-source-changed "embedded")}
                         (if (= "embedded" cljs-jar-source)
                           {:checked true}
                           nil))]
@@ -275,14 +281,15 @@
                          :name "cljs-source"
                          :id "cljs-custom-source"
                          :value "custom"
-                         :onchange (ddom/handler
-                                    cljs-source-changed "custom")}
+                         ddom/h (ddom/handler
+                                 :change cljs-source-changed "custom")}
                         (when (= "custom" cljs-jar-source)
                           {:checked true}))] [:br]
    [:select.field.select-downloaded
     (if (= "custom" cljs-jar-source)
       {:disabled true}
-      {:onchange (ddom/handler downloaded-changed "downloaded-cljs-jar")})
+      {ddom/h (ddom/handler
+               :change downloaded-changed "downloaded-cljs-jar")})
     (for [f (conj (cljs-jar-files) downloaded-cljs-jar nil)]
       [:option (merge {:value f}
                       (when (= f downloaded-cljs-jar) {:selected true}))
@@ -291,7 +298,7 @@
               (if (= "custom" cljs-jar-source)
                 {:class "disabled button download-cljs-jar"}
                 {:class "button download-cljs-jar"
-                 :onclick (ddom/handler download-cljs-jar-clicked)}))
+                 ddom/h (ddom/handler :click download-cljs-jar-clicked)}))
     "Download Clojurescript jar"] [:br]
    [:input.field.custom-cljs-jar
     (merge {:type "text" :readonly true
@@ -302,7 +309,7 @@
               (if (= "embedded" cljs-jar-source)
                 {:class "disabled button new-cljs-jar"}
                 {:class "button new-cljs-jar"
-                 :onclick (ddom/handler new-cljs-jar-clicked)}))
+                 ddom/h (ddom/handler :click new-cljs-jar-clicked)}))
     "Select Clojurescript jar"]])
 
 (defnx new-lein-script-clicked [e]
@@ -317,8 +324,9 @@
         (ddom/replace-node lein-node))
     (common/save-set-dirty)))
 
-(defnx lein-source-changed [e val]
-  (let [lein-node (.querySelector js/document ".lein")
+(defnx lein-source-changed [e]
+  (let [[val] *params*
+        lein-node (.querySelector js/document ".lein")
         settings (swap! current-settings assoc :lein-source val)]
     (-> (lein-tmpl settings)
         ddom/string->fragment
@@ -333,8 +341,8 @@
                          :name "lein-source"
                          :id "lein-embedded-source"
                          :value "embedded"
-                         :onchange (ddom/handler
-                                    lein-source-changed "embedded")}
+                         ddom/h (ddom/handler
+                                 :change lein-source-changed "embedded")}
                         (if (= "embedded" lein-source)
                           {:checked true}
                           nil))]
@@ -343,8 +351,8 @@
                          :name "lein-source"
                          :id "lein-custom-source"
                          :value "custom"
-                         :onchange (ddom/handler
-                                    lein-source-changed "custom")}
+                         ddom/h (ddom/handler
+                                 :change lein-source-changed "custom")}
                         (when (= "custom" lein-source)
                           {:checked true}))] [:br]
    [:input.field.custom-lein-script
@@ -356,7 +364,7 @@
               (if (= "embedded" lein-source)
                 {:class "disabled button new-lein-script"}
                 {:class "button new-lein-script"
-                 :onclick (ddom/handler new-lein-script-clicked)}))
+                 ddom/h (ddom/handler :click new-lein-script-clicked)}))
     "Select Leiningen script"]])
 
 (defnx save-settings [e]
@@ -410,6 +418,7 @@
            node (utils/replace-or-append
                  root "#settings"
                  (dom/htmlToDocumentFragment
-                  (settings-tmpl current-settings)))])
+                  (settings-tmpl current-settings)))]
+       (ddom/register-handlers (.querySelector js/document "#settings")))
      (when-let [node (.querySelector root "#settings")]
        (dom/removeNode node)))))

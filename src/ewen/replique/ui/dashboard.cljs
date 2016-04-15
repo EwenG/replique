@@ -12,7 +12,9 @@
             [ewen.replique.ui.settings :as settings]
             [ewen.replique.ui.shortcuts]
             [ewen.replique.ui.notifications :as notif]
-            [ewen.ddom.core :as ddom :refer-macros [defnx]]
+            [ewen.ddom.core :as ddom
+             :refer [*params*]
+             :refer-macros [defnx]]
             [cljs-uuid-utils.core :as uuid])
   (:import [goog.string format]))
 
@@ -23,7 +25,7 @@
 (def fs (node/require "fs"))
 (def net (node/require "net"))
 
-(defnx add-new-repl []
+(defnx add-new-repl [e]
   (let [id (uuid/uuid-string (uuid/make-random-uuid))]
     (swap! core/state assoc-in [:repls id]
            {:directory nil
@@ -42,11 +44,12 @@
 (defhtml new-repl []
   [:a.dashboard-item.new-repl
    {:href "#"
-    :onclick (ddom/handler add-new-repl)}
+    ddom/h (ddom/handler :click add-new-repl)}
    "New REPL"])
 
-(defnx delete-clicked [e id]
-  (let [overview (.querySelector
+(defnx delete-clicked [e]
+  (let [[id] *params*
+        overview (.querySelector
                   js/document (format "[data-repl-id=\"%s\"]" id))
         {:keys [proc]} (get (:repls @core/state) id)]
     (when proc (tree-kill (aget proc "pid")))
@@ -59,8 +62,9 @@
          {:type :err
           :msg (str "Error while saving settings")})))))
 
-(defnx edit-clicked [e id]
-  (swap! core/state assoc :repl-id id :view :edit-repl))
+(defnx edit-clicked [e]
+  (let [[id] *params*]
+    (swap! core/state assoc :repl-id id :view :edit-repl)))
 
 (defn is-lein-project [{:keys [repls] :as state} id]
   (let [{:keys [directory]} (get repls id)]
@@ -227,16 +231,18 @@
     (swap! core/state update-in [:repls id] assoc
            :proc proc :status "REPL starting ...")))
 
-(defnx start-clicked [e id]
-  (let [state @core/state
+(defnx start-clicked [e]
+  (let [[id] *params*
+        state @core/state
         overview (.querySelector
                   js/document (format "[data-repl-id=\"%s\"]" id))]
     (if-let [err (maybe-start-repl-error state id)]
       (notif/single-notif err)
       (start-repl overview state id))))
 
-(defnx stop-clicked [e id]
-  (let [state @core/state
+(defnx stop-clicked [e]
+  (let [[id] *params*
+        state @core/state
         overview (.querySelector
                   js/document (format "[data-repl-id=\"%s\"]" id))]
     (stop-repl overview state id)))
@@ -249,15 +255,15 @@
    [:div (if proc
            {:class "start disabled"}
            {:class "start"
-            :onclick (ddom/handler start-clicked id)})]
+            ddom/h (ddom/handler :click start-clicked id)})]
    [:div (if proc
            {:class "stop"
-            :onclick (ddom/handler stop-clicked id)}
+            ddom/h (ddom/handler :click stop-clicked id)}
            {:class "stop disabled"})]
    [:img.delete {:src "resources/images/delete.png"
-                 :onclick (ddom/handler delete-clicked id)}]
+                 ddom/h (ddom/handler :click delete-clicked id)}]
    [:img.edit {:src "resources/images/edit.png"
-               :onclick (ddom/handler edit-clicked id)}]
+               ddom/h (ddom/handler :click edit-clicked id)}]
    [:span.repl-status status]
    [:div.repl-type
     [:img {:src "resources/images/clj-logo.gif"}]
@@ -267,7 +273,7 @@
    (when cljs-env-port
      [:span.cljs-env-port (str "Cljs environment port: " cljs-env-port)])])
 
-(defnx settings-button-clicked []
+(defnx settings-button-clicked [e]
   (swap! core/state assoc :view :settings))
 
 (defhtml dashboard [{:keys [repls]}]
@@ -275,7 +281,7 @@
    [:div.settings-wrapper
     [:img.settings-button
      {:src "resources/images/settings.png"
-      :onclick (ddom/handler settings-button-clicked)}]]
+      ddom/h (ddom/handler :click settings-button-clicked)}]]
    (new-repl)
    (for [[id repl] repls]
      (repl-overview repl id))])
@@ -287,7 +293,8 @@
      (let [node (utils/replace-or-append
                  root "#dashboard"
                  (ddom/string->fragment
-                  (dashboard state)))])
+                  (dashboard state)))]
+       (ddom/register-handlers (.querySelector js/document "#dashboard")))
      (when-let [node (.querySelector root "#dashboard")]
        (dom/removeNode node)))))
 
