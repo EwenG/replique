@@ -7,16 +7,16 @@
             [ewen.ddom.core :as ddom]))
 
 (defhtml notifications-tmpl [{notifications :notifications}]
-  (html [:div#notifications
-         (for [[_ {:keys [type] :as notif}] notifications]
-           (case type
-             :err [:p.notif.err (:msg notif)]
-             :download [:div.notif.download
-                        [:span (str (:file notif) " download: ")]
-                        [:progress {:value (:progress notif)
-                                    :max 100}]]
-             :success [:p.notif.success (:msg notif)]
-             :else nil))]))
+  [:div#notifications
+   (for [[_ {:keys [type] :as notif}] notifications]
+     (case type
+       :err [:p.notif.err (:msg notif)]
+       :download [:div.notif.download
+                  [:span (str (:file notif) " download: ")]
+                  [:progress {:value (:progress notif)
+                              :max 100}]]
+       :success [:p.notif.success (:msg notif)]
+       :else nil))])
 
 (defn single-notif [notif-msg]
   (let [notif-key {:id (utils/next-id)
