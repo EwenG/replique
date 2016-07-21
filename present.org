@@ -1,0 +1,49 @@
+#+Title: Replique: REPL driven development
+#+EPRESENT_FRAME_LEVEL: 1
+
+(Fun with the runtime...)
+
+
+* Clojure
+
+[[file:resources/images/clj-logo.gif]]
+
+- JVM
+- Lisp
+- Modern
+- Dynamic
+- Clojurescript
+
+* REPL
+
+#+begin_src clojure
+  (ns-publics 'user)
+#+end_src
+
+#+RESULTS:
+: {foo #'user/foo}
+
+
+
+
+
+
+q* REPL cljs
+
+[[file:resources/images/cljs-logo-small.png]]
+
+#+BEGIN_SRC clojurescript
+  (js/alert "e")
+#+END_SRC
+
+#+RESULTS:
+: nil
+
+
+
+
+* Replique
+
+[[file:resources/images/electron-logo.png]]
+
+[[file:resources/images/emacs-logo.png]]
