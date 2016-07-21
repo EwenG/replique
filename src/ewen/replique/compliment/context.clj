@@ -42,31 +42,35 @@
   Transformed it looks like:
 
   `({:idx :baz, :map-role :value, :form {:baz __prefix__}}
-    {:idx :foo, :map-role :key, :form {:foo {:baz __prefix__}, :bar 42}}
+    {:idx :foo, :map-role :value, :form {:foo {:baz __prefix__}, :bar 42}}
     {:idx 0, :form ({:foo {:baz __prefix__}, :bar 42} :quux)}
     {:idx 2, :form (dotimes [i 10] ({:foo {:baz __prefix__}, :bar 42} :quux))})`."
   [context]
   (let [parse (fn parse [ctx]
                 (cond
                  (sequential? ctx)
-                 (when-let [res (first (keep-indexed (fn [idx el]
-                                                       (when-let [p (parse el)]
-                                                         [idx p]))
-                                                     ctx))]
+                 (when-let [res (first (keep-indexed
+                                        (fn [idx el]
+                                          (when-let [p (parse el)]
+                                            [idx p]))
+                                        ctx))]
                    (cons {:idx (first res) :form ctx} (second res)))
 
                  (map? ctx)
                  (when-let [res (first (keep (fn [[k v]]
+                                               (prn "kv " [k v])
                                                (if-let [p (parse v)]
                                                  [k :value p]
                                                  (when-let [p (parse k)]
                                                    [v :key p])))
                                              ctx))]
-                   (cons {:idx (first res) :map-role (second res) :form ctx}
+                   (cons {:idx (first res) :map-role
+                          (second res) :form ctx}
                          (nth res 2)))
 
                  (string? ctx)
-                 (let [idx (.indexOf ^String ctx (name prefix-placeholder))]
+                 (let [idx (.indexOf
+                            ^String ctx (name prefix-placeholder))]
                    (when (>= idx 0)
                      [{:idx idx :form ctx}]))
 
