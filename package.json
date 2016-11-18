@@ -1,8 +1,0 @@
-{
-  "name": "replique",
-  "productName": "Replique",
-  "main": "bootstrap.js",
-  "dependencies": {
-    "tree-kill": "1.0.0"
-  }
-}
