@@ -56,7 +56,7 @@
                 :port (server/server-port)
                 :directory (.getAbsolutePath (file "."))})
     (catch Throwable t
-      (prn {:error t}))))
+      (elisp/prn {:error t}))))
 
 (comment
   (clojure.main/repl :prompt #())
