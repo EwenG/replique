@@ -137,6 +137,7 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
 document.write('<script src=\"http://localhost:" port "/goog/base.js\"></script>');
 document.write('<script src=\"http://localhost:" port "/cljs_deps.js\"></script>');
 document.write('<script>goog.require(\"replique.cljs_env.repl\");</script>');
+document.write('<script>goog.require(\"replique.cljs_env.browser\");</script>');
 " (when main-ns (str "document.write('<script>goog.require(\"" main-ns "\");</script>');
 "))    
                "document.write('<script>replique.cljs_env.repl.connect(\"http://localhost:" port "\");</script>');"))))

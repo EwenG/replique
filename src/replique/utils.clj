@@ -2,6 +2,7 @@
   (:refer-clojure :exclude [delay])
   (:import [java.util.concurrent.locks ReentrantLock]))
 
+(defonce project-map nil)
 (defonce cljs-compile-path nil)
 
 (defmacro with-1.9+ [& body]

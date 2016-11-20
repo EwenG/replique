@@ -9,22 +9,6 @@
             [replique.server :as server])
   (:import [java.io File FileNotFoundException]))
 
-(defonce ^:dynamic *files-specs* {})
-
-(def watched-bindings
-  [#'clojure.core/*data-readers* 
-   #'clojure.core/*print-level* #'clojure.core/*default-data-reader-fn*
-   #'clojure.core/*print-length* #'clojure.core/*read-eval*
-   #'clojure.core/*print-meta* #'clojure.core/*assert*
-   #'clojure.core/*unchecked-math* #'clojure.core/*warn-on-reflection*
-   #'clojure.core/*compile-path* #'clojure.core/*command-line-args*
-   #'clojure.core/*math-context* #'*files-specs*])
-
-(utils/with-1.9+ (alter-var-root
-                  #'watched-bindings conj
-                  #'clojure.core/*print-namespace-maps*
-                  #'clojure.spec/*explain-out*))
-
 (defn normalize-host [address]
   (cond (= "0.0.0.0" address) "localhost"
         (= "0:0:0:0:0:0:0:1" address) "localhost"
@@ -49,25 +33,13 @@
    :prompt #()
    :print (fn [result] (elisp/prn result))))
 
-(defn restore-bindings [bindings]
-  (doseq [[v-name v-val] bindings]
-    (try
-      (var-set (resolve (symbol v-name)) (read-string v-val))
-      ;; Don't try to restore the binding in case of exception
-      (catch Exception e nil))))
-
-(defn init-and-print-session [bindings]
-  (restore-bindings bindings)
-  server/*session*)
-
-(defn start-repl-process [{:keys [port directory replique-vars] :as opts}]
+(defn start-repl-process [project-map {:keys [directory port cljs-compile-path]}]
   (try
     (alter-var-root #'interactive/process-out (constantly *out*))
     (alter-var-root #'interactive/process-err (constantly *err*))
+    (alter-var-root #'utils/project-map (constantly project-map))
     (alter-var-root #'tooling-msg/directory (constantly directory))
-    (let [{:keys [files-specs]} replique-vars]
-      (alter-var-root #'*files-specs* (constantly files-specs))
-      (alter-var-root #'utils/cljs-compile-path (constantly (:cljs-compile-path replique-vars))))
+    (alter-var-root #'utils/cljs-compile-path (constantly cljs-compile-path))
     (println "Starting Clojure REPL...")
     ;; Let leiningen :global-vars option propagate to other REPLs
     ;; The tooling REPL printing is a custom one and thus is not affected by those bindings,
@@ -84,7 +56,7 @@
                 :port (server/server-port)
                 :directory (.getAbsolutePath (file "."))})
     (catch Throwable t
-      (elisp/prn {:error t}))))
+      (prn {:error t}))))
 
 (comment
   (clojure.main/repl :prompt #())
@@ -124,42 +96,10 @@
   (.start (Thread. (fn [] (throw (Exception. "f")))))
   )
 
-(defn add-file-spec [file-path spec]
-  {:pre [(string? file-path) (keyword? spec) (namespace spec)]}
-  (let [rel-path (.relativize (.toPath (file ".")) (.toPath (file file-path)))]
-    (set! *files-specs* (assoc *files-specs* rel-path spec))))
-
-(defn remove-custom-tooling-file [file-path spec]
-  {:pre [(string? file-path) (keyword? spec) (namespace spec)]}
-  (let [rel-path (.relativize (.toPath (file ".")) (.toPath (file file-path)))]
-    (set! *files-specs* (dissoc *files-specs* rel-path spec))))
-
-(defn repl-eval
-  "Enhanced :eval hook for saving bindings"
-  [form]
-  (let [prev-bindings (mapv deref watched-bindings)
-        evaled (eval form)
-        next-bindings (mapv deref watched-bindings)]
-    (doseq [[prev-b next-b v] (map vector prev-bindings next-bindings watched-bindings)
-            :when (not (identical? prev-b next-b))]
-      (let [{v-name :name v-ns :ns} (meta v)]
-        (when (and v-name v-ns)
-          (binding [*out* tooling-msg/tooling-err]
-            (utils/with-lock tooling-msg/tooling-out-lock
-              (elisp/prn {:type :binding
-                          :directory tooling-msg/directory
-                          :repl-type :clj
-                          :session server/*session*
-                          :ns (ns-name *ns*)
-                          :var (str (symbol (str v-ns) (str v-name)))
-                          :value (pr-str @v)}))))))
-    evaled))
-
 (defn repl []
   (println "Clojure" (clojure-version))
   (clojure.main/repl
    :init (fn [] (in-ns 'user))
-   :eval repl-eval
    :caught (fn [e]
              (binding [*out* tooling-msg/tooling-err]
                (utils/with-lock tooling-msg/tooling-out-lock

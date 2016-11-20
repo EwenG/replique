@@ -4,11 +4,11 @@
 (def ^:private start-repl-process
   (utils/dynaload 'replique.repl/start-repl-process))
 
-(defn -main [opts]
+(defn -main [project-map opts]
   (let [{:keys [major minor incremental qualifier]} *clojure-version*]
     (if (and (<= major 1) (< minor 8))
-      (print (format "Replique is compatible with clojure 1.8+, current version is: %s.%s.%s%s" major minor incremental (if qualifier (str "-" qualifier) "")))
-      (@start-repl-process (read-string opts)))))
+      (print (format "Replique is compatible with clojure 1.8+, current version is: %s.%s.%s%s" major minor incremental (if qualifier (str "-" qualifier) "")))      
+      (@start-repl-process project-map opts))))
 
 (comment
   (css

@@ -275,8 +275,6 @@ replique.cljs_env.repl.connect(\"" url "\");
                    :output-dir utils/cljs-compile-path
                    :optimizations :none
                    :recompile-dependents false
-                   :preloads ['replique.cljs_env.repl
-                              'replique.cljs_env.browser]
                    :cache-analysis false}
         compiler-env (-> comp-opts
                          closure/add-implicit-options
@@ -480,7 +478,7 @@ replique.cljs_env.repl.connect(\"" url "\");
     (let [{:keys [status value]} (cljs.repl/-evaluate
                                   @repl-env "<cljs repl>" 1
                                   "replique.cljs_env.browser.list_css_infos();")]
-      (if (= :error status)
+      (if (not (= :success status))
         (assoc msg :error value)
         (assoc msg :css-infos (read-string value))))))
 
@@ -499,12 +497,11 @@ replique.cljs_env.repl.connect(\"" url "\");
     css-infos))
 
 (defmethod tooling-msg/tooling-msg-handle :load-css [msg]
-  (tooling-msg/with-tooling-response
+  (tooling-msg/with-tooling-response msg
     (let [{:keys [status value]} (->> (css-infos-process-uri msg)
                                       pr-str pr-str
                                       (format "replique.cljs_env.browser.reload_css(%s);")
-                                      (cljs.repl/-evaluate @repl-env "<cljs repl>" 1)
-                                      :value)]
-      (if (= :error status)
+                                      (cljs.repl/-evaluate @repl-env "<cljs repl>" 1))]
+      (if (not (= :success status))
         (assoc msg :error value)
         (assoc msg :result value)))))

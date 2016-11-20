@@ -133,7 +133,7 @@
      (apply pr more))))
 
 (defn prn [& more]
-    (apply pr more)
-    (newline)
-    (when *flush-on-newline*
-      (flush)))
+  (apply pr more)
+  (newline)
+  (when *flush-on-newline*
+    (flush)))
