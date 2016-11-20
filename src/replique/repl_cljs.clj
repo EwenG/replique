@@ -505,3 +505,11 @@ replique.cljs_env.repl.connect(\"" url "\");
       (if (not (= :success status))
         (assoc msg :error value)
         (assoc msg :result value)))))
+
+(defmethod tooling-msg/tooling-msg-handle :load-js [{:keys [file-path] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (let [{:keys [status value]} (->> (slurp file-path)
+                                      (cljs.repl/-evaluate @repl-env "<cljs repl>" 1))]
+      (if (not (= :success status))
+        (assoc msg :error value)
+        (assoc msg :result value)))))
