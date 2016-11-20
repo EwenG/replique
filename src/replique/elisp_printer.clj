@@ -52,6 +52,9 @@
   (.append w \")
   nil)
 
+(defmethod print-method Class [^Class c, ^Writer w]
+  (.write w (.getName c)))
+
 (defmethod print-method clojure.lang.IPersistentVector [v, ^Writer w]
   (print-sequential "[" pr-on " " "]" v w))
 
