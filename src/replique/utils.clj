@@ -2,6 +2,8 @@
   (:refer-clojure :exclude [delay])
   (:import [java.util.concurrent.locks ReentrantLock]))
 
+(defonce process-out nil)
+(defonce process-err nil)
 (defonce project-map nil)
 (defonce cljs-compile-path nil)
 

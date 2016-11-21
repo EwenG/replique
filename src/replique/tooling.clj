@@ -149,6 +149,11 @@ document.write('<script>goog.require(\"replique.cljs_env.browser\");</script>');
       (output-main-cljs-file output-to main-ns))
     (assoc msg :main-cljs-files main-cljs-files)))
 
+(defmethod tooling-msg/tooling-msg-handle :eval-clj [{:keys [form] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (binding [*out* utils/process-out
+              *err* utils/process-err]
+      (assoc msg :result (str (eval (read-string {:read-cond :allow} form)))))))
 
 (comment
   (defmethod tooling-msg/tooling-msg-handle :spec-completion

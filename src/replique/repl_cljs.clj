@@ -5,6 +5,7 @@
             [replique.tooling-msg :as tooling-msg]
             [replique.http :as http]
             [replique.server :refer [*session*] :as server]
+            [replique.environment :refer [->CljsCompilerEnv]]
             [replique.sourcemap :as sourcemap]
             [clojure.java.io :as io]
             [cljs.closure :as closure]
@@ -18,7 +19,7 @@
             [cljs.closure :as cljsc]
             [cljs.stacktrace :as st]
             [clojure.edn :as edn]
-            [replique.environment :refer [->CljsCompilerEnv]])
+            [clojure.tools.reader :as reader])
   (:import [java.io File BufferedReader InputStreamReader]
            [java.nio.file Files]
            [java.nio.file.attribute FileAttribute]
@@ -513,3 +514,13 @@ replique.cljs_env.repl.connect(\"" url "\");
       (if (not (= :success status))
         (assoc msg :error value)
         (assoc msg :result value)))))
+
+(defmethod tooling-msg/tooling-msg-handle :eval-cljs [{:keys [form] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (binding [*out* utils/process-out
+              *err* utils/process-err]
+      (let [repl-env @repl-env
+            form (reader/read-string {:read-cond :allow :features #{:cljs}} form)
+            result (cljs-env/with-compiler-env @compiler-env
+                     (#'cljs.repl/eval-cljs repl-env env form (:repl-opts repl-env)))]
+        (assoc msg :result result)))))

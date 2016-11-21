@@ -35,6 +35,8 @@
 
 (defn start-repl-process [project-map {:keys [directory port cljs-compile-path]}]
   (try
+    (alter-var-root #'utils/process-out (constantly *out*))
+    (alter-var-root #'utils/process-err (constantly *err*))
     (alter-var-root #'interactive/process-out (constantly *out*))
     (alter-var-root #'interactive/process-err (constantly *err*))
     (alter-var-root #'utils/project-map (constantly project-map))
