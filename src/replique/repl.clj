@@ -89,11 +89,6 @@
               (utils/with-lock tooling-msg/tooling-out-lock
                 (elisp/prn result))))))
 
-(defmethod tooling-msg/tooling-msg-handle :shutdown [msg]
-  (tooling-msg/with-tooling-response msg
-    (server/stop-server)
-    {:shutdown true}))
-
 (comment
   (.start (Thread. (fn [] (throw (Exception. "f")))))
   )

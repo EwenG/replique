@@ -159,20 +159,6 @@
             (alter-var-root #'servers dissoc name)))))
     socket))
 
-(defn stop-server
-  "Stop server with name or use the server-name from *session* if none supplied.
-  Returns true if server stopped successfully, nil if not found, or throws if
-  there is an error closing the socket."
-  ([]
-   (stop-server (:server *session*)))
-  ([name]
-   (utils/with-lock lock
-     (let [server-socket ^ServerSocket (get-in servers [name :socket])]
-       (when server-socket
-         (alter-var-root #'servers dissoc name)
-         (.close server-socket)
-         true)))))
-
 (defn server-port []
   (let [ss (-> servers (get :replique) :socket)]
     (.getLocalPort ^ServerSocket ss)))

@@ -295,8 +295,7 @@ replique.cljs_env.repl.connect(\"" url "\");
                          (str (cljs.util/output-directory comp-opts)
                               File/separator "cljs_deps.js"))))
             (doto (io/file (cljs.util/output-directory comp-opts) "goog" "deps.js")
-              cljs.util/mkdirs (spit (slurp (io/resource "goog/deps.js"))))
-            #_(output-main-file comp-opts port)))))
+              cljs.util/mkdirs (spit (slurp (io/resource "goog/deps.js"))))))))
     compiler-env))
 
 ;; This must be executed on a single thread (the server thread for example)
@@ -431,12 +430,6 @@ replique.cljs_env.repl.connect(\"" url "\");
     (swap! server/cljs-server assoc :state :stopped)
     (when eval-executor (shutdown-eval-executor eval-executor))
     (when result-executor (.shutdownNow ^ExecutorService result-executor))))
-
-(defmethod tooling-msg/tooling-msg-handle :shutdown [msg]
-  (tooling-msg/with-tooling-response msg
-    (stop-cljs-server)
-    (server/stop-server)
-    {:shutdown true}))
 
 (defn load-file [file-path]
   (cljs-env/with-compiler-env @compiler-env
