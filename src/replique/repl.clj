@@ -56,7 +56,8 @@
                             ip (.getHostAddress ^java.net.InetAddress inet)]
                         (normalize-host ip))
                 :port (server/server-port)
-                :directory (.getAbsolutePath (file "."))})
+                :directory (.getAbsolutePath (file "."))
+                :cljs-compile-path cljs-compile-path})
     (catch Throwable t
       (elisp/prn {:error t}))))
 
