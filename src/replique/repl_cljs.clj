@@ -460,13 +460,6 @@ replique.cljs_env.repl.connect(\"" url "\");
 (defn set-repl-verbose [b]
   (set! cljs.repl/*cljs-verbose* b))
 
-(defmethod tooling-msg/tooling-msg-handle :list-cljs-namespaces [msg]
-  (tooling-msg/with-tooling-response msg
-    (->> (->CljsCompilerEnv @compiler-env)
-         replique.environment/all-ns
-         (map str)
-         (assoc msg :namespaces))))
-
 (defmethod tooling-msg/tooling-msg-handle :list-css [msg]
   (tooling-msg/with-tooling-response msg
     (let [{:keys [status value]} (cljs.repl/-evaluate
