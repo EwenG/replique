@@ -1,6 +1,7 @@
 (ns replique.interactive
   (:refer-clojure :exclude [load-file])
-  (:require [replique.utils :as utils]))
+  (:require [replique.utils :as utils]
+            [replique.server :as server]))
 
 (defonce process-out nil)
 (defonce process-err nil)
@@ -19,6 +20,8 @@
 
 (defn cljs-repl []
   (@cljs-repl*))
+
+(def repl-port server/server-port)
 
 ;; At the moment, load file does not intern macros in the cljs-env, making dynamically loaded
 ;; macros unavailable to autocompletion/repliquedoc
