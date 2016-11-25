@@ -1,11 +1,12 @@
 (ns replique.compliment.sources.namespaces-and-classes
   "Completion for namespace and class names."
-  (:refer-clojure :exclude [all-ns ns-aliases find-ns])
+  (:refer-clojure :exclude [all-ns ns-aliases find-ns ns-name])
   (:require [replique.compliment.sources :refer [defsource]]
             [replique.compliment.utils :refer [fuzzy-matches? defmemoized] :as utils]
             [replique.compliment.sources.class-members :refer [classname-doc]]
             [replique.environment :refer [all-ns ns-aliases namespaces-on-classpath
-                                          provides-from-js-dependency-index find-ns]])
+                                          provides-from-js-dependency-index find-ns
+                                          ns-name]])
   (:import java.io.File replique.environment.CljsCompilerEnv))
 
 (defn nscl-symbol?

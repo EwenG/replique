@@ -276,7 +276,7 @@ replique.cljs_env.repl.connect(\"" url "\");
                    :output-dir utils/cljs-compile-path
                    :optimizations :none
                    :recompile-dependents false
-                   :cache-analysis false}
+                   :cache-analysis true}
         compiler-env (-> comp-opts
                          closure/add-implicit-options
                          cljs-env/default-compiler-env)]

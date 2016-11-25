@@ -4,6 +4,7 @@
             [replique.server :as server]
             [replique.tooling-msg :as tooling-msg]
             [replique.repliquedoc :as repliquedoc]
+            [replique.meta :as r-meta]
             [replique.compliment.core :as compliment]
             [replique.compliment.context :as context]
             [replique.compliment.sources.local-bindings
@@ -26,20 +27,23 @@
 
 (comment
   (tooling-msg/tooling-msg-handle {:type :clj-completion
-                              :context nil
-                              :ns 'replique.repl
-                              :prefix "tooli"})
+                                   :context nil
+                                   :ns 'replique.repl
+                                   :prefix "tooli"})
 
   (tooling-msg/tooling-msg-handle {:type :clj-completion
-                              :context nil
-                              :ns 'replique.compliment.sources
-                              :prefix "all-s"})
+                                   :context nil
+                                   :ns 'replique.compliment.sources
+                                   :prefix "all-s"})
 
   (tooling-msg/tooling-msg-handle {:type :clj-completion
                                    :context nil
                                    :ns 'replique.foo
                                    :prefix "foo"})
 
+  )
+(comment
+  (tooling-msg/tooling-msg-handle {:type :cljs-completion, :context nil, :ns "replique.compliment.ns-mappings-cljs-test", :prefix "gg", :directory "/Users/egr/clojure/replique/"})
   )
 
 (defmethod tooling-msg/tooling-msg-handle :cljs-completion
@@ -128,6 +132,35 @@
 __prefix__)"))
   
   )
+
+(defmethod tooling-msg/tooling-msg-handle :meta-clj [{:keys [context ns] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (let [sym-at-point (:symbol msg)
+          {:keys [context]} (context/cache-context nil (when ns (symbol ns)) context)
+          context (reverse context)
+          m (r-meta/handle-meta nil ns context sym-at-point)]
+      (assoc msg :meta m))))
+
+(defmethod tooling-msg/tooling-msg-handle :meta-cljs [{:keys [context ns] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (let [sym-at-point (:symbol msg)
+          comp-env (->CljsCompilerEnv @@cljs-compiler-env)
+          {:keys [context]} (context/cache-context comp-env (when ns (symbol ns)) context)
+          context (reverse context)
+          m (r-meta/handle-meta comp-env ns context sym-at-point)]
+      (assoc msg :meta m))))
+
+(defmethod tooling-msg/tooling-msg-handle :meta-cljc [{:keys [context ns] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (let [sym-at-point (:symbol msg)
+          comp-env (->CljsCompilerEnv @@cljs-compiler-env)
+          {:keys [reader-conditionals context]} (context/cache-context
+                                                 nil (when ns (symbol ns)) context)
+          context (reverse context)
+          comp-env (when (= #{:cljs} reader-conditionals) comp-env)
+          m (r-meta/handle-meta (->CljsCompilerEnv @@cljs-compiler-env)
+                                ns context sym-at-point)]
+      (assoc msg :meta m))))
 
 (defmethod tooling-msg/tooling-msg-handle :list-cljs-namespaces [msg]
   (tooling-msg/with-tooling-response msg

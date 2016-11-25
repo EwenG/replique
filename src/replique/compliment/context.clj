@@ -132,6 +132,6 @@
   (parse-context '{:e __prefix__ :f 3})
   (parse-context '{__prefix__ nil})
 
-  (safe-read-context-string "[__prefix__]")
-  (parse-context '[__prefix__])
+  (safe-read-context-string "(defn ee [ff] nil)")
+  (parse-context '(def ee  (let [__prefix__ f] )))
   )

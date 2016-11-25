@@ -1,7 +1,7 @@
 (ns replique.environment
   "Unify Clojure platforms (Clojure, Clojurescript, ...) environments"
-  (:refer-clojure :exclude [ns-name find-ns ns-publics ns-map
-                            ns-aliases ns-resolve all-ns meta])
+  (:refer-clojure :exclude [ns-name find-ns ns-publics ns-map ns-aliases
+                            ns-resolve all-ns ns-interns meta])
   (:require [replique.utils :as utils]
             [replique.compliment.utils :refer [defmemoized all-files-on-classpath]]
             [clojure.set])
@@ -39,6 +39,7 @@
   (all-ns [comp-env])
   (find-ns [comp-env sym])
   (ns-publics [comp-env ns])
+  (ns-interns [comp-env ns])
   (ns-map [comp-env ns])
   (ns-aliases [comp-env ns])
   (ns-resolve [comp-env ns sym])
@@ -55,10 +56,10 @@
     (str (:name cljs-ns))))
 
 (extend-protocol Namespace
+  clojure.lang.Symbol
+  (ns-name [ns] ns)
   CljsNamespace
-  (ns-name [ns]
-    (if (symbol? ns) ns
-        (:name ns)))
+  (ns-name [ns] (:name ns))
   clojure.lang.Namespace
   (ns-name [ns]
     (clojure.core/ns-name ns)))
@@ -102,6 +103,10 @@
       (->> (merge (:defs ns) (:macros ns))
            (remove (fn [[k v]] (:private v)))
            (into {}))))
+  (ns-interns [comp-env ns]
+    (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)]
+      (->> (merge (:defs ns) (:macros ns))
+           (into {}))))
   (ns-map [comp-env ns]
     {:pre [(not (nil? ns))]}
     (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)
@@ -129,22 +134,23 @@
   (looks-like-var? [_ var]
     (map? var))
   (meta [comp-env var]
-    (let [;; Resolve the namespace
-          qualified-name (:name var)
-          ;; Arglists might have a spurious (quote ...) wrapping form
-          arglists (:arglists var)
-          arglists (if (= 'quote (first arglists)) (second arglists) arglists)
-          var (if arglists (assoc var :arglists arglists) var)]
-      (cond (nil? qualified-name)
-            var
-            (namespace qualified-name)
-            (let [ns-sym (symbol (namespace qualified-name))
-                  var-sym (symbol (name qualified-name))
-                  ns (find-ns comp-env ns-sym)]
-              (assoc var
-                     :ns ns
-                     :name var-sym))
-            :else (assoc var :name qualified-name))))
+    (when (map? var)
+      (let [;; Resolve the namespace
+            qualified-name (:name var)
+            ;; Arglists might have a spurious (quote ...) wrapping form
+            arglists (:arglists var)
+            arglists (if (= 'quote (first arglists)) (second arglists) arglists)
+            var (if arglists (assoc var :arglists arglists) var)]
+        (cond (nil? qualified-name)
+              var
+              (namespace qualified-name)
+              (let [ns-sym (symbol (namespace qualified-name))
+                    var-sym (symbol (name qualified-name))
+                    ns (find-ns comp-env ns-sym)]
+                (assoc var
+                       :ns ns
+                       :name var-sym))
+              :else (assoc var :name qualified-name)))))
   nil
   (all-ns [comp-env]
     (clojure.core/all-ns))
@@ -152,6 +158,8 @@
     (clojure.core/find-ns sym))
   (ns-publics [_ ns]
     (clojure.core/ns-publics ns))
+  (ns-interns [_ ns]
+    (clojure.core/ns-interns ns))
   (ns-map [_ ns]
     (clojure.core/ns-map ns))
   (ns-aliases [_ ns]
