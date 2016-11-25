@@ -11,7 +11,7 @@
 (def ^:private cljs-in-ns* (utils/dynaload 'replique.repl-cljs/in-ns))
 (def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
 (def ^:private cljs-set-repl-verbose
-  (utils/dynaload 'replique.repl-cljs/set-cljs-repl-verbose))
+  (utils/dynaload 'replique.repl-cljs/set-repl-verbose))
 
 (defn cljs-env?
   "Take the &env from a macro, and tell whether we are expanding into cljs."
