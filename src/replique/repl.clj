@@ -47,6 +47,7 @@
     ;; The tooling REPL printing is a custom one and thus is not affected by those bindings,
     ;; and it must not !!
     (alter-var-root #'tooling-repl bound-fn*)
+    (alter-var-root #'accept-http bound-fn*)
     (server/start-server {:port port :name :replique
                           :accept `tooling-repl
                           :accept-http `accept-http
