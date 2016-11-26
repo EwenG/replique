@@ -12,6 +12,11 @@
     (when (or (> major 1) (and (= 1 major) (>= minor 9)))
       `(do ~@body))))
 
+(defn cljs-env?
+  "Take the &env from a macro, and tell whether we are expanding into cljs."
+  [env]
+  (boolean (:ns env)))
+
 ;; Same as Delay but don't realize the Delay on exception.
 ;; This would not be possible with clojure Delay because it makes its function ^:once because
 ;; of local clearings. Replique Delay is not expected to be used in situations where local

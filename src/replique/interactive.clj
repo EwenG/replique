@@ -13,11 +13,6 @@
 (def ^:private cljs-set-repl-verbose
   (utils/dynaload 'replique.repl-cljs/set-repl-verbose))
 
-(defn cljs-env?
-  "Take the &env from a macro, and tell whether we are expanding into cljs."
-  [env]
-  (boolean (:ns env)))
-
 (defn cljs-repl []
   (@cljs-repl*))
 
@@ -26,7 +21,7 @@
 ;; At the moment, load file does not intern macros in the cljs-env, making dynamically loaded
 ;; macros unavailable to autocompletion/repliquedoc
 (defmacro load-file [file-path]
-  (if (cljs-env? &env)
+  (if (utils/cljs-env? &env)
     (@cljs-load-file file-path)
     (clojure.core/load-file file-path)))
 
