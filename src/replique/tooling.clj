@@ -158,8 +158,7 @@ __prefix__)"))
                                                  nil (when ns (symbol ns)) context)
           context (reverse context)
           comp-env (when (= #{:cljs} reader-conditionals) comp-env)
-          m (r-meta/handle-meta (->CljsCompilerEnv @@cljs-compiler-env)
-                                ns context sym-at-point)]
+          m (r-meta/handle-meta comp-env ns context sym-at-point)]
       (assoc msg :meta m))))
 
 (defmethod tooling-msg/tooling-msg-handle :list-cljs-namespaces [msg]
