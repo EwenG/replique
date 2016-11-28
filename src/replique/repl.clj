@@ -121,38 +121,6 @@
                             :result (pr-str result)})))
             (prn result))))
 
-#_ (defn format-meta [{:keys [file] :as meta} keys]
-  (let [f (and file (File. file))]
-    (if (and f (.exists f))
-      (select-keys (assoc
-                    meta :file
-                    (.getAbsolutePath f))
-                   keys)
-      (select-keys meta (disj keys :file :line :column)))))
-
-#_(defmethod tooling-msg/tooling-msg-handle :clj-var-meta
-  [{:keys [context ns symbol keys] :as msg}]
-  (tooling-msg/with-tooling-response msg
-    (let [ctx (when context (read-string context))
-          ctx (compliment.context/parse-context ctx)
-          bindings (bindings-from-context ctx)
-          keys (into #{} keys)]
-      (cond
-        (or (nil? ns) (nil? symbol) (nil? (find-ns ns)))
-        {:meta nil}
-        (and ctx (contains? (into #{} bindings) (name symbol)))
-        {:not-found :local-binding}
-        :else
-        (let [v (when (symbol? symbol)
-                  (try (ns-resolve ns symbol)
-                       (catch ClassNotFoundException e
-                         nil)))
-              meta (when (and v (meta v))
-                     (format-meta (meta v) keys))]
-          (if (empty? meta)
-            {:meta nil}
-            {:meta meta}))))))
-
 (comment
   (tooling-msg/tooling-msg-handle {:type :clj-var-meta
                                    :context nil

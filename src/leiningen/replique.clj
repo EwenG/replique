@@ -1,9 +1,10 @@
 (ns leiningen.replique
   (:require [leiningen.core.eval :as eval]))
 
-(defn ^{:help-arglists '([directory port replique-version])} replique
-  [project-map directory port replique-version]
-  (let [cljs-compile-path (get-in project-map [:replique :cljs-compile-path] "%s/cljs")
+(defn ^{:help-arglists '([directory port])} replique
+  [project-map directory port]
+  (let [replique-version (get (->> project-map :plugins (into {})) 'replique/replique) 
+        cljs-compile-path (get-in project-map [:replique :cljs-compile-path] "%s/cljs")
         cljs-compile-path (if (.startsWith ^String cljs-compile-path "%s")
                             (format cljs-compile-path (:target-path project-map))
                             cljs-compile-path)
