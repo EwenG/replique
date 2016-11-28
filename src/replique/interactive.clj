@@ -23,7 +23,7 @@
 (defmacro load-file [file-path]
   (if (utils/cljs-env? &env)
     (@cljs-load-file file-path)
-    (clojure.core/load-file file-path)))
+    `(clojure.core/load-file ~file-path)))
 
 ;; It seems that naming this macro "in-ns" make the cljs compiler to crash
 (defmacro cljs-in-ns [ns-quote]
