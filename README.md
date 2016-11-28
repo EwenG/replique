@@ -2,7 +2,9 @@
 
 Replique is a development environment for Clojure and Clojurescript.
 
-See [replique.el](https://github.com/EwenG/replique.el) for using Replique from emacs.
+At the moment, the only client available to use Replique is [replique.el](https://github.com/EwenG/replique.el)(an emacs mode).
+
+If you are interested in writing a client for another text editor/ide, please fill an issue to ask for more documentation :)
 
 ---
 
