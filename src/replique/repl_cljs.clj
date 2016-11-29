@@ -372,7 +372,7 @@ replique.cljs_env.repl.connect(\"" url "\");
   (binding [*out* tooling-msg/tooling-err]
     (utils/with-lock tooling-msg/tooling-out-lock
       (-> {:type :eval
-           :directory tooling-msg/directory
+           :process-id tooling-msg/process-id
            :error true
            :repl-type :cljs
            :session *session*
@@ -403,7 +403,7 @@ replique.cljs_env.repl.connect(\"" url "\");
                      (binding [*out* tooling-msg/tooling-out]
                        (utils/with-lock tooling-msg/tooling-out-lock
                          (elisp/prn {:type :eval
-                                     :directory tooling-msg/directory
+                                     :process-id tooling-msg/process-id
                                      :repl-type :cljs
                                      :session *session*
                                      :ns ana/*cljs-ns*
@@ -417,7 +417,7 @@ replique.cljs_env.repl.connect(\"" url "\");
                     (binding [*out* tooling-msg/tooling-out]
                       (utils/with-lock tooling-msg/tooling-out-lock
                         (elisp/prn {:type :eval
-                                    :directory tooling-msg/directory
+                                    :process-id tooling-msg/process-id
                                     :repl-type :cljs
                                     :session *session*
                                     :ns ana/*cljs-ns*

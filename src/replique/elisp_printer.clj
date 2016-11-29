@@ -3,7 +3,8 @@
   only the most common Clojure datastructures. This is because elisp reader is not extensible,
   and thus cannot read everything."
   (:refer-clojure :exclude [print-method pr prn])
-  (:import [java.io Writer]))
+  (:import [java.io Writer]
+           [java.util UUID]))
 
 (defn- print-sequential [^String begin, print-one, ^String sep, ^String end, sequence, ^Writer w]
   (.write w begin)
@@ -54,6 +55,9 @@
 
 (defmethod print-method Class [^Class c, ^Writer w]
   (.write w (.getName c)))
+
+(defmethod print-method UUID [^UUID uuid, ^Writer w]
+  (print-method (str uuid) w))
 
 (defmethod print-method clojure.lang.IPersistentVector [v, ^Writer w]
   (print-sequential "[" pr-on " " "]" v w))

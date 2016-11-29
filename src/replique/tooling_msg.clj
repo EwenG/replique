@@ -4,25 +4,25 @@
             [clojure.stacktrace :refer [print-stack-trace]])
   (:import [java.util.concurrent.locks ReentrantLock]))
 
-(defonce directory nil)
+(defonce process-id nil)
 (defonce tooling-out nil)
 (defonce tooling-out-lock (ReentrantLock.))
 (defonce tooling-err nil)
 
 (defmacro with-tooling-response [msg & resp]
   `(let [type# (:type ~msg)
-         directory# (:directory ~msg)]
-     (try (merge {:type type# :directory directory#} (~'do ~@resp))
+         process-id# (:process-id ~msg)]
+     (try (merge {:type type# :process-id process-id#} (~'do ~@resp))
           (catch Exception t#
-            {:directory directory#
+            {:process-id process-id#
              :type type#
              :error t#}))))
 
 (defmulti tooling-msg-handle :type)
 
 (defmethod tooling-msg-handle :default
-  [{:keys [directory type] :as msg}]
-  {:directory directory
+  [{:keys [process-id type] :as msg}]
+  {:process-id process-id
    :type type
    :error (format "Invalid tooling message type: %s" type)})
 
@@ -32,7 +32,7 @@
     (binding [*out* tooling-err]
       (utils/with-lock tooling-out-lock
         (elisp/prn {:type :eval
-                    :directory directory
+                    :process-id process-id
                     :error true
                     :repl-type :clj
                     :thread (.getName ^Thread thread)

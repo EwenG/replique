@@ -43,7 +43,7 @@
 
   )
 (comment
-  (tooling-msg/tooling-msg-handle {:type :cljs-completion, :context nil, :ns "replique.compliment.ns-mappings-cljs-test", :prefix "gg", :directory "/Users/egr/clojure/replique/"})
+  (tooling-msg/tooling-msg-handle {:type :cljs-completion, :context nil, :ns "replique.compliment.ns-mappings-cljs-test", :prefix "gg", :process-id "/Users/egr/clojure/replique/"})
   )
 
 (defmethod tooling-msg/tooling-msg-handle :cljs-completion

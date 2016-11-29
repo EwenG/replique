@@ -33,14 +33,14 @@
    :prompt #()
    :print (fn [result] (elisp/prn result))))
 
-(defn start-repl-process [project-map {:keys [directory port cljs-compile-path]}]
+(defn start-repl-process [project-map {:keys [process-id port cljs-compile-path]}]
   (try
     (alter-var-root #'utils/process-out (constantly *out*))
     (alter-var-root #'utils/process-err (constantly *err*))
     (alter-var-root #'interactive/process-out (constantly *out*))
     (alter-var-root #'interactive/process-err (constantly *err*))
     (alter-var-root #'utils/project-map (constantly project-map))
-    (alter-var-root #'tooling-msg/directory (constantly directory))
+    (alter-var-root #'tooling-msg/process-id (constantly process-id))
     (alter-var-root #'utils/cljs-compile-path (constantly cljs-compile-path))
     (println "Starting Clojure REPL...")
     ;; Let leiningen :global-vars option propagate to other REPLs
@@ -57,7 +57,7 @@
                             ip (.getHostAddress ^java.net.InetAddress inet)]
                         (normalize-host ip))
                 :port (server/server-port)
-                :directory (.getAbsolutePath (file "."))
+                :process-id process-id
                 :cljs-compile-path cljs-compile-path})
     (catch Throwable t
       (elisp/prn {:error t}))))
@@ -103,7 +103,7 @@
              (binding [*out* tooling-msg/tooling-err]
                (utils/with-lock tooling-msg/tooling-out-lock
                  (elisp/prn {:type :eval
-                             :directory tooling-msg/directory
+                             :process-id tooling-msg/process-id
                              :error true
                              :repl-type :clj
                              :session server/*session*
@@ -114,7 +114,7 @@
             (binding [*out* tooling-msg/tooling-out]
               (utils/with-lock tooling-msg/tooling-out-lock
                 (elisp/prn {:type :eval
-                            :directory tooling-msg/directory
+                            :process-id tooling-msg/process-id
                             :repl-type :clj
                             :session server/*session*
                             :ns (ns-name *ns*)
