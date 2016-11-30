@@ -7,14 +7,13 @@
 (defonce tooling-out nil)
 (defonce tooling-out-lock (ReentrantLock.))
 (defonce tooling-err nil)
-(def tooling-prn prn)
+(defonce tooling-prn prn)
 
 (defmacro with-tooling-response [msg & resp]
-  `(let [type# (:type ~msg)
-         process-id# (:process-id ~msg)]
-     (try (merge {:type type# :process-id process-id#} (~'do ~@resp))
+  `(let [type# (:type ~msg)]
+     (try (merge {:type type# :process-id ~process-id} (~'do ~@resp))
           (catch Exception t#
-            {:process-id process-id#
+            {:process-id ~process-id
              :type type#
              :error t#}))))
 
