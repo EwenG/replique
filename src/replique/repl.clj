@@ -101,7 +101,8 @@
                                              :repl-type :clj
                                              :session server/*session*
                                              :ns (ns-name *ns*)
-                                             :value (utils/repl-caught-str e)}))))
+                                             :value (utils/repl-caught-str e)})))
+               (clojure.main/repl-caught e))
      :print (fn [result]
               (binding [*out* tooling-msg/tooling-out]
                 (utils/with-lock tooling-msg/tooling-out-lock
