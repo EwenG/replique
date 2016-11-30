@@ -1,18 +1,10 @@
 (ns replique.repl
   (:require [clojure.main]
-            [clojure.java.io :refer [file]]
-            [replique.elisp-printer :as elisp]
             [replique.utils :as utils]
             [replique.tooling-msg :as tooling-msg]
-            [replique.tooling]
             [replique.interactive :as interactive]
             [replique.server :as server])
   (:import [java.io File FileNotFoundException]))
-
-(defn normalize-host [address]
-  (cond (= "0.0.0.0" address) "localhost"
-        (= "0:0:0:0:0:0:0:1" address) "localhost"
-        :else address))
 
 (def ^:private dispatch-request
   (utils/dynaload 'replique.repl-cljs/dispatch-request))
@@ -31,7 +23,7 @@
   (clojure.main/repl
    :init (fn [] (in-ns 'replique.repl))
    :prompt #()
-   :print (fn [result] (elisp/prn result))))
+   :print (fn [result] (tooling-msg/tooling-prn result))))
 
 (defn start-repl-process [project-map {:keys [process-id port cljs-compile-path]}]
   (try
@@ -42,7 +34,6 @@
     (alter-var-root #'utils/project-map (constantly project-map))
     (alter-var-root #'tooling-msg/process-id (constantly process-id))
     (alter-var-root #'utils/cljs-compile-path (constantly cljs-compile-path))
-    (println "Starting Clojure REPL...")
     ;; Let leiningen :global-vars option propagate to other REPLs
     ;; The tooling REPL printing is a custom one and thus is not affected by those bindings,
     ;; and it must not !!
@@ -52,15 +43,10 @@
                           :accept `tooling-repl
                           :accept-http `accept-http
                           :server-daemon false})
-    (elisp/prn {:host (let [ss  (-> @#'server/servers (get :replique) :socket)
-                            inet (.getInetAddress ^java.net.ServerSocket ss)
-                            ip (.getHostAddress ^java.net.InetAddress inet)]
-                        (normalize-host ip))
-                :port (server/server-port)
-                :process-id process-id
-                :cljs-compile-path cljs-compile-path})
+    (println (str "Replique version " (:version project-map)
+                  " listening on port " (server/server-port)))
     (catch Throwable t
-      (elisp/prn {:error t}))))
+      (prn t))))
 
 (comment
   (clojure.main/repl :prompt #())
@@ -73,23 +59,29 @@
            (prn "e"))))))
   )
 
-(defn shared-tooling-repl []
-  (utils/with-lock tooling-msg/tooling-out-lock
-    (alter-var-root #'tooling-msg/tooling-out (constantly *out*)))
-  (utils/with-lock tooling-msg/tooling-out-lock
-    (alter-var-root #'tooling-msg/tooling-err (constantly *err*)))
-  (Thread/setDefaultUncaughtExceptionHandler
-   (reify Thread$UncaughtExceptionHandler
-     (uncaughtException [_ thread ex]
-       (tooling-msg/uncaught-exception thread ex))))
-  (let [init-fn (fn [] (in-ns 'replique.repl))]
-    (clojure.main/repl
-     :init init-fn
-     :prompt #()
-     :caught (fn [e] (tooling-msg/uncaught-exception (Thread/currentThread) e))
-     :print (fn [result]
-              (utils/with-lock tooling-msg/tooling-out-lock
-                (elisp/prn result))))))
+(defn shared-tooling-repl
+  ([]
+   (shared-tooling-repl :edn))
+  ([print-format]
+   (tooling-msg/set-print-format print-format)
+   ;; Only load tooling stuff when it is necessary
+   (require '[replique.tooling])
+   (utils/with-lock tooling-msg/tooling-out-lock
+     (alter-var-root #'tooling-msg/tooling-out (constantly *out*)))
+   (utils/with-lock tooling-msg/tooling-out-lock
+     (alter-var-root #'tooling-msg/tooling-err (constantly *err*)))
+   (Thread/setDefaultUncaughtExceptionHandler
+    (reify Thread$UncaughtExceptionHandler
+      (uncaughtException [_ thread ex]
+        (tooling-msg/uncaught-exception thread ex))))
+   (let [init-fn (fn [] (in-ns 'replique.repl))]
+     (clojure.main/repl
+      :init init-fn
+      :prompt #()
+      :caught (fn [e] (tooling-msg/uncaught-exception (Thread/currentThread) e))
+      :print (fn [result]
+               (utils/with-lock tooling-msg/tooling-out-lock
+                 (tooling-msg/tooling-prn result)))))))
 
 (comment
   (.start (Thread. (fn [] (throw (Exception. "f")))))
@@ -97,29 +89,31 @@
 
 (defn repl []
   (println "Clojure" (clojure-version))
-  (clojure.main/repl
-   :init (fn [] (in-ns 'user))
-   :caught (fn [e]
-             (binding [*out* tooling-msg/tooling-err]
-               (utils/with-lock tooling-msg/tooling-out-lock
-                 (elisp/prn {:type :eval
-                             :process-id tooling-msg/process-id
-                             :error true
-                             :repl-type :clj
-                             :session server/*session*
-                             :ns (ns-name *ns*)
-                             :value (utils/repl-caught-str e)})))
-             (clojure.main/repl-caught e))
-   :print (fn [result]
-            (binding [*out* tooling-msg/tooling-out]
-              (utils/with-lock tooling-msg/tooling-out-lock
-                (elisp/prn {:type :eval
-                            :process-id tooling-msg/process-id
-                            :repl-type :clj
-                            :session server/*session*
-                            :ns (ns-name *ns*)
-                            :result (pr-str result)})))
-            (prn result))))
+  (if (tooling-msg/tooling-available?)
+    (clojure.main/repl
+     :init (fn [] (in-ns 'user))
+     :caught (fn [e]
+               (binding [*out* tooling-msg/tooling-err]
+                 (utils/with-lock tooling-msg/tooling-out-lock
+                   (tooling-msg/tooling-prn {:type :eval
+                                             :process-id tooling-msg/process-id
+                                             :error true
+                                             :repl-type :clj
+                                             :session server/*session*
+                                             :ns (ns-name *ns*)
+                                             :value (utils/repl-caught-str e)}))))
+     :print (fn [result]
+              (binding [*out* tooling-msg/tooling-out]
+                (utils/with-lock tooling-msg/tooling-out-lock
+                  (tooling-msg/tooling-prn {:type :eval
+                                            :process-id tooling-msg/process-id
+                                            :repl-type :clj
+                                            :session server/*session*
+                                            :ns (ns-name *ns*)
+                                            :result (pr-str result)})))
+              (prn result)))
+    (clojure.main/repl
+     :init (fn [] (in-ns 'user)))))
 
 (comment
   (tooling-msg/tooling-msg-handle {:type :clj-var-meta

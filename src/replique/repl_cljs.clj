@@ -382,46 +382,47 @@ replique.cljs_env.repl.connect(\"" url "\");
                             (:type (ex-data e))))
                     (:value (:error (ex-data e)))
                     (utils/repl-caught-str e))}
-          elisp/prn)))
+          tooling-msg/tooling-prn)))
   (cljs.repl/repl-caught e repl-env opts))
 
 (defn cljs-repl []
   (let [repl-env @repl-env
         compiler-env @compiler-env
         out-lock (ReentrantLock.)
-        {:keys [state]} @server/cljs-server]
+        {:keys [state]} @server/cljs-server
+        repl-opts (if (tooling-msg/tooling-available?)
+                    {:compiler-env compiler-env
+                     :caught repl-caught
+                     :print (fn [result]
+                              (binding [*out* tooling-msg/tooling-out]
+                                (utils/with-lock tooling-msg/tooling-out-lock
+                                  (tooling-msg/tooling-prn {:type :eval
+                                                            :process-id tooling-msg/process-id
+                                                            :repl-type :cljs
+                                                            :session *session*
+                                                            :ns ana/*cljs-ns*
+                                                            :result result})))
+                              (utils/with-lock out-lock
+                                (println result)))
+                     ;; Code modifying the runtime should not be put in :init, otherise it would
+                     ;; be lost on browser refresh
+                     :init (fn []
+                             ;; Let the client know that we are entering a cljs repl
+                             (binding [*out* tooling-msg/tooling-out]
+                               (utils/with-lock tooling-msg/tooling-out-lock
+                                 (tooling-msg/tooling-prn {:type :eval
+                                                           :process-id tooling-msg/process-id
+                                                           :repl-type :cljs
+                                                           :session *session*
+                                                           :ns ana/*cljs-ns*
+                                                           :result "nil"}))))}
+                    {:compiler-env compiler-env})]
     (swap! cljs-outs conj [*out* out-lock])
     (when (not= :started state)
       (println (format "Waiting for browser to connect on port %d ..." (server/server-port))))
     (apply
      (partial cljs.repl/repl repl-env)
-     (->> (merge
-           (:options @compiler-env)
-           {:compiler-env compiler-env
-            :caught repl-caught
-            :print (fn [result]
-                     (binding [*out* tooling-msg/tooling-out]
-                       (utils/with-lock tooling-msg/tooling-out-lock
-                         (elisp/prn {:type :eval
-                                     :process-id tooling-msg/process-id
-                                     :repl-type :cljs
-                                     :session *session*
-                                     :ns ana/*cljs-ns*
-                                     :result result})))
-                     (utils/with-lock out-lock
-                       (println result)))
-            ;; Code modifying the runtime should not be put in :init, otherise it would be lost
-            ;; on browser refresh
-            :init (fn []
-                    ;; Let the client know that we are entering a cljs repl
-                    (binding [*out* tooling-msg/tooling-out]
-                      (utils/with-lock tooling-msg/tooling-out-lock
-                        (elisp/prn {:type :eval
-                                    :process-id tooling-msg/process-id
-                                    :repl-type :cljs
-                                    :session *session*
-                                    :ns ana/*cljs-ns*
-                                    :result "nil"}))))})
+     (->> (merge (:options @compiler-env) repl-opts)
           (apply concat)))
     (swap! cljs-outs disj [*out* out-lock])))
 
