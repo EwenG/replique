@@ -42,7 +42,7 @@ Let's start a Clojurescipt REPL. Be sure you added a Clojurescript dependency to
 
 `(replique.interactive/cljs-repl)`
 
-Wait a few seconds for the Clojurescript core libraries to be compiled. Javascript files get compiled to the `target/cljs` folder. As you can see printed in your terminal, the Clojurescript REPL is waiting for a browser to connect on port 900 ...
+Wait a few seconds for the Clojurescript core libraries to be compiled. Javascript files get compiled to the `target/cljs` folder. As you can now see, the Clojurescript REPL is waiting for a browser to connect on port 9000 ...
 
 `Waiting for browser to connect on port 9000 ...`
 
