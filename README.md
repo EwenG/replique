@@ -65,7 +65,7 @@ Load the file in the browser:
 
 The file has been loaded in the browser AND compiled to disk. It can be linked in HTML markup to be automatically loaded after a browser refresh.
 
-Quit the Clojurescript REPL to come back to the clojure REPL:
+Quit the Clojurescript REPL to come back to the Clojure REPL:
 
 `:cljs/quit`
 
