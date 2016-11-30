@@ -48,7 +48,7 @@ Wait a few seconds for the Clojurescript core libraries to be compiled. Javascri
 
 Open a browser tab at `localhost:9000`
 
-You are now able to evaluate single Clojurescript expressions at the REPL:
+You are now able to evaluate Clojurescript expressions at the REPL:
 
 `(js/alert "Hello from Replique")`
 
