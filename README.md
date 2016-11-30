@@ -63,7 +63,7 @@ Load the file in the browser:
 
 `(replique.interactive/load-file "test.cljs")`
 
-The file has been loaded in the browser AND compiled to disk. It can be linked in some HTML markup to be automaically loaded after a browser refresh.
+The file has been loaded in the browser AND compiled to disk. It can be linked in HTML markup to be automatically loaded after a browser refresh.
 
 Quit the Clojurescript REPL to come back to the clojure REPL:
 
