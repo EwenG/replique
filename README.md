@@ -4,9 +4,9 @@ Replique is a development environment for Clojure and Clojurescript implemented 
 The easiest way to start with Replique is to use a client. The only client currently available is an [emacs mode](https://github.com/EwenG/replique.el).
 If you are interested in writing a client for another text editor/ide, please fill an issue to ask for more documentation :)
 
-The following is an overview of Replique features, demonstrating the use of Replique with only the help of a terminal.
-
 ## Overview
+
+The following is an overview of Replique features, demonstrating the use of Replique with only the help of a terminal.
 
 Create an empty leiningen project. Add Replique to your plugins and Clojurescript to your depenencies. Clojurescript is necessary because we will later start a Clojurescript REPL.
 
