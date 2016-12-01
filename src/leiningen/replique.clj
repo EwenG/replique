@@ -14,7 +14,7 @@
                              (format cljs-compile-path (:target-path project-map))
                              cljs-compile-path)
          opts {:process-id process-id :port (read-string port)
-               :cljs-compile-path cljs-compile-path}]
+               :cljs-compile-path cljs-compile-path :version replique-version}]
      (eval/eval-in-project (-> project-map
                                (assoc-in [:replique :cljs-compile-path] cljs-compile-path)
                                (update-in [:dependencies] conj

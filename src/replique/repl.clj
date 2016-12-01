@@ -25,7 +25,7 @@
    :prompt #()
    :print (fn [result] (tooling-msg/tooling-prn result))))
 
-(defn start-repl-process [project-map {:keys [process-id port cljs-compile-path]}]
+(defn start-repl-process [project-map {:keys [process-id port cljs-compile-path version]}]
   (try
     (alter-var-root #'utils/process-out (constantly *out*))
     (alter-var-root #'utils/process-err (constantly *err*))
@@ -34,6 +34,7 @@
     (alter-var-root #'utils/project-map (constantly project-map))
     (alter-var-root #'tooling-msg/process-id (constantly process-id))
     (alter-var-root #'utils/cljs-compile-path (constantly cljs-compile-path))
+    (alter-var-root #'utils/version (constantly version))
     ;; Let leiningen :global-vars option propagate to other REPLs
     ;; The tooling REPL printing is a custom one and thus is not affected by those bindings,
     ;; and it must not !!
@@ -43,8 +44,7 @@
                           :accept `tooling-repl
                           :accept-http `accept-http
                           :server-daemon false})
-    (println (str "Replique version " (:version project-map)
-                  " listening on port " (server/server-port)))
+    (println (str "Replique version " version " listening on port " (server/server-port)))
     (catch Throwable t
       (prn t))))
 

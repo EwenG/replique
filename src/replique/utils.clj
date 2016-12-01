@@ -5,6 +5,7 @@
 (defonce process-out nil)
 (defonce process-err nil)
 (defonce project-map nil)
+(defonce version nil)
 (defonce cljs-compile-path nil)
 
 (defmacro with-1.9+ [& body]
