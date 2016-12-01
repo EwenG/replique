@@ -69,15 +69,15 @@ Quit the Clojurescript REPL to come back to the Clojure REPL:
 
 `:cljs/quit`
 
-Replique can be used to enhance your REPL with tooling features. Tooling features are optional. The code supporting them has not been loaded into the Clojure process yet. To leverage this features, your best bet is probably to use a plugin for your favorite editor or IDE. The following demonstrate how Replique can be used to provide autocompletion.
+Replique can be used to enhance your REPL with tooling features. Tooling features are optional. The code supporting them has not been loaded into the Clojure process yet. To leverage tooling features, it is best to use an editor or IDE.
 
-Start a "tooling" REPL.
+Let's start a "tooling" REPL.
 
 `(replique.repl/shared-tooling-repl :edn)`
 
-The tooling REPL is designed to be consumed by the machine. This is why no prompt is printed. The first parameter, `:edn`, instructs the REPL to print the results of evaluation to the [EDN](https://github.com/edn-format/edn) format. The tooling REPL currently supports two formats: EDN and [elisp](https://en.wikipedia.org/wiki/Emacs_Lisp).
+Notice that no prompt is printed. By not pinting a rompt, we make the REPL output easier to parse by the machine. The first parameter, `:edn`, instructs the REPL to print the tooling messages using the [EDN](https://github.com/edn-format/edn) format. The tooling REPL currently supports two formats: EDN and [elisp](https://en.wikipedia.org/wiki/Emacs_Lisp).
 
-You can now query the tooling REPL for some code completion:
+Enter the following in the tooling REPL:
 
 ```clojure
 (replique.tooling-msg/tooling-msg-handle {:type :clj-completion
@@ -85,14 +85,15 @@ You can now query the tooling REPL for some code completion:
                                           :ns 'replique.repl
                                           :prefix "tooli"})
 ```
-=> ```clojure
+=> 
+```clojure
 {:type :clj-completion
  :process-id #uuid "5e1ffe41-797a-4379-a52a-e1d82d1704cd"
  :candidates ({:candidate "tooling-msg" :type :namespace}
               {:candidate "tooling-repl" :type :function :ns "replique.repl"})}
 ```
 
-
+We are done, kill the process to exit.
 
 ---
 
