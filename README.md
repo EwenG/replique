@@ -99,7 +99,7 @@ We are done, kill the process to exit.
 
 ## Acknowledgments
 
-Several features of Replique were built using [compliment](https://github.com/alexander-yakushev/compliment). I would like to thank compliment authors/contributors.
+Several features of Replique were built using [compliment](https://github.com/alexander-yakushev/compliment). I would like to thank the compliment authors/contributors.
 
 ## License
 
