@@ -97,6 +97,10 @@ We are done, kill the process to exit.
 
 ---
 
+## Acknowledgments
+
+Several features of Replique were built using [compliment](https://github.com/alexander-yakushev/compliment). I would like to thank compliment authors/contributors.
+
 ## License
 
 Copyright 2016 Ewen Grosjean.
