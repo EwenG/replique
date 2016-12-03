@@ -12,6 +12,8 @@
 (defn safe-symbol [x]
   (when x (symbol x)))
 
+;; Wrap the clojurescript compiler env because it is just an atom and thus can't participate
+;; into polymorphism
 (defprotocol ICljsCompilerEnv
   (get-wrapped [compile-env]))
 (deftype CljsCompilerEnv [wrapped]
