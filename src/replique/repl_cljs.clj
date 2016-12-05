@@ -6,7 +6,6 @@
             [replique.http :as http]
             [replique.server :refer [*session*] :as server]
             [replique.environment :refer [->CljsCompilerEnv]]
-            [replique.sourcemap :as sourcemap]
             [clojure.java.io :as io]
             [cljs.closure :as closure]
             [cljs.env :as cljs-env]
@@ -465,29 +464,14 @@ replique.cljs_env.repl.connect(\"" url "\");
   (tooling-msg/with-tooling-response msg
     (let [{:keys [status value]} (cljs.repl/-evaluate
                                   @repl-env "<cljs repl>" 1
-                                  "replique.cljs_env.browser.list_css_infos();")]
+                                  "replique.cljs_env.browser.list_css_urls();")]
       (if (not (= :success status))
         (assoc msg :error value)
-        (assoc msg :css-infos (read-string value))))))
+        (assoc msg :css-urls (read-string value))))))
 
-(comment
-  (require '[goog.dom])
-  (.appendChild (.-head js/document) (goog.dom/createDom "link" (js-obj "rel" "stylesheet" "type" "text/css" "href" "mystyle.css")))
-  
-  )
-
-(defn css-infos-process-uri [{:keys [file-path uri scheme] :as css-infos}]
-  (if (= "data" scheme)
-    (assoc css-infos :uri
-           (->> (slurp file-path)
-                sourcemap/encode-base-64
-                (str "data:text/css;base64,")))
-    css-infos))
-
-(defmethod tooling-msg/tooling-msg-handle :load-css [msg]
+(defmethod tooling-msg/tooling-msg-handle :load-css [{:keys [url] :as msg}]
   (tooling-msg/with-tooling-response msg
-    (let [{:keys [status value]} (->> (css-infos-process-uri msg)
-                                      pr-str pr-str
+    (let [{:keys [status value]} (->> (pr-str url)
                                       (format "replique.cljs_env.browser.reload_css(%s);")
                                       (cljs.repl/-evaluate @repl-env "<cljs repl>" 1))]
       (if (not (= :success status))
