@@ -9,3 +9,4 @@
 ## Changes
 
 - The function used to print data into the tooling REPL can now be customized
+- load-css cannot load css as data-uri anymore
