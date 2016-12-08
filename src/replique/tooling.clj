@@ -186,12 +186,13 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
   document.write('<script>goog.require(\"replique.cljs_env.repl\");</script>');
   document.write('<script>goog.require(\"replique.cljs_env.browser\");</script>');
   %s
+  document.write('<script src=\"http://localhost:' + port + '/replique/cljs_env/bootstrap.js\"></script>');
   document.write('<script>replique.cljs_env.repl.connect(\"http://localhost:' + port + '\");</script>')})();"
-      port
-      (if main-ns (str "var mainNs = '" (namespace-munge main-ns) "';") "")
-      (if main-ns
-        "document.write('<script>goog.require(\"' + mainNs + '\");</script>');"
-        "")))))
+             port
+             (if main-ns (str "var mainNs = '" (namespace-munge main-ns) "';") "")
+             (if main-ns
+               "document.write('<script>goog.require(\"' + mainNs + '\");</script>');"
+               "")))))
 
 (defmethod tooling-msg/tooling-msg-handle :output-main-js-files
   [{:keys [output-to main-ns] :as msg}]

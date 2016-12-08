@@ -3,16 +3,9 @@
   Adapted from https://github.com/clojure/clojurescript/blob/master/src/main/cljs/clojure/browser/repl.cljs.
   Also, replace :order by a :session id in messages sent to the server"
   (:require
-   [goog.dom :as gdom]
-   [goog.object :as gobj]
    [goog.array :as garray]
    [goog.userAgent.product :as product]
-   [clojure.browser.event :as event]
-   ;; repl-connection callback will receive goog.require('cljs.repl')
-   ;; and monkey-patched require expects to be able to derive it
-   ;; via goog.basePath, so this namespace should be compiled together
-   ;; with clojure.browser.repl:
-   [cljs.repl])
+   [clojure.browser.event :as event])
   [:import [goog.net XhrIo CorsXmlHttpFactory]])
 
 (def connection (atom nil))
@@ -87,71 +80,6 @@
                "No stacktrace available.")}))]
     (pr-str result)))
 
-(def load-queue nil)
-(def bootstrapped (atom false))
-
-(defn bootstrap
-  "Reusable browser REPL bootstrapping. Patches the essential functions
-  in goog.base to support re-loading of namespaces after page load."
-  []
-  ;; Monkey-patch goog.provide if running under optimizations :none - David
-  (when (and (not js/COMPILED) (not @bootstrapped))
-    (reset! bootstrapped true)
-    (set! (.-require__ js/goog) js/goog.require)
-    ;; suppress useless Google Closure error about duplicate provides
-    (set! (.-isProvided_ js/goog) (fn [name] false))
-    ;; provide cljs.user
-    (goog/constructNamespace_ "cljs.user")
-    (set! (.-writeScriptTag__ js/goog)
-      (fn [src opt_sourceText]
-        ;; the page is already loaded, we can no longer leverage
-        ;; document.write instead construct script tag elements and append
-        ;; them to the body of the page, to avoid parallel script loading
-        ;; enforce sequential load with a simple load queue
-        (let [loaded (atom false)
-              onload (fn []
-                       (when (and load-queue (false? @loaded))
-                         (swap! loaded not)
-                         (if (zero? (alength load-queue))
-                           (set! load-queue nil)
-                           (.apply js/goog.writeScriptTag__
-                                   nil (.shift load-queue)))))]
-          (.appendChild js/document.body
-            (as-> (.createElement js/document "script") script
-              (doto script
-                (gobj/set "type" "text/javascript")
-                (gobj/set "onload" onload)
-                (gobj/set "onreadystatechange" onload)) ;; IE
-              (if (nil? opt_sourceText)
-                (doto script (gobj/set "src" src))
-                (doto script (gdom/setTextContext opt_sourceText))))))))
-    ;; queue or load
-    (set! (.-writeScriptTag_ js/goog)
-      (fn [src opt_sourceText]
-        (if load-queue
-          (.push load-queue #js [src opt_sourceText])
-          (do
-            (set! load-queue #js [])
-            (js/goog.writeScriptTag__ src opt_sourceText)))))
-    ;; we must reuse Closure library dev time dependency management,
-    ;; under namespace reload scenarios we simply delete entries from
-    ;; the correct private locations
-    (set! (.-require js/goog)
-      (fn [src reload]
-        (when (= reload "reload-all")
-          (set! (.-cljsReloadAll_ js/goog) true))
-        (let [reload? (or reload (.-cljsReloadAll__ js/goog))]
-          (when reload?
-            (let [path (aget js/goog.dependencies_.nameToPath src)]
-              (gobj/remove js/goog.dependencies_.visited path)
-              (gobj/remove js/goog.dependencies_.written path)
-              (gobj/remove js/goog.dependencies_.written
-                (str js/goog.basePath path))))
-          (let [ret (.require__ js/goog src)]
-            (when (= reload "reload-all")
-              (set! (.-cljsReloadAll_ js/goog) false))
-            ret))))))
-
 (defn eval-connection [url]
   (let [conn (xhr-connection)]
     (event/listen
@@ -165,7 +93,6 @@
     conn))
 
 (defn connect [url]
-  (bootstrap)
   (reset! connection {:url url})
   (send-result (eval-connection url) url (wrap-message :ready "ready"))
   url)

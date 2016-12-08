@@ -87,6 +87,7 @@ goog.require(\"replique.cljs_env.repl\");
 <script>
 goog.require(\"replique.cljs_env.browser\");
 </script>
+<script src=\"replique/cljs_env/bootstrap.js\"></script>
 <script>
 replique.cljs_env.repl.connect(\"" url "\");
 </script>
@@ -294,7 +295,9 @@ replique.cljs_env.repl.connect(\"" url "\");
                          (str (cljs.util/output-directory comp-opts)
                               File/separator "cljs_deps.js"))))
             (doto (io/file (cljs.util/output-directory comp-opts) "goog" "deps.js")
-              cljs.util/mkdirs (spit (slurp (io/resource "goog/deps.js"))))))))
+              cljs.util/mkdirs (spit (slurp (io/resource "goog/deps.js"))))
+            (spit (File. ^String utils/cljs-compile-path "replique/cljs_env/bootstrap.js")
+                  (slurp (io/resource "bootstrap.js")))))))
     compiler-env))
 
 ;; This must be executed on a single thread (the server thread for example)
