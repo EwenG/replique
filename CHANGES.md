@@ -1,5 +1,6 @@
 # Version 0.0.3
 
+- Providing a hostname is now necessary to start the REPL
 - Update the cljs-repl connection logic to make connecting to the cljs repl from any environment possible
 WARNING: main javascript files must be recreated when updating to the 0.0.3 version
 

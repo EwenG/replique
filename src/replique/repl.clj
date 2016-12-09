@@ -25,7 +25,7 @@
    :prompt #()
    :print (fn [result] (tooling-msg/tooling-prn result))))
 
-(defn start-repl-process [project-map {:keys [process-id port cljs-compile-path version]}]
+(defn start-repl-process [project-map {:keys [process-id host port cljs-compile-path version]}]
   (try
     (alter-var-root #'utils/process-out (constantly *out*))
     (alter-var-root #'utils/process-err (constantly *err*))
@@ -40,7 +40,7 @@
     ;; and it must not !!
     (alter-var-root #'tooling-repl bound-fn*)
     (alter-var-root #'accept-http bound-fn*)
-    (server/start-server {:port port :name :replique
+    (server/start-server {:address host :port port :name :replique
                           :accept `tooling-repl
                           :accept-http `accept-http
                           :server-daemon false})
