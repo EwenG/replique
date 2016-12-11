@@ -47,9 +47,8 @@
    (pr-str {:type t :content data :session session})))
 
 (defn flush-print-queue! []
-  (let [{:keys [url session]} @connection]
-    (doseq [str print-queue]
-      (send-print url (wrap-message :print str session))))
+  (doseq [str print-queue]
+    (send-print (:url @connection) (wrap-message :print str (:session @connection))))
   (garray/clear print-queue))
 
 (defn repl-print [data]
@@ -86,10 +85,9 @@
      conn "success"
      (fn [e]
        (let [js (.getResponseText (.-currentTarget e))
-             result (evaluate-javascript js)
-             {:keys [session]} @connection]
+             result (evaluate-javascript js)]
          (send-result
-          (eval-connection url) url (wrap-message :result result session)))))
+          (eval-connection url) url (wrap-message :result result (:session @connection))))))
     conn))
 
 (defn connect [url]
