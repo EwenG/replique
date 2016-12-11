@@ -11,9 +11,7 @@
   var loadQueue = null;
 
   if(!COMPILED) {
-    var nodeTypeText = 3;
-    var nodeTypeDocument = 9;
-
+      
     var objremove = function(obj, key) {
       var rv;
       if (rv = key in  (obj)) {
@@ -22,42 +20,6 @@
       return rv;
     };
 
-    var removeChildren = function(node) {
-      // Note: Iterations over live collections can be slow, this is the fastest
-      // we could find. The double parenthesis are used to prevent JsCompiler and
-      // strict warnings.
-      var child;
-      while ((child = node.firstChild)) {
-        node.removeChild(child);
-      };
-    };
-
-    var getOwnerDocument = function(node) {
-      return (
-        node.nodeType == nodeTypeDocument ? node : node.ownerDocument ||
-          node.document);
-    };
-
-    var setTextContent = function(node, text) {
-      if ('textContent' in node) {
-        node.textContent = text;
-      } else if (node.nodeType == nodeTypeText) {
-        node.data = text;
-      } else if (
-        node.firstChild && node.firstChild.nodeType == nodeTypeText) {
-        // If the first child is a text node we just change its data and remove the
-        // rest of the children.
-        while (node.lastChild != node.firstChild) {
-          node.removeChild(node.lastChild);
-        }
-        node.firstChild.data = text;
-      } else {
-        removeChildren(node);
-        var doc = getOwnerDocument(node);
-        node.appendChild(doc.createTextNode(String(text)));
-      }
-    };
-    
     goog.require__ = goog.require;
     // suppress useless Google Closure error about duplicate provides
     goog.isProvided_ = function(name) {
@@ -111,7 +73,7 @@
       }
       var maybeReload = reload || goog.cljsReloadAll__;
       if(maybeReload) {
-        var path = goog.dependencies_.nameToPath.src;
+        var path = goog.dependencies_.nameToPath[src];
         objremove(goog.dependencies_.visited, path);
         objremove(goog.dependencies_.written, path);
         objremove(goog.dependencies_.written, goog.basePath + path);
