@@ -52,7 +52,7 @@
   (ns-name [ns]))
 
 (defrecord CljsNamespace [name doc excludes use-macros require-macros uses
-                          requires imports defs]
+                          requires imports defs renames rename-macros]
   Object
   (toString [cljs-ns]
     (str (:name cljs-ns))))
@@ -85,8 +85,9 @@
     [sym (or (get-in ns [:defs sym]) (get-in ns [:macros sym]))]))
 
 (defn cljs-ns-map-resolve
-  "Symbols retrieved from a namespace :uses or :use-macros entries refer to the namespace 
-  the symbol is imported from. They must be further resolved to get the var analysis map"
+  "Symbols retrieved from a namespace :uses, :use-macros, :renames or :rename-macros entries 
+  refer to the namespace the symbol is imported from. They must be further resolved to get the 
+  var analysis map"
   [comp-env ns-map]
   (->> (map (partial cljs-ns-map-resolve* comp-env) ns-map)
        (into {})))
@@ -112,10 +113,10 @@
   (ns-map [comp-env ns]
     {:pre [(not (nil? ns))]}
     (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)
-          uses (->> (select-keys ns [:uses :use-macros])
+          uses (->> (select-keys ns [:uses :use-macros :renames :rename-macros])
                     vals
                     (map (partial cljs-ns-map-resolve comp-env)))
-          defs (vals (select-keys ns [:imports :macros :defs]))
+          defs (vals (select-keys ns [:macros :defs]))
           imports (:imports ns)]
       (->> (concat uses defs)
            (concat (list (ns-core-refers comp-env ns) imports))
