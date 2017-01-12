@@ -1,5 +1,6 @@
 # Version 0.0.3
 
+- The javascript environment will now automatically try to reconnect to the clojurescript server after an unexpected disconnection
 - Autocompletion now handles the :renames and :rename-macros keys of clojurescript namespace declarations (available since clojurescript 1.9.183)
 - Providing a hostname is now necessary to start the REPL
 - Update the cljs-repl connection logic to make connecting to the cljs repl from any environment possible

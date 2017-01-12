@@ -79,6 +79,8 @@
                "No stacktrace available.")}))]
     (pr-str result)))
 
+(declare connect)
+
 (defn eval-connection [url]
   (let [conn (xhr-connection)]
     (event/listen
@@ -88,6 +90,10 @@
              result (evaluate-javascript js)]
          (send-result
           (eval-connection url) url (wrap-message :result result (:session @connection))))))
+    ;; Reconnection logic. Try to reconnect once per second
+    (js/setTimeout
+     #(event/listen conn "error" (fn [e] (.log js/console "reconn") (connect url)))
+     1000)
     conn))
 
 (defn connect [url]
