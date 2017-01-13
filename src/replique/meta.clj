@@ -3,6 +3,7 @@
   (:require
    [clojure.java.io :as io]
    [clojure.string :as string]
+   [clojure.repl :refer [demunge]]
    [replique.compliment.core :as compliment]
    [replique.compliment.context :as context]
    [replique.compliment.sources.local-bindings :refer [bindings-from-context]]
@@ -22,6 +23,7 @@
     (when (> (count splitted) 1)
       (->> (subvec splitted 0 2)
            (string/join "/")
+           demunge
            symbol
            (safe-ns-resolve comp-env ns)))))
 
