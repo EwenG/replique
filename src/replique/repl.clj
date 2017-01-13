@@ -116,27 +116,6 @@
     (clojure.main/repl
      :init (fn [] (in-ns 'user)))))
 
-(comment
-  (tooling-msg/tooling-msg-handle {:type :clj-var-meta
-                                   :context nil
-                                   :ns 'replique.repl
-                                   :symbol 'tooling-msg-handle
-                                   :keys '(:column :line :file)})
-
-  (tooling-msg/tooling-msg-handle {:type :clj-var-meta
-                                   :context nil
-                                   :ns 'replique.compliment.core
-                                   :symbol 'all-sources
-                                   :keys '(:column :line :file)})
-
-  (tooling-msg/tooling-msg-handle {:type :clj-var-meta
-                                   :context nil
-                                   :ns 'replique.foo
-                                   :symbol 'foo-bar
-                                   :keys '(:column :line :file)})
-
-  )
-
 ;; Behavior of the socket REPL on repl closing
 ;; The read fn returns (end of stream), the parent REPL prints the result of the repl command.
 ;; At this point the socket is closed, writing to the socket may (or not) throw a socket
