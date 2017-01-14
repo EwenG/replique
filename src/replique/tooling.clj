@@ -135,30 +135,30 @@ __prefix__)"))
   )
 
 (defmethod tooling-msg/tooling-msg-handle :meta-clj
-  [{:keys [context ns string?] :as msg}]
+  [{:keys [context ns is-string?] :as msg}]
   (tooling-msg/with-tooling-response msg
     (let [sym-at-point (:symbol msg)
           {:keys [context]} (context/cache-context nil (when ns (symbol ns)) context)
           context (reverse context)
-          m (if string?
+          m (if is-string?
               (r-meta/handle-meta-str sym-at-point)
               (r-meta/handle-meta nil ns context sym-at-point))]
       (assoc msg :meta m))))
 
 (defmethod tooling-msg/tooling-msg-handle :meta-cljs
-  [{:keys [context ns string?] :as msg}]
+  [{:keys [context ns is-string?] :as msg}]
   (tooling-msg/with-tooling-response msg
     (let [sym-at-point (:symbol msg)
           comp-env (->CljsCompilerEnv @@cljs-compiler-env)
           {:keys [context]} (context/cache-context comp-env (when ns (symbol ns)) context)
           context (reverse context)
-          m (if string?
+          m (if is-string?
               (r-meta/handle-meta-str sym-at-point)
               (r-meta/handle-meta comp-env ns context sym-at-point))]
       (assoc msg :meta m))))
 
 (defmethod tooling-msg/tooling-msg-handle :meta-cljc
-  [{:keys [context ns string?] :as msg}]
+  [{:keys [context ns is-string?] :as msg}]
   (tooling-msg/with-tooling-response msg
     (let [sym-at-point (:symbol msg)
           comp-env (->CljsCompilerEnv @@cljs-compiler-env)
@@ -166,7 +166,7 @@ __prefix__)"))
                                                  nil (when ns (symbol ns)) context)
           context (reverse context)
           comp-env (when (= #{:cljs} reader-conditionals) comp-env)
-          m (if string?
+          m (if is-string?
               (r-meta/handle-meta-str sym-at-point)
               (r-meta/handle-meta comp-env ns context sym-at-point))]
       (assoc msg :meta m))))
@@ -175,7 +175,7 @@ __prefix__)"))
   (tooling-msg/tooling-msg-handle {:type :meta-clj
                                    :ns "replique.repl"
                                    :symbol "clojure.core$str"
-                                   :string? true
+                                   :is-string? true
                                    :context nil})
   )
 
