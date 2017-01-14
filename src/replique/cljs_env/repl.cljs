@@ -92,7 +92,7 @@
           (eval-connection url) url (wrap-message :result result (:session @connection))))))
     ;; Reconnection logic. Try to reconnect once per second
     (js/setTimeout
-     #(event/listen conn "error" (fn [e] (.log js/console "reconn") (connect url)))
+     #(event/listen conn "error" (fn [] (connect url)))
      1000)
     conn))
 
