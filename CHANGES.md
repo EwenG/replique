@@ -1,5 +1,6 @@
 # Version 0.0.3
 
+- Clojurescript 1.9.456 compatibility
 - When the cursor is on a class and this class was compiled from a var, the meta command returns the metadata of the var
 - When the cursor is in a string representing a resource in the classpath, the meta command returns the absolute path of the resource
 - The javascript environment will now automatically try to reconnect to the clojurescript server after an unexpected disconnection

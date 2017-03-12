@@ -18,9 +18,10 @@
             [cljs.closure :as cljsc]
             [cljs.stacktrace :as st]
             [clojure.edn :as edn]
-            [clojure.tools.reader :as reader])
+            [clojure.tools.reader :as reader]
+            [replique.cljs])
   (:import [java.io File BufferedReader InputStreamReader]
-           [java.nio.file Files]
+           [java.nio.file Files Paths Path]
            [java.nio.file.attribute FileAttribute]
            [java.util.concurrent Executors SynchronousQueue
             RejectedExecutionException ExecutorService]
@@ -33,6 +34,21 @@
 
 (defonce repl-env (utils/delay (init-repl-env)))
 (defonce compiler-env (utils/delay (init-compiler-env @repl-env)))
+
+(comment
+  (keys @@compiler-env)
+  (do (add-watch @compiler-env :comp-watch
+                 (fn [k r o n]
+                   (.println System/out
+                             (identical?
+                              (get (:defs (get (:cljs.analyzer/namespaces o) 'replique.compliment.ns-mappings-cljs-test)) 'my-fn)
+                              (get (:defs (get (:cljs.analyzer/namespaces n) 'replique.compliment.ns-mappings-cljs-test)) 'my-fn)))
+                   #_(.println System/out (type n))))
+      nil)
+  (do (remove-watch @compiler-env :comp-watch)
+      nil)
+  (get (:defs (get (:cljs.analyzer/namespaces @@compiler-env) 'replique.compliment.ns-mappings-cljs-test)) 'my-fn)
+  )
 
 (defonce cljs-outs (atom #{}))
 (def ^:dynamic *stopped-eval-executor?* false)
@@ -152,12 +168,17 @@ replique.cljs_env.repl.connect(\"" url "\");
    (repl-compile-cljs f opts true))
   ([f opts reload-macros]
    (let [src (f->src f)
+         ;; prior to cljs 1.9.456, closure/src-file->target-file returned a relative path. After
+         ;; cljs 1.9.456, closure/src-file->target-file returns an absolute path. Let's normalize
+         ;; the path
+         output-path (Paths/get ^String (:output-dir opts) (make-array String 0))
+         target-path (.toPath (closure/src-file->target-file src))
+         target-path (.resolve output-path (.toPath (closure/src-file->target-file src)))
          compiled (binding [ana/*reload-macros* reload-macros]
                     (closure/compile
                      src
                      (assoc opts
-                            :output-file
-                            (closure/src-file->target-file src)
+                            :output-file (.toFile ^Path (.relativize output-path target-path))
                             :force true
                             :mode :interactive)))]
      ;; copy over the original source file if source maps enabled
@@ -423,7 +444,7 @@ replique.cljs_env.repl.connect(\"" url "\");
     (when (not= :started state)
       (println (format "Waiting for browser to connect on port %d ..." (server/server-port))))
     (apply
-     (partial cljs.repl/repl repl-env)
+     (partial replique.cljs/repl repl-env)
      (->> (merge (:options @compiler-env) repl-opts)
           (apply concat)))
     (swap! cljs-outs disj [*out* out-lock])))
