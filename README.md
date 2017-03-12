@@ -13,12 +13,12 @@ Create an empty leiningen project. Add Replique to your plugins and Clojurescrip
 ```clojure
 (defproject replique-demo "0.0.1"
   :dependencies [[org.clojure/clojurescript "x.x.x"]]
-  :plugins [[replique/replique "0.0.2"]])
+  :plugins [[replique/replique "0.0.3"]])
 ```
 
 From the project directory, start a REPL server on port 9000:
 
-`lein replique 9000`
+`lein replique localhost 9000`
 
 In an other terminal, connect to the REPL server:
 
