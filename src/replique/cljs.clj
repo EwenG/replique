@@ -80,7 +80,8 @@
        disk-sources)
       (cljsc/output-main-file opts)))))
 
-;; patch repl* to remove the binding of *print-namespace-maps*, which is boroken. A clojurescript
+;; patch repl* to remove the binding of *print-namespace-maps*, which is broken
+;; (*print-namespace-maps* is set whatever the value of the init parameter). A clojurescript
 ;; patch would not be accepted because cljs devs think this is fine ...
 (defn repl*
   [repl-env {:keys [init need-prompt quit-prompt prompt flush read eval print caught reader
