@@ -112,15 +112,15 @@
            (into {}))))
   (ns-map [comp-env ns]
     {:pre [(not (nil? ns))]}
-    (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)
-          uses (->> (select-keys ns [:uses :use-macros :renames :rename-macros])
-                    vals
-                    (map (partial cljs-ns-map-resolve comp-env)))
-          defs (vals (select-keys ns [:macros :defs]))
-          imports (:imports ns)]
-      (->> (concat uses defs)
-           (concat (list (ns-core-refers comp-env ns) imports))
-           (into {}))))
+    (when-let [ns (if (symbol? ns) (find-ns comp-env ns) ns)]
+      (let [uses (->> (select-keys ns [:uses :use-macros :renames :rename-macros])
+                      vals
+                      (map (partial cljs-ns-map-resolve comp-env)))
+            defs (vals (select-keys ns [:macros :defs]))
+            imports (:imports ns)]
+        (->> (concat uses defs)
+             (concat (list (ns-core-refers comp-env ns) imports))
+             (into {})))))
   (ns-aliases [comp-env ns]
     (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)]
       (merge (:requires ns)
