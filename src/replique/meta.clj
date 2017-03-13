@@ -7,7 +7,7 @@
    [replique.compliment.core :as compliment]
    [replique.compliment.context :as context]
    [replique.compliment.sources.local-bindings :refer [bindings-from-context]]
-   [replique.environment :refer [find-ns meta ns-resolve ns-interns]]))
+   [replique.environment :refer [find-ns meta ns-resolve ns-interns looks-like-var?]]))
 
 ;; Whitelist meta to be returned because everything is not elisp printable
 (def meta-keys #{:file :arglists :doc :added :static :line :column :name :tag})
@@ -15,7 +15,7 @@
 (defn safe-ns-resolve [comp-env ns sym]
   (try (let [resolved (ns-resolve comp-env ns sym)]
          ;; exclude classes since they don't have meta
-         (when (var? resolved) resolved))
+         (when (looks-like-var? comp-env resolved) resolved))
        (catch Exception _ nil)))
 
 (defn safe-ns-resolve-munged [comp-env ns sym]

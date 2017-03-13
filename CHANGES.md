@@ -1,3 +1,7 @@
+# Version 0.0.4
+
+- Fix the :meta-cljs tooling message (regression introduced in 0.0.3)
+
 # Version 0.0.3
 
 - Clojurescript 1.9.456 compatibility
