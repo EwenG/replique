@@ -180,14 +180,15 @@ replique.cljs_env.repl.connect(\"" url "\");
                      (assoc opts
                             :output-file (.toFile ^Path (.relativize output-path target-path))
                             :force true
-                            :mode :interactive)))]
+                            :mode :interactive)))
+         ns-info (ana/parse-ns src (.toFile ^Path (.relativize output-path target-path)) opts)]
      ;; copy over the original source file if source maps enabled
-     (when-let [ns (and (:source-map opts) (first (:provides compiled)))]
+     (when-let [ns (and (:source-map opts) (first (:provides ns-info)))]
        (spit
         (io/file (io/file (cljs.util/output-directory opts))
                  (cljs.util/ns->relpath ns (cljs.util/ext (:source-url compiled))))
         (slurp src)))
-     compiled)))
+     ns-info)))
 
 (defn foreign->output-file [foreign opts]
   (let [output-path (closure/rel-output-path
