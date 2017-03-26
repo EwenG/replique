@@ -340,7 +340,7 @@ replique.cljs_env.repl.connect(\"" url "\");
                (cljsc/-compile
                 [`(~'ns ~'cljs.user)
                  `(swap! replique.cljs-env.repl/connection
-                         assoc :session ~(inc session))
+                         assoc (keyword "session") ~(inc session))
                  '(set! *print-fn* replique.cljs-env.repl/repl-print)
                  '(set! *print-err-fn* replique.cljs-env.repl/repl-print)
                  '(set! *print-newline* true)
