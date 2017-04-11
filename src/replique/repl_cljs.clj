@@ -176,11 +176,11 @@ replique.cljs_env.repl.connect(\"" url "\");
          output-file (.toFile ^Path (.relativize output-path target-path))
          compiled (binding [ana/*reload-macros* reload-macros]
                     (closure/compile
+                     src
                      (assoc opts
                             :output-file output-file
                             :force true
-                            :mode :interactive)
-                     src))
+                            :mode :interactive)))
          ns-info (ana/parse-ns src output-file opts)]
      ;; copy over the original source file if source maps enabled
      (when-let [ns (and (:source-map opts) (first (:provides ns-info)))]
