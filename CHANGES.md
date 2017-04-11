@@ -1,3 +1,7 @@
+# Version 0.0.5
+
+- The cljs version of the load-file macro does not load files twice anymore
+
 # Version 0.0.4
 
 - Fix compilation of cljs files with newer version of clojurescript

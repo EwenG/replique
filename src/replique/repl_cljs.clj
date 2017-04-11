@@ -456,18 +456,27 @@ replique.cljs_env.repl.connect(\"" url "\");
     (when eval-executor (shutdown-eval-executor eval-executor))
     (when result-executor (.shutdownNow ^ExecutorService result-executor))))
 
+;; In some circumstances, Clojurescript macroexpands macros twice. The replique cljs
+;; load-file is used in one of those context. This is a hack to avoid always loading files
+;; two times. We should remove this when (if ?) it is fixed in cljs ...
+(defonce load-file-parity (atom 0))
+
 (defn load-file [file-path]
-  (cljs-env/with-compiler-env @compiler-env
-    (let [opts (:options @@compiler-env)
-          compiled (repl-compile-cljs file-path opts)]
-      (repl-cljs-on-disk
-       compiled (#'cljs.repl/env->opts @repl-env) opts)
-      (->> (refresh-cljs-deps opts)
-           (closure/output-deps-file
-            (assoc opts :output-to
-                   (str (cljs.util/output-directory opts)
-                        File/separator "cljs_deps.js"))))
-      (:value (repl-eval-compiled compiled @repl-env file-path opts)))))
+  (if (= 0 @load-file-parity)
+    (reset! load-file-parity 1)
+    (do
+      (reset! load-file-parity 0)
+      (cljs-env/with-compiler-env @compiler-env
+        (let [opts (:options @@compiler-env)
+              compiled (repl-compile-cljs file-path opts)]
+          (repl-cljs-on-disk
+           compiled (#'cljs.repl/env->opts @repl-env) opts)
+          (->> (refresh-cljs-deps opts)
+               (closure/output-deps-file
+                (assoc opts :output-to
+                       (str (cljs.util/output-directory opts)
+                            File/separator "cljs_deps.js"))))
+          (:value (repl-eval-compiled compiled @repl-env file-path opts)))))))
 
 (defn in-ns [ns-quote]
   (let [[quote ns-name] (vec ns-quote)]
