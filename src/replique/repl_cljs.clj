@@ -15,7 +15,6 @@
             [cljs.repl]
             [clojure.string :as string]
             [cljs.js-deps :as deps]
-            [cljs.closure :as cljsc]
             [cljs.stacktrace :as st]
             [clojure.edn :as edn]
             [clojure.tools.reader :as reader]
@@ -173,15 +172,16 @@ replique.cljs_env.repl.connect(\"" url "\");
          ;; the path
          output-path (Paths/get ^String (:output-dir opts) (make-array String 0))
          target-path (.toPath (closure/src-file->target-file src))
-         target-path (.resolve output-path (.toPath (closure/src-file->target-file src)))
+         target-path (.resolve output-path target-path)
+         output-file (.toFile ^Path (.relativize output-path target-path))
          compiled (binding [ana/*reload-macros* reload-macros]
                     (closure/compile
-                     src
                      (assoc opts
-                            :output-file (.toFile ^Path (.relativize output-path target-path))
+                            :output-file output-file
                             :force true
-                            :mode :interactive)))
-         ns-info (ana/parse-ns src (.toFile ^Path (.relativize output-path target-path)) opts)]
+                            :mode :interactive)
+                     src))
+         ns-info (ana/parse-ns src output-file opts)]
      ;; copy over the original source file if source maps enabled
      (when-let [ns (and (:source-map opts) (first (:provides ns-info)))]
        (spit
@@ -337,7 +337,7 @@ replique.cljs_env.repl.connect(\"" url "\");
     ;; Init stuff needs to go there and not in the :init method of the REPL, otherwise it
     ;; get lost on browser refresh
     (let [js (cljs-env/with-compiler-env compiler-env
-               (cljsc/-compile
+               (closure/-compile
                 [`(~'ns ~'cljs.user)
                  `(swap! replique.cljs-env.repl/connection
                          assoc (keyword "session") ~(inc session))
