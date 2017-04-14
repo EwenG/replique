@@ -34,21 +34,6 @@
 (defonce repl-env (utils/delay (init-repl-env)))
 (defonce compiler-env (utils/delay (init-compiler-env @repl-env)))
 
-(comment
-  (keys @@compiler-env)
-  (do (add-watch @compiler-env :comp-watch
-                 (fn [k r o n]
-                   (.println System/out
-                             (identical?
-                              (get (:defs (get (:cljs.analyzer/namespaces o) 'replique.compliment.ns-mappings-cljs-test)) 'my-fn)
-                              (get (:defs (get (:cljs.analyzer/namespaces n) 'replique.compliment.ns-mappings-cljs-test)) 'my-fn)))
-                   #_(.println System/out (type n))))
-      nil)
-  (do (remove-watch @compiler-env :comp-watch)
-      nil)
-  (get (:defs (get (:cljs.analyzer/namespaces @@compiler-env) 'replique.compliment.ns-mappings-cljs-test)) 'my-fn)
-  )
-
 (defonce cljs-outs (atom #{}))
 (def ^:dynamic *stopped-eval-executor?* false)
 (defonce cljs-core-bindings #{#'*assert* #'*print-length* #'*print-meta* #'*print-level*
@@ -409,6 +394,19 @@ replique.cljs_env.repl.connect(\"" url "\");
           tooling-msg/tooling-prn)))
   (cljs.repl/repl-caught e repl-env opts))
 
+(defn call-post-eval-hooks [repl-env prev-comp-env comp-env]
+  (doseq [[ns-sym f] (:replique/ns-watches comp-env)]
+    (when-not (identical? (-> prev-comp-env :cljs.analyzer/namespaces (get ns-sym) :defs)
+                          (-> comp-env :cljs.analyzer/namespaces (get ns-sym) :defs))
+      (f repl-env comp-env))))
+
+;; wrap cljs.repl/eval-cljs in order to add the possibility to define post-eval hooks
+(defn eval-cljs [repl-env env form opts]
+  (let [comp-env @@compiler-env
+        eval-result (#'cljs.repl/eval-cljs repl-env env form opts)]
+    (call-post-eval-hooks repl-env comp-env @@compiler-env)
+    eval-result))
+
 (defn cljs-repl []
   (let [repl-env @repl-env
         compiler-env @compiler-env
@@ -446,7 +444,7 @@ replique.cljs_env.repl.connect(\"" url "\");
       (println (format "Waiting for browser to connect on port %d ..." (server/server-port))))
     (apply
      (partial replique.cljs/repl repl-env)
-     (->> (merge (:options @compiler-env) repl-opts)
+     (->> (merge (:options @compiler-env) repl-opts {:eval eval-cljs})
           (apply concat)))
     (swap! cljs-outs disj [*out* out-lock])))
 
