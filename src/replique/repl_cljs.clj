@@ -398,7 +398,14 @@ replique.cljs_env.repl.connect(\"" url "\");
   (doseq [[ns-sym f] (:replique/ns-watches comp-env)]
     (when-not (identical? (-> prev-comp-env :cljs.analyzer/namespaces (get ns-sym) :defs)
                           (-> comp-env :cljs.analyzer/namespaces (get ns-sym) :defs))
-      (f repl-env comp-env))))
+      (f repl-env comp-env)))
+  (doseq [[ns-sym vars-map] (:replique/var-watches comp-env)]
+    (doseq [[var-sym f] vars-map]
+      (when-not (identical? (-> prev-comp-env :cljs.analyzer/namespaces (get ns-sym)
+                                :defs (get var-sym))
+                            (-> comp-env :cljs.analyzer/namespaces (get ns-sym)
+                                :defs (get var-sym)))
+        (f repl-env comp-env)))))
 
 ;; wrap cljs.repl/eval-cljs in order to add the possibility to define post-eval hooks
 (defn eval-cljs [repl-env env form opts]
