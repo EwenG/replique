@@ -1,5 +1,7 @@
 # Version 0.0.5
 
+- Post evaluation hook API for clojurescript vars and namesapces
+
 # Version 0.0.4
 
 - Fix compilation of cljs files with newer version of clojurescript
