@@ -98,7 +98,7 @@
                   print println
                   caught cljs.repl/repl-caught
                   reader #(clojure.tools.reader.reader-types/source-logging-push-back-reader
-                           (java.io.PushbackReader. (clojure.java.io/reader *in*))
+                           *in*
                            1 "NO_SOURCE_FILE")
                   print-no-newline print
                   source-map-inline true
