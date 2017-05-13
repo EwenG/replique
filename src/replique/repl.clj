@@ -3,8 +3,7 @@
             [replique.utils :as utils]
             [replique.tooling-msg :as tooling-msg]
             [replique.interactive :as interactive]
-            [replique.server :as server])
-  (:import [java.io File FileNotFoundException]))
+            [replique.server :as server]))
 
 (def ^:private dispatch-request
   (utils/dynaload 'replique.repl-cljs/dispatch-request))
