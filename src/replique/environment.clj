@@ -95,7 +95,7 @@
 (extend-protocol NamespaceEnv
   CljsCompilerEnv
   (all-ns [comp-env]
-    (@cljs-all-ns (get-wrapped comp-env)))
+    (->> (get-wrapped comp-env) (@cljs-all-ns) (remove nil?)))
   (find-ns [comp-env sym]
     (when-let [found-ns (@cljs-find-ns (get-wrapped comp-env) sym)]
       ;; name may be null for clojure namespaces (those defining macros)
