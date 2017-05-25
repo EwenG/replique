@@ -217,8 +217,6 @@ replique.cljs_env.repl.connect(\"" url "\");
      (slurp (str (cljs.util/output-directory opts)
                  File/separator "cljs_deps.js")))
     (cljs.repl/-evaluate
-     repl-env f 1 (closure/add-dep-string opts compiled))
-    (cljs.repl/-evaluate
      repl-env f 1
      (closure/src-file->goog-require
       src {:wrap true :reload true :macros-ns (:macros-ns compiled)}))))
@@ -461,18 +459,18 @@ replique.cljs_env.repl.connect(\"" url "\");
     (when eval-executor (shutdown-eval-executor eval-executor))
     (when result-executor (.shutdownNow ^ExecutorService result-executor))))
 
-(defn load-file [file-path]
+(defn load-file [repl-env file-path]
   (cljs-env/with-compiler-env @compiler-env
     (let [opts (:options @@compiler-env)
           compiled (repl-compile-cljs file-path opts)]
       (repl-cljs-on-disk
-       compiled (#'cljs.repl/env->opts @repl-env) opts)
+       compiled (#'cljs.repl/env->opts repl-env) opts)
       (->> (refresh-cljs-deps opts)
            (closure/output-deps-file
             (assoc opts :output-to
                    (str (cljs.util/output-directory opts)
                         File/separator "cljs_deps.js"))))
-      (:value (repl-eval-compiled compiled @repl-env file-path opts)))))
+      (:value (repl-eval-compiled compiled repl-env file-path opts)))))
 
 (defn in-ns [ns-quote]
   (let [[quote ns-name] (vec ns-quote)]

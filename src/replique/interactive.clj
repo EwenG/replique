@@ -33,7 +33,7 @@
   "Sequentially read and evaluate the set of forms contained in the file. Works both for Clojure and Clojurescript"
   [file-path]
   (if (utils/cljs-env? &env)
-    (@cljs-load-file file-path)
+    (@cljs-load-file (:repl-env &env) file-path)
     `(clojure.core/load-file ~file-path)))
 
 ;; It seems that naming this macro "in-ns" make the cljs compiler to crash
