@@ -12,6 +12,7 @@
   process-err nil)
 
 (def ^:private cljs-repl* (utils/dynaload 'replique.repl-cljs/cljs-repl))
+(def ^:private cljs-repl-nashorn* (utils/dynaload 'replique.nashorn/cljs-repl))
 (def ^:private cljs-load-file (utils/dynaload 'replique.repl-cljs/load-file))
 (def ^:private cljs-in-ns* (utils/dynaload 'replique.repl-cljs/in-ns))
 (def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
@@ -22,6 +23,11 @@
   "Start a Clojurescript REPL"
   []
   (@cljs-repl*))
+
+(defn cljs-repl-nashorn
+  "Start a Clojurescript Nashorn REPL"
+  []
+  (@cljs-repl-nashorn*))
 
 (def repl-port
   "Returns the port the REPL is listening on"

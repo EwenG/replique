@@ -124,7 +124,7 @@
                (fn [st]
                  (string/join "\n" (drop 1 (string/split st #"\n")))))))
 
-(defn nashorn-repl []
+(defn cljs-repl []
   (let [repl-env @repl-env
         compiler-env @replique.repl-cljs/compiler-env
         out-lock (ReentrantLock.)
