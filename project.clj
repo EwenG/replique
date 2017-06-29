@@ -1,4 +1,4 @@
-(defproject replique/replique "0.0.5-SNAPSHOT"
+(defproject replique/replique "0.0.5"
   :description "A development environment for Clojure and Clojurescript"
   :url "https://github.com/EwenG/replique"
   :license {:name "Eclipse Public License"
