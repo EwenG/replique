@@ -290,10 +290,13 @@ replique.cljs_env.repl.connect(\"" url "\");
         (fn []
           (let [repl-src "replique/cljs_env/repl.cljs"
                 benv-src "replique/cljs_env/browser.cljs"
+                jfxenv-src "replique/cljs_env/javafx.cljs"
                 repl-compiled (repl-compile-cljs repl-src comp-opts false)
-                benv-compiled (repl-compile-cljs benv-src comp-opts false)]
+                benv-compiled (repl-compile-cljs benv-src comp-opts false)
+                jfx-compiled (repl-compile-cljs jfxenv-src comp-opts false)]
             (repl-cljs-on-disk repl-compiled (cljs.repl/-repl-options repl-env) comp-opts)
             (repl-cljs-on-disk benv-compiled (cljs.repl/-repl-options repl-env) comp-opts)
+            (repl-cljs-on-disk jfx-compiled (cljs.repl/-repl-options repl-env) comp-opts)
             (->> (refresh-cljs-deps comp-opts)
                  (closure/output-deps-file
                   (assoc comp-opts :output-to

@@ -28,7 +28,7 @@
                       (map #(.-href %))
                       (map remove-query-string)
                       distinct)]
-    css-list))
+    (pr-str css-list)))
 
 (comment
   (require '[goog.dom])
@@ -71,9 +71,6 @@
 (defn reload-css-node [css-node]
   (let [href (.-href css-node)]
     (goog.dom.setProperties css-node (js-obj "href" href))))
-
-(defn reload-css-file [css-node data-uri]
-  (goog.dom.setProperties css-node (js-obj "href" data-uri)))
 
 (defn reload-css [url]
   (let [the-stylesheet (stylesheet-with-url url)]

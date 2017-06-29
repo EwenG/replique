@@ -8,7 +8,8 @@
             [replique.utils :as utils]
             [replique.server :refer [*session*] :as server]
             [replique.tooling-msg :as tooling-msg]
-            [clojure.java.io :as io])
+            [clojure.java.io :as io]
+            [clojure.stacktrace :refer [print-stack-trace]])
   (:import [java.io File]
            [javax.script ScriptEngine ScriptEngineManager ScriptException ScriptEngineFactory]
            [jdk.nashorn.api.scripting NashornException]
@@ -66,6 +67,7 @@
                  "};"))
   (eval-str engine "goog.global.isProvided_ = function(name) { return false; };")
   (load-js-file engine "cljs_deps.js")
+  (load-js-file engine "replique/cljs_env/javafx.js")
   engine)
 
 ;; Defrecord instead of deftype because cljs.repl uses the repl-env as a hashmap. Why ??? 
@@ -116,8 +118,7 @@
   (-tear-down [this] nil)
   cljs.repl/IParseStacktrace
   (-parse-stacktrace [this frames-str ret opts]
-    (st/parse-stacktrace this frames-str
-                         (assoc ret :ua-product :nashorn) opts))
+    (st/parse-stacktrace this frames-str (assoc ret :ua-product :nashorn) opts))
   cljs.repl/IParseError
   (-parse-error [_ err _]
     (update-in err [:stacktrace]
@@ -161,3 +162,21 @@
      (->> (merge (:options @compiler-env) repl-opts {:eval replique.repl-cljs/eval-cljs})
           (apply concat)))
     (swap! replique.repl-cljs/cljs-outs disj [*out* out-lock])))
+
+(defmethod tooling-msg/tooling-msg-handle :list-css [msg]
+  (tooling-msg/with-tooling-response msg
+    (let [{:keys [status value]} (cljs.repl/-evaluate
+                                  @repl-env "<cljs repl>" 1
+                                  "replique.cljs_env.javafx.list_css_urls();")]
+      (if (not (= :success status))
+        (assoc msg :error value)
+        (assoc msg :css-urls (read-string value))))))
+
+(defmethod tooling-msg/tooling-msg-handle :load-css [{:keys [url] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (let [{:keys [status value]} (->> (pr-str url)
+                                      (format "replique.cljs_env.javafx.reload_css(%s);")
+                                      (cljs.repl/-evaluate @repl-env "<cljs repl>" 1))]
+      (if (not (= :success status))
+        (assoc msg :error value)
+        (assoc msg :result value)))))
