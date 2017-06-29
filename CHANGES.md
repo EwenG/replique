@@ -1,5 +1,6 @@
 # Version 0.0.5
 
+- Add support for javafx css file reloading 
 - Add support of Nashorn as a Clojurescript evaluation environment
 - Post evaluation hook API for clojurescript vars and namesapces
 
