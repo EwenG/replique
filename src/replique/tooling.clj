@@ -5,6 +5,7 @@
             [replique.server :as server]
             [replique.tooling-msg :as tooling-msg]
             [replique.repliquedoc :as repliquedoc]
+            [replique.omniscient :as omniscient]
             [replique.meta :as r-meta]
             [replique.compliment.core :as compliment]
             [replique.compliment.context :as context]
