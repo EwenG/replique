@@ -90,36 +90,31 @@
 (defn repl []
   (println "Clojure" (clojure-version))
   (if (tooling-msg/tooling-available?)
-    (binding [omniscient/*locals* nil
-              omniscient/*restore-redefs?* false]
-      (clojure.main/repl
+    (clojure.main/repl
        :init (fn [] (in-ns 'user))
-       :read (omniscient/wrap-repl-read clojure.main/repl-read)
-       :caught (omniscient/wrap-caught
-                (fn [e]
-                  (clojure.main/repl-caught e)
-                  (binding [*out* tooling-msg/tooling-err]
-                    (utils/with-lock tooling-msg/tooling-out-lock
-                      (tooling-msg/tooling-prn {:type :eval
-                                                :process-id tooling-msg/process-id
-                                                :error true
-                                                :repl-type :clj
-                                                :omniscient-repl? omniscient/*omniscient-repl?*
-                                                :session server/*session*
-                                                :ns (ns-name *ns*)
-                                                :value (utils/repl-caught-str e)})))))
-       :print (omniscient/wrap-print
-               (fn [result]
-                 (prn result)
-                 (binding [*out* tooling-msg/tooling-out]
+       :caught (fn [e]
+                 (clojure.main/repl-caught e)
+                 (binding [*out* tooling-msg/tooling-err]
                    (utils/with-lock tooling-msg/tooling-out-lock
                      (tooling-msg/tooling-prn {:type :eval
                                                :process-id tooling-msg/process-id
+                                               :error true
                                                :repl-type :clj
                                                :omniscient-repl? omniscient/*omniscient-repl?*
                                                :session server/*session*
                                                :ns (ns-name *ns*)
-                                               :result (pr-str result)})))))))
+                                               :value (utils/repl-caught-str e)}))))
+       :print (fn [result]
+                (prn result)
+                (binding [*out* tooling-msg/tooling-out]
+                  (utils/with-lock tooling-msg/tooling-out-lock
+                    (tooling-msg/tooling-prn {:type :eval
+                                              :process-id tooling-msg/process-id
+                                              :repl-type :clj
+                                              :omniscient-repl? omniscient/*omniscient-repl?*
+                                              :session server/*session*
+                                              :ns (ns-name *ns*)
+                                              :result (pr-str result)})))))
     (clojure.main/repl
      :init (fn [] (in-ns 'user)))))
 

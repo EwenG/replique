@@ -3,20 +3,19 @@
   (:require [clojure.set]
             [replique.tooling-msg :as tooling-msg])
   (:import [java.time LocalDateTime]
-           [java.io Writer]))
+           [java.io Writer]
+           [java.util.concurrent LinkedTransferQueue]))
 
 (defonce registry (atom {}))
-(defonce thread (atom nil))
 (defonce time (atom nil))
 
-;; bound when the read-eval-print-loop is started. Its value is merged in the registry
-;; at the end of the read-eval-print loop
 (defonce ^:dynamic *locals* nil)
-;; whether the read-eval-print loop should restore the value of defn after evaluation
-(defonce ^:dynamic *restore-redefs?* false)
+
+(defonce ^:dynamic *locals-queue* nil)
 ;; whether we are in a debugging REPL
+(defonce ^:dynamic *locals-binding-thread* nil)
 (defonce ^:dynamic *omniscient-repl?* false)
-;; the env (locals) currently beeing debugged.
+;; the env currently beeing debugged.
 ;; ie the ones that are bound in the omniscient REPL
 (defonce ^:dynamic *omniscient-env* nil)
 ;; temporary stores the value of defn/defmethod while it is redefined by omniscient
@@ -41,31 +40,38 @@
   (sig-symbols '[_])
   )
 
-(defn append-local [locals new-local]
-  (if (nil? locals) [(assoc new-local :index 0)]
-      (->> (count locals) (assoc new-local :index) (conj locals))))
+(defn append-env [envs new-env]
+  (if (nil? envs) [(assoc new-env :index 0)]
+      (->> (count envs) (assoc new-env :index) (conj envs))))
 
-(defn capture-locals [qualified-sym method locals]
+(defn var->sym [v]
+  (let [{:keys [ns name]} (meta v)]
+    (when (and ns name)
+      (symbol (str ns) (str name)))))
+
+(defn capture-env [qualified-sym method locals]
   (let [locals (mapcat (fn [x] [`(quote ~x) x]) locals)]
-    `(when *locals*
-       (set! *locals*
-             (update-in *locals* [(quote ~qualified-sym) (.getId (Thread/currentThread))]
-                        append-local {:thread (Thread/currentThread)
-                                      :time (System/nanoTime)
-                                      :ns (find-ns (quote ~(symbol (str *ns*))))
-                                      :var (var ~qualified-sym)
-                                      ~@(when method [:method `(quote ~method)]) ~@[]
-                                      ~@locals ~@[]})))))
+    `(swap! registry update (quote ~qualified-sym)
+            append-env {:thread (Thread/currentThread)
+                        :time (System/nanoTime)
+                        :ns (find-ns (quote ~(symbol (str *ns*))))
+                        :var (var ~qualified-sym)
+                        ~@(when method [:method `(quote ~method)]) ~@[]
+                        :locals {~@locals ~@[]}
+                        :bindings (->> (get-thread-bindings)
+                                       (map (fn [[k# v#]] (when-let [sym# (var->sym k#)]
+                                                            [sym# v#])))
+                                       (into {}))})))
 
 (defn is-omniscient-local? [x]
   (::local (meta x)))
 
 (comment
-  (capture-locals 'replique.omniscient/ee nil #{'a 'b})
+  (capture-env 'replique.omniscient/ee nil #{'a 'b})
   )
 
-(defn fdecl-with-locals-capture [[params & body] capture-locals-expr]
-  `(~params ~@(conj body capture-locals-expr)))
+(defn fdecl-with-env-capture [[params & body] capture-env-expr]
+  `(~params ~@(conj body capture-env-expr)))
 
 (defn- sigs-normalized [sigs]
   (let [name (if (symbol? (first sigs)) (first sigs) nil)
@@ -75,7 +81,7 @@
                (if (seq? (first sigs))
                  sigs
                  ;; Assume single arity syntax
-                 (throw (IllegalArgumentException. 
+                 (throw (IllegalArgumentException.
                          (if (seq sigs)
                            (str "Parameter declaration " 
                                 (first sigs)
@@ -83,7 +89,7 @@
                            (str "Parameter declaration missing"))))))]
     sigs))
 
-(defn- sigs-with-locals-capture [sigs sig capture-locals-expr]
+(defn- sigs-with-env-capture [sigs sig capture-env-expr]
   ;; Ensure correct type before destructuring sig
   (when (not (seq? sig))
     (throw (IllegalArgumentException.
@@ -101,7 +107,7 @@
                 (first body))
         body (if conds (next body) body)]
     (cond->> body
-      true (cons capture-locals-expr)
+      true (cons capture-env-expr)
       conds (cons conds)
       true (cons params))))
 
@@ -126,16 +132,24 @@
           env-locals (->> &env keys (remove is-omniscient-local?))
           locals (map #(clojure.set/union % env-locals) locals)
           qualified-sym (symbol (str *ns*) (str name))
-          capture-locals-fn (partial capture-locals qualified-sym nil)
-          capture-locals-exprs (map capture-locals-fn locals)
-          sigs-with-locals-capture (partial sigs-with-locals-capture sigs)
-          sigs (map sigs-with-locals-capture sigs capture-locals-exprs)]
+          capture-env-fn (partial capture-env qualified-sym nil)
+          capture-env-exprs (map capture-env-fn locals)
+          sigs-with-env-capture (partial sigs-with-env-capture sigs)
+          sigs (map sigs-with-env-capture sigs capture-env-exprs)]
       (apply defn-o &form &env name sigs))))
 
 (comment
   (let [e 3]
     (defn ff [ee & rr]
       ee))
+
+  (def ^:dynamic *tt* 33)
+
+  (binding [*print-level* 5]
+    (ff 7 8))
+
+  (binding [*tt* 5]
+    (ff 7 8))
 
   (let [e 3]
     (defn ff [ee & rr]
@@ -150,6 +164,9 @@
     (defn ff
       ([ee] ee)
       ([aa & gg] gg)))
+
+  (do (.start (Thread. (fn [] (with-omniscient (ff 1 2)))))
+      (.start (Thread. (fn [] (with-omniscient (ff 3 4))))))
   )
 
 (defn omniscient-defmethod [defmethod-o]
@@ -160,10 +177,10 @@
           env-locals (->> &env keys (remove is-omniscient-local?))
           locals (map #(clojure.set/union % env-locals) locals)
           qualified-sym (symbol (str *ns*) (str multifn))
-          capture-locals-fn (partial capture-locals qualified-sym nil)
-          capture-locals-exprs (map capture-locals-fn locals)
-          sigs-with-locals-capture (partial sigs-with-locals-capture sigs)
-          sigs (map sigs-with-locals-capture sigs capture-locals-exprs)]
+          capture-env-fn (partial capture-env qualified-sym nil)
+          capture-env-exprs (map capture-env-fn locals)
+          sigs-with-env-capture (partial sigs-with-env-capture sigs)
+          sigs (map sigs-with-env-capture sigs capture-env-exprs)]
       (apply defmethod-o &form &env multifn dispatch-val sigs))))
 
 (comment
@@ -191,37 +208,37 @@
              (drop-while seq? (next s)))
       (reverse ret))))
 
-(defn method-expr-with-locals-capture [capture-locals-exprs [params & body]]
-  `(~params ~@(cons capture-locals-exprs body)))
+(defn method-expr-with-env-capture [capture-env-exprs [params & body]]
+  `(~params ~@(cons capture-env-exprs body)))
 
-(defn method-with-locals-capture-extend-type [&env qualified-sym [method-name & methods]]
+(defn method-with-env-capture-extend-type [&env qualified-sym [method-name & methods]]
   (let [locals (map (comp sig-symbols first) methods)
         env-locals (->> &env keys (remove is-omniscient-local?))
         locals (map #(clojure.set/union % env-locals) locals)
-        capture-locals-fn (partial capture-locals qualified-sym method-name)
-        capture-locals-exprs (map capture-locals-fn locals)
-        methods (map method-expr-with-locals-capture capture-locals-exprs methods)]
+        capture-env-fn (partial capture-env qualified-sym method-name)
+        capture-env-exprs (map capture-env-fn locals)
+        methods (map method-expr-with-env-capture capture-env-exprs methods)]
     `(~method-name ~@methods)))
 
 (comment
-  (method-with-locals-capture-extend-type
+  (method-with-env-capture-extend-type
    nil 'my-ns/my-protocol '(pp ([this] 2) ([this [e f] h] e)))
   )
 
-(defn impl-with-locals-capture-extend-type [&env [protocol-name & methods]]
+(defn impl-with-env-capture-extend-type [&env [protocol-name & methods]]
   (let [qualified-sym (symbol (str *ns*) (str protocol-name))]
-    `(~protocol-name ~@(map (partial method-with-locals-capture-extend-type &env qualified-sym)
+    `(~protocol-name ~@(map (partial method-with-env-capture-extend-type &env qualified-sym)
                             methods))))
 
 (comment
-  (impl-with-locals-capture-extend-type
+  (impl-with-env-capture-extend-type
    nil '(Pp (pp ([this] 2) ([this [e f] h] e)) (pp2 ([this] 3))))
   )
 
 (defn omniscient-extend-type [extend-type-o]
   (fn [&form &env t & specs]
     (let [impls (parse-impls specs)
-          impls (mapcat (partial impl-with-locals-capture-extend-type &env) impls)]
+          impls (mapcat (partial impl-with-env-capture-extend-type &env) impls)]
       (apply extend-type-o &form &env t impls))))
 
 (comment
@@ -257,24 +274,21 @@
     )
   )
 
-(defn method-with-locals-capture-deftype [&env qualified-sym [method-name [params & body]]]
+(defn method-with-env-capture-deftype [&env qualified-sym [method-name [params & body]]]
   (let [locals (sig-symbols params)
         env-locals (->> &env keys (remove is-omniscient-local?))
         locals (clojure.set/union env-locals locals)
-        #__ #_(prn locals)
-        _ (prn (keys &env))
-        _ (prn (map meta (keys &env)))
-        capture-locals-exprs (capture-locals qualified-sym method-name locals)
-        method (method-expr-with-locals-capture capture-locals-exprs `(~params ~@body))]
+        capture-env-exprs (capture-env qualified-sym method-name locals)
+        method (method-expr-with-env-capture capture-env-exprs `(~params ~@body))]
     `(~method-name ~@method)))
 
-(defn impl-with-locals-capture-deftype [&env [protocol-name & methods]]
+(defn impl-with-env-capture-deftype [&env [protocol-name & methods]]
   (let [qualified-sym (symbol (str *ns*) (str protocol-name))]
-    `(~protocol-name ~@(map (partial method-with-locals-capture-deftype &env qualified-sym)
+    `(~protocol-name ~@(map (partial method-with-env-capture-deftype &env qualified-sym)
                             methods))))
 
 (comment
-  (impl-with-locals-capture-deftype
+  (impl-with-env-capture-deftype
     nil '(Pp (pp ([this] 2)) (pp ([this [e f] h] e)) (pp2 ([this] 3))))
   )
 
@@ -284,7 +298,7 @@
     (let [qualified-sym (symbol (str *ns*) (str name))
           [opts specs] (#'clojure.core/parse-opts opts+specs)
           impls (parse-impls specs)
-          impls (mapcat (partial impl-with-locals-capture-deftype &env) impls)]
+          impls (mapcat (partial impl-with-env-capture-deftype &env) impls)]
       (when-let [bad-opts (seq (remove #{:no-print :load-ns} (keys opts)))]
         (throw (IllegalArgumentException. (apply print-str "Unsupported option(s) -" bad-opts))))
       (apply deftype-o &form &env name fields (concat (apply concat opts) impls)))))
@@ -305,7 +319,8 @@
   )
 
 (defmacro with-redefs [& body]
-  (assert *locals* "with-redefs must be used in a replique REPL with tooling enabled")
+  ;; keep in mind that macros are expanded at compile time, thus, for example, defn
+  ;; must be redefined as a side effect of calling "with-redefs"
   (reset! defn-tmp @#'defn)
   (reset! defmethod-tmp @#'defmethod)
   (reset! extend-type-tmp @#'extend-type)
@@ -314,28 +329,30 @@
   (alter-var-root #'defmethod omniscient-defmethod)
   (alter-var-root #'extend-type omniscient-extend-type)
   (alter-var-root #'deftype omniscient-deftype)
-  (set! *restore-redefs?* true)
-  `(do ~@body))
+  (try
+    (eval `(do ~@body))
+    (finally
+      (alter-var-root #'defn (constantly @defn-tmp))
+      (alter-var-root #'defmethod (constantly @defmethod-tmp))
+      (alter-var-root #'extend-type (constantly @extend-type-tmp))
+      (alter-var-root #'deftype (constantly @deftype-tmp)))))
 
 (defn bindings-reducer [acc [k v]]
-  (conj acc (with-meta k  {::local true}) `(get *omniscient-env* (quote ~k))))
+  (conj acc (with-meta k  {::local true}) `(get-in *omniscient-env* [:locals (quote ~k)])))
 
-(defn form-with-bindings [form]
-  `(let ~(reduce bindings-reducer []
-                 (dissoc *omniscient-env* :time :thread :ns :var :index :method))
+(defn form-with-locals [form]
+  `(let ~(reduce bindings-reducer [] (:locals *omniscient-env*))
      ~form))
 
 (comment
-  (binding [*omniscient-env* '{x 3 y 2}]
-    (form-with-bindings '(+ 1 2)))
-
-  (binding [*omniscient-env* (get-env 'replique.omniscient 'Pp 13 0)]
-    (form-with-bindings '(+ 1 2)))
+  (binding [*omniscient-env* {:locals '{x 3 y 2}}]
+    (form-with-locals '(+ 1 2)))
   )
 
-(defn eval-with-env [form]
+(defn eval-with-env [bindings form]
   (if (= *ns* (:ns *omniscient-env*))
-    (eval (form-with-bindings form))
+    (with-bindings bindings
+      (eval (form-with-locals form)))
     (eval form)))
 
 (defn repl-read
@@ -349,81 +366,41 @@
           :omniscient/quit request-exit
           input))))
 
-(defn wrap-repl-read [repl-read]
-  (fn omniscient-repl-read [request-prompt request-exit]
-    (let [res (repl-read request-prompt request-exit)]
-      (set! *locals* {})
-      res)))
-
-(defn wrap-print [print]
-  (fn omniscient-print [result]
-    (swap! registry merge *locals*)
-    (set! *locals* nil)
-    (when *restore-redefs?*
-      (alter-var-root #'defn (constantly @defn-tmp))
-      (alter-var-root #'defmethod (constantly @defmethod-tmp))
-      (alter-var-root #'extend-type (constantly @extend-type-tmp))
-      (alter-var-root #'deftype (constantly @deftype-tmp))
-      (reset! defn-tmp nil)
-      (reset! defmethod-tmp nil)
-      (reset! extend-type-tmp nil)
-      (reset! deftype-tmp nil)
-      (set! *restore-redefs?* false))
-    (print result)))
-
-(defn wrap-caught [repl-caught]
-  (fn omniscient-repl-caught [e]
-    (swap! registry merge *locals*)
-    (set! *locals* nil)
-    (when *restore-redefs?*
-      (alter-var-root #'defn (constantly @defn-tmp))
-      (alter-var-root #'defmethod (constantly @defmethod-tmp))
-      (alter-var-root #'extend-type (constantly @extend-type-tmp))
-      (alter-var-root #'deftype (constantly @deftype-tmp))
-      (reset! defn-tmp nil)
-      (reset! defmethod-tmp nil)
-      (reset! extend-type-tmp nil)
-      (reset! deftype-tmp nil)
-      (set! *restore-redefs?* false))
-    (repl-caught e)))
-
 (defn repl-prompt []
   (print "<omniscient> ")
   (clojure.main/repl-prompt))
 
+(defn map-keys [f m]
+  (into {} 
+        (for [[k v] m] 
+          [(f k) v])))
+
 (defn- repl* [env]
-  (binding [*omniscient-repl?* true
-            *omniscient-env* env]
-    (reset! thread (:thread env))
-    (reset! time (:time env))
-    (clojure.main/repl
-     :read (wrap-repl-read repl-read)
-     :eval eval-with-env
-     :print (wrap-print prn)
-     :caught (wrap-caught clojure.main/repl-caught)
-     :init (fn [] (in-ns (symbol (str (:ns env)))))
-     :prompt repl-prompt)))
+  (let [bindings (map-keys resolve (:bindings env))]
+    (binding [*omniscient-repl?* true
+              *omniscient-env* env]
+      (reset! time (:time env))
+      (clojure.main/repl
+       :read repl-read
+       :eval (partial eval-with-env bindings)
+       :init (fn [] (in-ns (symbol (str (:ns env)))))
+       :prompt repl-prompt))))
 
 (defn repl [env]
   (println (format "Type :omniscient/quit to quit" (:var env)))
   (if *omniscient-repl?*
     (do (set! *omniscient-env* env)
-        (reset! thread (:thread env))
         (reset! time (:time env))
         (in-ns (symbol (str (:ns env)))))
     (do (repl* env)
         (println "Omniscient REPL exited")))
   nil)
 
-(defn get-env [ns sym thread index]
-  (get-in @registry [(symbol (str ns "/" sym)) thread index]))
+(defn get-env [ns sym index]
+  (get-in @registry [(symbol (str ns "/" sym)) index]))
 
-(defmacro with-omniscient [& body]
-  `(binding [*locals* {}]
-     (try 
-       ~@body
-       (finally
-         (swap! registry merge *locals*)))))
+(defn clear []
+  (reset! registry {}))
 
 (defn match-val? [filter-v env-v]
   (or (= filter-v env-v)
@@ -436,25 +413,23 @@
       [`(quote ~k) v]
       [k v])))
 
-(defn parse-date [date-str]
-  (LocalDateTime/parse date-str))
-
 (defn match-env? [filter env]
   (if (= "" (clojure.string/trim filter))
     env
     (let [filter-form (try
-                        (binding [*data-readers* {'time parse-date}]
-                          (read-string filter))
+                        (read-string filter)
                         (catch Exception e nil))]
       (when (map? filter-form)
         (when-let [filter (try (->> filter-form symbolize-keys (cons `list) eval)
                                (catch Exception e nil))]
           (loop [[[k filter-v] & filter-rest] filter]
             (if k
-              (when (contains? env k)
-                (let [env-v (get env k)]
-                  (when (match-val? filter-v env-v)
-                    (recur filter-rest))))
+              (let [placeholder (make-array Integer 0)
+                    env-v (get env k (get (:locals env) k (get (:bindings env) k placeholder)))]
+                (when (not (identical? env-v placeholder))
+                  (let [env-v (if (= :thread k) (.getName env-v) env-v)]
+                    (when (match-val? filter-v env-v)
+                      (recur filter-rest)))))
               env)))))))
 
 (comment
@@ -465,7 +440,7 @@
   )
 
 (defn index-of [xs pred]
-  (when (not (empty xs))
+  (when (not (empty? xs))
     (loop [a (first xs)
            r (rest xs)
            i 0]
@@ -474,66 +449,90 @@
         (empty? r) nil
         :else (recur (first r) (rest r) (inc i))))))
 
-(defn thread-entry->name-id [[k v]]
-  (when (> (count v) 0)
-    `(~(.getName (get-in v [0 :thread])) ~k)))
+(def system-namespaces #{"clojure.core" "clojure.spec" "replique.server"})
 
-(defmethod tooling-msg/tooling-msg-handle :omniscient-threads
-  [{ns :ns sym :symbol is-string? :is-string? :as msg}]
+(defn print-omniscient-map [m print-one w]
+  (let [locals (take 3 (:locals m))
+        user-binding (->> (:bindings m)
+                          (filter #(let [ns (namespace (key %))]
+                                     (not (contains? system-namespaces ns))))
+                          first)
+        system-binding (first (:bindings m))
+        has-more? (or (> (count locals) 3)
+                      (> (count (:bindings m)) 1))]
+    (.write w "{")
+    (doseq [local locals]
+      (print-one (key local) w) (.append w \space)
+      (binding [*print-length* 2
+                *print-level* 1]
+        (print-one (val local) w))
+      (.write w ", "))
+    (when user-binding
+      (print-one (key user-binding) w) (.append w \space)
+      (binding [*print-length* 2
+                *print-level* 1]
+        (print-one (val user-binding) w))
+      (.write w ", "))
+    (when (and (nil? user-binding) system-binding)
+      (print-one (key system-binding) w) (.append w \space)
+      (binding [*print-length* 2
+                *print-level* 1]
+        (print-one (val system-binding) w))
+      (.write w ", "))
+    (do (print-one :thread w) (.append w \space)
+        (print-one (.getName (:thread m)) w))
+    (.write w ", ")
+    (do (print-one :time w) (.append w \space)
+        (print-one (:time m) w))
+    (when has-more?
+      (.write w ", ..."))
+    (.write w "}")))
+
+(defn envs->str [envs]
+  (for [{:keys [locals] :as env} envs]
+    (with-out-str
+      (print-omniscient-map env #'clojure.core/pr-on *out*))))
+
+(defn filter-last-index [envs]
+  (max (dec (count envs)) 0))
+
+(defn filter-index-time [envs]
+  (when @time
+    (let [next-index (index-of envs #(>= (:time %) @time))
+          next-time (:time (get envs next-index))]
+      (when next-time
+        (if (= next-time @time)
+          next-index
+          (let [prev-index (dec next-index)
+                prev-time (:time (get envs next-index))]
+            (if prev-time
+              (let [diff-prev (Math/abs (- @time prev-time))
+                    diff-next (Math/abs (- @time next-time))]
+                (if (< diff-prev diff-next)
+                  prev-index
+                  next-index))
+              next-index)))))))
+
+(defn filter-index-prev [envs prev-index]
+  (index-of envs #(>= (:index %) prev-index)))
+
+(defmethod tooling-msg/tooling-msg-handle :omniscient-filter
+  [{sym :symbol ns :ns is-string? :is-string? filter-term :filter-term
+    prev-index :prev-index msg-id :msg-id
+    :as msg}]
   (tooling-msg/with-tooling-response msg
     (let [ns (and ns (symbol ns))
           sym (and sym (symbol sym))]
       (when (and (not is-string?) ns sym)
-        (let [thread-envs (get @registry (symbol (str ns "/" sym)))
-              thread-ids (->> thread-envs
-                              (map thread-entry->name-id))]
-          {:thread-ids thread-ids
-           :index (when @thread
-                    (index-of
-                     thread-ids (fn [[_ id]] (= id (.getId @thread)))))})))))
-
-(defn print-omniscient-map [m print-one w]
-  (#'clojure.core/print-sequential
-   "{"
-   (fn [e ^Writer w]
-     (do (print-one (key e) w) (.append w \space)
-         (binding [*print-length* 2
-                   *print-level* 1]
-           (print-one (val e) w))))
-   ", "
-   "}"
-   (seq m) w))
-
-(defn locals->str [locals]
-  (let [print-methods (methods clojure.core/print-method)
-        print-method-date (get print-methods java.time.LocalDateTime)]
-    (defmethod print-method java.time.LocalDateTime [d writer]
-      (.write writer (str "#time \"" (str d) "\"")))
-    (try (doall
-          (for [local locals]
-            (with-out-str
-              (-> local
-                  (dissoc :index :thread :ns :var)
-                  (print-omniscient-map #'clojure.core/pr-on *out*)))))
-         (finally
-           (if print-method-date
-             (.addMethod print-method LocalDateTime print-method-date)
-             (remove-method print-method LocalDateTime))))))
-
-(defmethod tooling-msg/tooling-msg-handle :omniscient-filter
-  [{sym :symbol ns :ns is-string? :is-string?
-    thread-id :thread-id filter-term :filter-term
-    :as msg}]
-  (tooling-msg/with-tooling-response msg
-    (with-omniscient
-      (let [ns (and ns (symbol ns))
-            sym (and sym (symbol sym))]
-        (when (and (not is-string?) ns sym)
-          (let [locals (get-in @registry [(symbol (str ns "/" sym)) thread-id])
-                locals (filter (partial match-env? filter-term) locals)]
-            {:locals (locals->str locals)
-             :indexes (mapv :index locals)
-             :index (when @time (index-of locals #(>= (:time %) @time)))}))))))
+        (let [envs (get @registry (symbol (str ns "/" sym)))
+              envs (into [] (filter (partial match-env? filter-term)) envs)]
+          {:msg-id msg-id
+           :locals (envs->str envs)
+           :indexes (mapv :index envs)
+           :index (-> (if prev-index
+                        (filter-index-prev envs prev-index)
+                        (filter-index-time envs))
+                      (or (filter-last-index envs)))})))))
 
 (comment
   (get-in @registry ['replique.omniscient/Pp 13])
@@ -541,7 +540,6 @@
   ;; [{:ns #object[clojure.lang.Namespace 0x7d894d07 "replique.omniscient"], :time 27384141085334, ee 1, :var #'replique.omniscient/ff, :thread #object[java.lang.Thread 0x42af9014 "Thread[Clojure Connection :replique 2,5,main]"], rr nil, e 3, :index 0}]
   )
 
-
 ;; check if ivy mode is installed
-;; remove localDateTime printing / tag reader
-;; automatically select the last thread id
+
+;; filter :locals :bindings
