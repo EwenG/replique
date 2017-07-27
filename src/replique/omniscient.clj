@@ -4,25 +4,31 @@
             [replique.tooling-msg :as tooling-msg])
   (:import [java.time LocalDateTime]
            [java.io Writer]
-           [java.util.concurrent LinkedTransferQueue]))
+           [java.util.concurrent LinkedTransferQueue]
+           [java.util.concurrent.locks ReentrantLock]))
 
 (defonce registry (atom {}))
 (defonce time (atom nil))
 
-(defonce ^:dynamic *locals* nil)
-
-(defonce ^:dynamic *locals-queue* nil)
 ;; whether we are in a debugging REPL
-(defonce ^:dynamic *locals-binding-thread* nil)
 (defonce ^:dynamic *omniscient-repl?* false)
 ;; the env currently beeing debugged.
 ;; ie the ones that are bound in the omniscient REPL
 (defonce ^:dynamic *omniscient-env* nil)
-;; temporary stores the value of defn/defmethod while it is redefined by omniscient
-(defonce defn-tmp (atom nil))
-(defonce defmethod-tmp (atom nil))
-(defonce extend-type-tmp (atom nil))
-(defonce deftype-tmp (atom nil))
+
+;; protects with-redefs
+(defonce ^:private lock (ReentrantLock.))
+
+(defmacro ^:private with-lock
+  [lock-expr & body]
+  `(let [lockee# ~(with-meta lock-expr {:tag 'java.util.concurrent.locks.ReentrantLock})]
+     (.lock lockee#)
+     (try
+       ~@body
+       (finally
+         (.unlock lockee#)))))
+
+
 
 (defn sig-symbols [sig]
   (cond
@@ -49,8 +55,17 @@
     (when (and ns name)
       (symbol (str ns) (str name)))))
 
+;;clojure.core/*data-readers* clojure.core/*default-data-reader-fn*
+
+;; Prevent dynamic vars used in by the REPL/system from beeing captured
+(def excluded-dyn-vars #{'clojure.core/*3 'clojure.core/*print-meta* 'clojure.core/*print-namespace-maps* 'clojure.core/*file* 'clojure.core/*command-line-args* 'clojure.core/*2 'clojure.core/*err* 'clojure.core/*print-length* 'clojure.core/*math-context* 'clojure.core/*e 'clojure.core/*1 'clojure.core/*source-path* 'clojure.core/*unchecked-math* 'clojure.spec/*explain-out* 'clojure.core/*in* 'clojure.core/*print-level* 'replique.server/*session* 'clojure.core/*warn-on-reflection* 'clojure.core/*out* 'clojure.core/*assert* 'clojure.core/*read-eval* 'clojure.core/*ns* 'clojure.core/*compile-path* 'clojure.core.server/*session* 'replique.omniscient/*omniscient-repl?* 'replique.omniscient/*omniscient-env*})
+
 (defn capture-env [qualified-sym method locals]
-  (let [locals (mapcat (fn [x] [`(quote ~x) x]) locals)]
+  ;; exclude dynamic vars that are thread bound when calling "with-redefs". ie those that are
+  ;; needed by the REPL/system
+  (let [excluded-dyn-vars (into #{} (comp (map var->sym) (remove nil?))
+                                (keys (get-thread-bindings)))
+        locals (mapcat (fn [x] [`(quote ~x) x]) locals)]
     `(swap! registry update (quote ~qualified-sym)
             append-env {:thread (Thread/currentThread)
                         :time (System/nanoTime)
@@ -60,7 +75,10 @@
                         :locals {~@locals ~@[]}
                         :bindings (->> (get-thread-bindings)
                                        (map (fn [[k# v#]] (when-let [sym# (var->sym k#)]
-                                                            [sym# v#])))
+                                                            (when (not
+                                                                   (contains?
+                                                                    excluded-dyn-vars sym#))
+                                                              [sym# v#]))))
                                        (into {}))})))
 
 (defn is-omniscient-local? [x]
@@ -111,6 +129,14 @@
       conds (cons conds)
       true (cons params))))
 
+(defn compute-qualified-sym [sym]
+  (let [ns-sym (symbol (str (namespace sym)))
+        ns (get (ns-aliases *ns*) ns-sym)
+        ns (or ns (find-ns ns-sym))]
+    (if ns
+      (symbol (str ns) (name sym))
+      (symbol (str *ns*) (name sym)))))
+
 (defn omniscient-defn [defn-o]
   (fn [&form &env name & fdecl]
     (let [;; fdecl handling is copied from clojure.core/defn
@@ -131,7 +157,7 @@
           locals (map sig-symbols params)
           env-locals (->> &env keys (remove is-omniscient-local?))
           locals (map #(clojure.set/union % env-locals) locals)
-          qualified-sym (symbol (str *ns*) (str name))
+          qualified-sym (compute-qualified-sym name)
           capture-env-fn (partial capture-env qualified-sym nil)
           capture-env-exprs (map capture-env-fn locals)
           sigs-with-env-capture (partial sigs-with-env-capture sigs)
@@ -176,7 +202,7 @@
           locals (map sig-symbols params)
           env-locals (->> &env keys (remove is-omniscient-local?))
           locals (map #(clojure.set/union % env-locals) locals)
-          qualified-sym (symbol (str *ns*) (str multifn))
+          qualified-sym (compute-qualified-sym multifn)
           capture-env-fn (partial capture-env qualified-sym nil)
           capture-env-exprs (map capture-env-fn locals)
           sigs-with-env-capture (partial sigs-with-env-capture sigs)
@@ -226,7 +252,7 @@
   )
 
 (defn impl-with-env-capture-extend-type [&env [protocol-name & methods]]
-  (let [qualified-sym (symbol (str *ns*) (str protocol-name))]
+  (let [qualified-sym (compute-qualified-sym protocol-name)]
     `(~protocol-name ~@(map (partial method-with-env-capture-extend-type &env qualified-sym)
                             methods))))
 
@@ -283,7 +309,7 @@
     `(~method-name ~@method)))
 
 (defn impl-with-env-capture-deftype [&env [protocol-name & methods]]
-  (let [qualified-sym (symbol (str *ns*) (str protocol-name))]
+  (let [qualified-sym (compute-qualified-sym protocol-name)]
     `(~protocol-name ~@(map (partial method-with-env-capture-deftype &env qualified-sym)
                             methods))))
 
@@ -295,7 +321,7 @@
 (defn omniscient-deftype [deftype-o]
   (fn [&form &env name fields & opts+specs]
     (#'clojure.core/validate-fields fields name)
-    (let [qualified-sym (symbol (str *ns*) (str name))
+    (let [qualified-sym (compute-qualified-sym name)
           [opts specs] (#'clojure.core/parse-opts opts+specs)
           impls (parse-impls specs)
           impls (mapcat (partial impl-with-env-capture-deftype &env) impls)]
@@ -319,23 +345,22 @@
   )
 
 (defmacro with-redefs [& body]
-  ;; keep in mind that macros are expanded at compile time, thus, for example, defn
-  ;; must be redefined as a side effect of calling "with-redefs"
-  (reset! defn-tmp @#'defn)
-  (reset! defmethod-tmp @#'defmethod)
-  (reset! extend-type-tmp @#'extend-type)
-  (reset! deftype-tmp @#'deftype)
-  (alter-var-root #'defn omniscient-defn)
-  (alter-var-root #'defmethod omniscient-defmethod)
-  (alter-var-root #'extend-type omniscient-extend-type)
-  (alter-var-root #'deftype omniscient-deftype)
-  (try
-    (eval `(do ~@body))
-    (finally
-      (alter-var-root #'defn (constantly @defn-tmp))
-      (alter-var-root #'defmethod (constantly @defmethod-tmp))
-      (alter-var-root #'extend-type (constantly @extend-type-tmp))
-      (alter-var-root #'deftype (constantly @deftype-tmp)))))
+  (with-lock lock
+    (let [defn-tmp @#'defn
+          defmethod-tmp @#'defmethod
+          extend-type-tmp @#'extend-type
+          deftype-tmp @#'deftype]
+      (alter-var-root #'defn omniscient-defn)
+      (alter-var-root #'defmethod omniscient-defmethod)
+      (alter-var-root #'extend-type omniscient-extend-type)
+      (alter-var-root #'deftype omniscient-deftype)
+      (try
+        (eval `(do ~@body))
+        (finally
+          (alter-var-root #'defn (constantly defn-tmp))
+          (alter-var-root #'defmethod (constantly defmethod-tmp))
+          (alter-var-root #'extend-type (constantly extend-type-tmp))
+          (alter-var-root #'deftype (constantly deftype-tmp)))))))
 
 (defn bindings-reducer [acc [k v]]
   (conj acc (with-meta k  {::local true}) `(get-in *omniscient-env* [:locals (quote ~k)])))
@@ -449,13 +474,17 @@
         (empty? r) nil
         :else (recur (first r) (rest r) (inc i))))))
 
-(def system-namespaces #{"clojure.core" "clojure.spec" "replique.server"})
+;; Some dynamic var, eg clojure.core/*data-readers*, may always be bound, only display them after
+;; other dynamic var
+(def low-priority-namespaces #{"clojure.core" "clojure.spec" "clojure.core.server"
+                               "replique.server" "replique.omniscient"})
 
 (defn print-omniscient-map [m print-one w]
-  (let [locals (take 3 (:locals m))
+  (let [locals (dissoc (:locals m) '&env '&form)
+        locals (take 3 locals)
         user-binding (->> (:bindings m)
                           (filter #(let [ns (namespace (key %))]
-                                     (not (contains? system-namespaces ns))))
+                                     (not (contains? low-priority-namespaces ns))))
                           first)
         system-binding (first (:bindings m))
         has-more? (or (> (count locals) 3)
@@ -490,8 +519,10 @@
 
 (defn envs->str [envs]
   (for [{:keys [locals] :as env} envs]
-    (with-out-str
-      (print-omniscient-map env #'clojure.core/pr-on *out*))))
+    (-> (print-omniscient-map env #'clojure.core/pr-on *out*)
+        with-out-str
+        ;; remove line breaks (for example, when printing #error {...})
+        (.replace "\n" ""))))
 
 (defn filter-last-index [envs]
   (max (dec (count envs)) 0))
@@ -542,4 +573,8 @@
 
 ;; check if ivy mode is installed
 
-;; filter :locals :bindings
+;; cljs support
+;; cljs repl-caught compiler exception printing
+;; cljs repl-caught js error printing
+;; cljc eval without evaluating in cljs repl ;; done
+;; omniscient cljc ask if repl to be started in clj OR cljs
