@@ -212,7 +212,8 @@
         sym-at-point (and sym-at-point (symbol sym-at-point))]
     (handle-repliquedoc* comp-env ns context sym-at-point)))
 
-(defn handle-repliquedoc-cljc [comp-env ns context sym-at-point]
+;; not used but could be useful to dispatch on the reader conditional around the cursor
+#_(defn handle-repliquedoc-cljc [comp-env ns context sym-at-point]
   (let [{:keys [reader-conditionals context]} (context/cache-context
                                                comp-env (when ns (symbol ns)) context)
         context (reverse context)

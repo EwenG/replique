@@ -67,7 +67,8 @@
                       :replique.compliment.sources.special-forms/literals
                       :replique.compliment.sources.special-forms/special-forms]})})))
 
-(defmethod tooling-msg/tooling-msg-handle :cljc-completion
+;; not used but could be useful to dispatch on the reader conditional around the cursor
+#_(defmethod tooling-msg/tooling-msg-handle :cljc-completion
   [{:keys [context ns prefix] :as msg}]
   (tooling-msg/with-tooling-response msg
     (let [{:keys [reader-conditionals context]} (context/cache-context
@@ -116,7 +117,8 @@
            (->CljsCompilerEnv @@cljs-compiler-env)
            ns context symbol)}))
 
-(defmethod tooling-msg/tooling-msg-handle :repliquedoc-cljc
+;; not used but could be useful to dispatch on the reader conditional around the cursor
+#_(defmethod tooling-msg/tooling-msg-handle :repliquedoc-cljc
   [{:keys [context ns symbol] :as msg}]
   (tooling-msg/with-tooling-response msg
     {:doc (repliquedoc/handle-repliquedoc-cljc
@@ -158,7 +160,8 @@ __prefix__)"))
               (r-meta/handle-meta comp-env ns context sym-at-point))]
       (assoc msg :meta m))))
 
-(defmethod tooling-msg/tooling-msg-handle :meta-cljc
+;; not used but could be useful to dispatch on the reader conditional around the cursor
+#_(defmethod tooling-msg/tooling-msg-handle :meta-cljc
   [{:keys [context ns is-string?] :as msg}]
   (tooling-msg/with-tooling-response msg
     (let [sym-at-point (:symbol msg)
