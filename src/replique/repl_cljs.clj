@@ -524,5 +524,5 @@ replique.cljs_env.repl.connect(\"" url "\");
       (let [repl-env @repl-env
             form (reader/read-string {:read-cond :allow :features #{:cljs}} form)
             result (cljs-env/with-compiler-env @compiler-env
-                     (#'cljs.repl/eval-cljs repl-env env form (:repl-opts repl-env)))]
+                     (eval-cljs repl-env env form (:repl-opts repl-env)))]
         (assoc msg :result result)))))
