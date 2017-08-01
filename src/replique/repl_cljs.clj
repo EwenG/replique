@@ -415,6 +415,11 @@ replique.cljs_env.repl.connect(\"" url "\");
     (call-post-eval-hooks repl-env comp-env @@compiler-env)
     eval-result))
 
+(defn eval-cljs-form [form]
+  (let [repl-env @repl-env]
+    (cljs-env/with-compiler-env @compiler-env
+      (eval-cljs repl-env env form cljs.repl/*repl-opts*))))
+
 (defn cljs-repl []
   (let [repl-env @repl-env
         compiler-env @compiler-env
