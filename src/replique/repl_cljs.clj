@@ -1,5 +1,5 @@
 (ns replique.repl-cljs
-  (:refer-clojure :exclude [load-file in-ns])
+  (:refer-clojure :exclude [load-file])
   (:require [replique.elisp-printer :as elisp]
             [replique.utils :as utils]
             [replique.tooling-msg :as tooling-msg]
@@ -268,10 +268,44 @@ replique.cljs_env.repl.connect(\"" url "\");
                                    :value (str ~e)
                                    :stacktrace (.-stack ~e)}))))))
 
+(defn on-ns-change [new-ns]
+  (when (tooling-msg/tooling-available?)
+    (binding [*out* tooling-msg/tooling-out]
+      (utils/with-lock tooling-msg/tooling-out-lock
+        (tooling-msg/tooling-prn {:type :in-ns
+                                  :process-id tooling-msg/process-id
+                                  :session *session*
+                                  :repl-type :cljs
+                                  :ns ana/*cljs-ns*}))))
+  new-ns)
+
+(defn in-ns* [ns-name]
+  (when-not (ana/get-namespace ns-name)
+    (swap! cljs-env/*compiler*
+           assoc-in [::ana/namespaces ns-name]
+           {:name ns-name})
+    (cljs.repl/-evaluate
+     @repl-env "<cljs repl>" 1
+     (str "goog.provide('" (comp/munge ns-name) "');")))
+  (set! ana/*cljs-ns* ns-name))
+
+(defn cljs-in-ns [ns-name]
+  (let [new-ns (in-ns* ns-name)]
+    (on-ns-change new-ns)
+    new-ns))
+
+(defn in-ns-special
+  ([repl-env env form]
+   (in-ns-special repl-env env form nil))
+  ([repl-env env [_ [quote ns-name]] _]
+   (cljs-in-ns ns-name)))
+
 (defn init-repl-env []
   ;; Merge repl-opts in browserenv because clojurescript expects this. This is weird
   (let [repl-opts {:analyze-path []
-                   :static-dir [utils/cljs-compile-path]}]
+                   :static-dir [utils/cljs-compile-path]
+                   :special-fns {'in-ns in-ns-special
+                                 'clojure.core/in-ns in-ns-special}}]
     (merge (BrowserEnv. repl-opts) repl-opts
            ;; st/parse-stacktrace expects host host-port and port to be defined on the repl-env
            {:host "localhost" :host-port (server/server-port) :port (server/server-port)})))
@@ -371,29 +405,11 @@ replique.cljs_env.repl.connect(\"" url "\");
 
 (defmethod dispatch-request :print [{:keys [content]} callback]
   ;; Maybe we should print only in the currently active REPL instead of all REPLs
-  (doseq [[out out-lock] @cljs-outs]
+  (doseq [out @cljs-outs]
     (binding [*out* out]
-      (utils/with-lock out-lock
-        (-> (:content content) read-string print)
-        (.flush *out*))))
+      (-> (:content content) read-string print)
+      (.flush *out*)))
   {:status 200 :body "ignore__" :content-type "text/plain"})
-
-(defn repl-caught [e repl-env opts]
-  (binding [*out* tooling-msg/tooling-err]
-    (utils/with-lock tooling-msg/tooling-out-lock
-      (-> {:type :eval
-           :process-id tooling-msg/process-id
-           :error true
-           :repl-type :cljs
-           :session *session*
-           :ns ana/*cljs-ns*
-           :value (if (and (instance? IExceptionInfo e)
-                           (#{:js-eval-error :js-eval-exception}
-                            (:type (ex-data e))))
-                    (:value (:error (ex-data e)))
-                    (utils/repl-caught-str e))}
-          tooling-msg/tooling-prn)))
-  (cljs.repl/repl-caught e repl-env opts))
 
 (defn call-post-eval-hooks [repl-env prev-comp-env comp-env]
   (doseq [[ns-sym f] (:replique/ns-watches comp-env)]
@@ -420,46 +436,44 @@ replique.cljs_env.repl.connect(\"" url "\");
     (cljs-env/with-compiler-env @compiler-env
       (eval-cljs repl-env env form cljs.repl/*repl-opts*))))
 
+(defmethod utils/repl-ns :cljs [repl-type]
+  ana/*cljs-ns*)
+
 (defn cljs-repl []
   (let [repl-env @repl-env
         compiler-env @compiler-env
-        out-lock (ReentrantLock.)
         {:keys [state]} @server/cljs-server
         repl-opts (if (tooling-msg/tooling-available?)
                     {:compiler-env compiler-env
-                     :caught repl-caught
-                     :print (fn [result]
-                              (binding [*out* tooling-msg/tooling-out]
-                                (utils/with-lock tooling-msg/tooling-out-lock
-                                  (tooling-msg/tooling-prn {:type :eval
-                                                            :process-id tooling-msg/process-id
-                                                            :repl-type :cljs
-                                                            :session *session*
-                                                            :ns ana/*cljs-ns*
-                                                            :result result})))
-                              (utils/with-lock out-lock
-                                (println result)))
-                     ;; Code modifying the runtime should not be put in :init, otherise it would
+                     ;; Code modifying the runtime should not be put in :init, otherwise it would
                      ;; be lost on browser refresh
                      :init (fn []
                              ;; Let the client know that we are entering a cljs repl
+                             ;; Also sends the new namespace
                              (binding [*out* tooling-msg/tooling-out]
                                (utils/with-lock tooling-msg/tooling-out-lock
-                                 (tooling-msg/tooling-prn {:type :eval
+                                 (tooling-msg/tooling-prn {:type :repl-type
                                                            :process-id tooling-msg/process-id
                                                            :repl-type :cljs
                                                            :session *session*
-                                                           :ns ana/*cljs-ns*
-                                                           :result "nil"}))))}
+                                                           :ns ana/*cljs-ns*}))))}
                     {:compiler-env compiler-env})]
-    (swap! cljs-outs conj [*out* out-lock])
+    (swap! cljs-outs conj *out*)
     (when (not= :started state)
       (println (format "Waiting for browser to connect on port %d ..." (server/server-port))))
-    (apply
-     (partial replique.cljs/repl repl-env)
-     (->> (merge (:options @compiler-env) repl-opts {:eval eval-cljs})
-          (apply concat)))
-    (swap! cljs-outs disj [*out* out-lock])))
+    (binding [utils/*repl-type* :cljs]
+      (apply
+       (partial replique.cljs/repl repl-env)
+       (->> (merge (:options @compiler-env) repl-opts {:eval eval-cljs})
+            (apply concat))))
+    (swap! cljs-outs disj *out*)
+    (binding [*out* tooling-msg/tooling-out]
+      (utils/with-lock tooling-msg/tooling-out-lock
+        (tooling-msg/tooling-prn {:type :repl-type
+                                  :process-id tooling-msg/process-id
+                                  :repl-type utils/*repl-type*
+                                  :session *session*
+                                  :ns (utils/repl-ns utils/*repl-type*)})))))
 
 (defn stop-cljs-server []
   (let [{:keys [eval-executor result-executor]} @server/cljs-server]
@@ -479,19 +493,6 @@ replique.cljs_env.repl.connect(\"" url "\");
                    (str (cljs.util/output-directory opts)
                         File/separator "cljs_deps.js"))))
       (:value (repl-eval-compiled compiled repl-env file-path opts)))))
-
-(defn in-ns [ns-quote]
-  (let [[quote ns-name] (vec ns-quote)]
-    (when-not (and (= 'quote quote) (symbol? ns-name))
-      (throw (IllegalArgumentException. "Argument to in-ns must be a symbol.")))
-    (when-not (ana/get-namespace ns-name)
-      (swap! cljs-env/*compiler*
-             assoc-in [::ana/namespaces ns-name]
-             {:name ns-name})
-      (cljs.repl/-evaluate
-       @repl-env "<cljs repl>" 1
-       (str "goog.provide('" (comp/munge ns-name) "');")))
-    (set! ana/*cljs-ns* ns-name)))
 
 (defn set-repl-verbose [b]
   (set! cljs.repl/*cljs-verbose* b))

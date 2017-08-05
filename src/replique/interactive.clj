@@ -14,7 +14,7 @@
 (def ^:private cljs-repl* (utils/dynaload 'replique.repl-cljs/cljs-repl))
 (def ^:private cljs-repl-nashorn* (utils/dynaload 'replique.nashorn/cljs-repl))
 (def ^:private cljs-load-file (utils/dynaload 'replique.repl-cljs/load-file))
-(def ^:private cljs-in-ns* (utils/dynaload 'replique.repl-cljs/in-ns))
+(def ^:private cljs-in-ns* (utils/dynaload 'replique.repl-cljs/cljs-in-ns))
 (def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
 (def ^:private cljs-set-repl-verbose
   (utils/dynaload 'replique.repl-cljs/set-repl-verbose))
@@ -46,7 +46,11 @@
 (defmacro cljs-in-ns
   "Change the Clojurescript namespace to the namespace named by the symbol"
   [ns-quote]
-  (list 'quote (@cljs-in-ns* ns-quote)))
+  (let [quote (and (seq? ns-quote) (first ns-quote))
+        ns-name (and (seq? ns-quote) (second ns-quote))]
+    (when-not (and (= 'quote quote) (symbol? ns-name))
+      (throw (IllegalArgumentException. "Argument to in-ns must be a symbol.")))
+    (list 'quote (@cljs-in-ns* ns-name))))
 
 (defmacro set-cljs-repl-verbose
   "Switch the clojurescript REPL into verbose mode"

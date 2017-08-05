@@ -18,6 +18,10 @@
   [env]
   (boolean (:ns env)))
 
+(def ^:dynamic *repl-type* :clj)
+
+(defmulti repl-ns identity)
+
 ;; Same as Delay but don't realize the Delay on exception.
 ;; This would not be possible with clojure Delay because it makes its function ^:once because
 ;; of local clearings. Replique Delay is not expected to be used in situations where local
@@ -66,14 +70,5 @@
        ~@body
        (finally
          (.unlock lockee#)))))
-
-(defmacro with-err-str [& body]
-  `(let [s# (new java.io.StringWriter)]
-     (binding [*err* s#]
-       ~@body
-       (str s#))))
-
-(defn repl-caught-str [e]
-  (with-err-str (clojure.main/repl-caught e)))
 
 

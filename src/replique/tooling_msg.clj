@@ -1,4 +1,5 @@
 (ns replique.tooling-msg
+  (:refer-clojure :exclude [in-ns])
   (:require [replique.utils :as utils]
             [clojure.stacktrace :refer [print-stack-trace]])
   (:import [java.util.concurrent.locks ReentrantLock]))
@@ -30,16 +31,15 @@
     (throw ex)
     (binding [*out* tooling-err]
       (utils/with-lock tooling-out-lock
-        (tooling-prn {:type :eval
+        (tooling-prn {:type :error
                       :process-id process-id
-                      :error true
                       :repl-type :clj
                       :thread (.getName ^Thread thread)
                       :ns (ns-name *ns*)
                       :value (with-out-str (print-stack-trace ex))})))))
 
 (defn tooling-available? []
-  (boolean (and tooling-err tooling-err tooling-out-lock)))
+  (boolean (and tooling-out tooling-err tooling-out-lock)))
 
 (defmulti set-print-format identity)
 

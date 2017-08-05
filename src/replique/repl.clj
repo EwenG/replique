@@ -4,7 +4,7 @@
             [replique.tooling-msg :as tooling-msg]
             [replique.interactive :as interactive]
             [replique.server :as server]
-            [replique.omniscient :as omniscient]))
+            [replique.tooling]))
 
 (def ^:private dispatch-request
   (utils/dynaload 'replique.repl-cljs/dispatch-request))
@@ -25,6 +25,17 @@
    :prompt #()
    :print (fn [result] (tooling-msg/tooling-prn result))))
 
+(defn on-ns-change [new-ns]
+  (when (and (tooling-msg/tooling-available?) server/*session*)
+    (binding [*out* tooling-msg/tooling-out]
+      (utils/with-lock tooling-msg/tooling-out-lock
+        (tooling-msg/tooling-prn {:type :in-ns
+                                  :process-id tooling-msg/process-id
+                                  :session server/*session*
+                                  :repl-type :clj
+                                  :ns (ns-name new-ns)}))))
+  new-ns)
+
 (defn start-repl-process [project-map {:keys [process-id host port cljs-compile-path version]}]
   (try
     (alter-var-root #'utils/process-out (constantly *out*))
@@ -40,6 +51,7 @@
     ;; and it must not !!
     (alter-var-root #'tooling-repl bound-fn*)
     (alter-var-root #'accept-http bound-fn*)
+    ;; Let the client know about *ns* changes
     (server/start-server {:address host :port port :name :replique
                           :accept `tooling-repl
                           :accept-http `accept-http
@@ -74,7 +86,9 @@
     (reify Thread$UncaughtExceptionHandler
       (uncaughtException [_ thread ex]
         (tooling-msg/uncaught-exception thread ex))))
-   (let [init-fn (fn [] (in-ns 'replique.repl))]
+   (let [init-fn (fn []
+                   (in-ns 'replique.repl)
+                   (alter-var-root #'in-ns (fn [wrapped] (comp on-ns-change wrapped))))]
      (clojure.main/repl
       :init init-fn
       :prompt #()
@@ -87,36 +101,11 @@
   (.start (Thread. (fn [] (throw (Exception. "f")))))
   )
 
+(defmethod utils/repl-ns :clj [repl-type]
+  (ns-name *ns*))
+
 (defn repl []
-  (println "Clojure" (clojure-version))
-  (if (tooling-msg/tooling-available?)
-    (clojure.main/repl
-       :init (fn [] (in-ns 'user))
-       :caught (fn [e]
-                 (clojure.main/repl-caught e)
-                 (binding [*out* tooling-msg/tooling-err]
-                   (utils/with-lock tooling-msg/tooling-out-lock
-                     (tooling-msg/tooling-prn {:type :eval
-                                               :process-id tooling-msg/process-id
-                                               :error true
-                                               :repl-type :clj
-                                               :omniscient-repl? omniscient/*omniscient-repl?*
-                                               :session server/*session*
-                                               :ns (ns-name *ns*)
-                                               :value (utils/repl-caught-str e)}))))
-       :print (fn [result]
-                (prn result)
-                (binding [*out* tooling-msg/tooling-out]
-                  (utils/with-lock tooling-msg/tooling-out-lock
-                    (tooling-msg/tooling-prn {:type :eval
-                                              :process-id tooling-msg/process-id
-                                              :repl-type :clj
-                                              :omniscient-repl? omniscient/*omniscient-repl?*
-                                              :session server/*session*
-                                              :ns (ns-name *ns*)
-                                              :result (pr-str result)})))))
-    (clojure.main/repl
-     :init (fn [] (in-ns 'user)))))
+  (clojure.main/repl :init (fn [] (in-ns 'user))))
 
 ;; Behavior of the socket REPL on repl closing
 ;; The read fn returns (end of stream), the parent REPL prints the result of the repl command.
@@ -131,3 +120,9 @@
 ;; It seems (requireing) namespaces in the init fn sometimes throws an exception. I am not sure
 ;; why, maybe we just cannot dynamically (require) a namespace and immediately use its vars
 ;; without the use of (resolve)
+
+;; Keeping track of the REPL current ns is done by mutating the in-ns (clj) var and customizing
+;; the in-ns special fn (cljs)
+;; Keeping track of the repl type is done by sending a tooling message on startup of a repl of
+;; a new type, and when quitting the REPL
+
