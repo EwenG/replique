@@ -1,30 +1,35 @@
 (ns replique.omniscient
-  (:refer-clojure :exclude [time with-redefs])
+  (:refer-clojure :exclude [with-redefs])
   (:require [clojure.set]
-            [clojure.pprint]
             [replique.tooling-msg :as tooling-msg]
             [replique.utils :as utils]
-            [replique.repl-cljs :as repl-cljs]
             [replique.omniscient-runtime :refer
-             [registry *omniscient-env* append-env time get-env]]
+             [registry *omniscient-env* append-env last-selected]]
             [replique.environment :as env])
-  (:import [java.time LocalDateTime]
+  (:import [java.util Date]
            [java.io Writer]
            [java.util.concurrent LinkedTransferQueue]
            [java.util.concurrent.locks ReentrantLock]))
 
 (def ^:private cljs-defn (utils/dynaload 'cljs.core/defn))
+(def ^:private cljs-defmethod (utils/dynaload 'cljs.core/defmethod))
+(def ^:private cljs-extend-type (utils/dynaload 'cljs.core/extend-type))
+(def ^:private cljs-deftype (utils/dynaload 'cljs.core/deftype))
 (def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
 (def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
+(def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
 
 (comment
-  (env/->CljsCompilerEnv @cljs-compiler-env)
+  (env/->CljsCompilerEnv @@cljs-compiler-env)
   )
 
 ;; whether we are in a debugging REPL
 (defonce ^:dynamic *omniscient-repl?* false)
 ;; the namespace where the var currently beeing debugged is defined 
 (defonce ^:dynamic *omniscient-sym* nil)
+;; locals and bindings symbols must be known by the omniscient REPL "eval" function
+(defonce ^:dynamic *omniscient-local-syms* nil)
+(defonce ^:dynamic *omniscient-binding-syms* nil)
 
 ;; protects with-redefs
 (defonce ^:private lock (ReentrantLock.))
@@ -37,6 +42,10 @@
        ~@body
        (finally
          (.unlock lockee#)))))
+
+(defn get-comp-env [&env]
+  (if (utils/cljs-env? &env)
+    (env/->CljsCompilerEnv @@cljs-compiler-env) nil))
 
 (defn sig-symbols [sig]
   (cond
@@ -54,15 +63,15 @@
   (sig-symbols '[_])
   )
 
-(defn var->sym [v]
+(defn var->sym-clj [v]
   (let [{:keys [ns name]} (meta v)]
     (when (and ns name)
       (symbol (str ns) (str name)))))
 
-;;clojure.core/*data-readers* clojure.core/*default-data-reader-fn*
+;; clojure.core/*data-readers* clojure.core/*default-data-reader-fn*
 
-;; Prevent dynamic vars used in by the REPL/system from beeing captured
-(def excluded-dyn-vars #{'clojure.core/*3 'clojure.core/*print-meta* 'clojure.core/*print-namespace-maps* 'clojure.core/*file* 'clojure.core/*command-line-args* 'clojure.core/*2 'clojure.core/*err* 'clojure.core/*print-length* 'clojure.core/*math-context* 'clojure.core/*e 'clojure.core/*1 'clojure.core/*source-path* 'clojure.core/*unchecked-math* 'clojure.spec/*explain-out* 'clojure.core/*in* 'clojure.core/*print-level* 'replique.server/*session* 'clojure.core/*warn-on-reflection* 'clojure.core/*out* 'clojure.core/*assert* 'clojure.core/*read-eval* 'clojure.core/*ns* 'clojure.core/*compile-path* 'clojure.core.server/*session* 'replique.omniscient/*omniscient-repl?* *omniscient-sym* 'replique.omniscient-runtime/*omniscient-env*})
+;; Prevent dynamic vars used by the REPL/system from beeing captured
+(def excluded-dyn-vars #{'clojure.core/*3 'clojure.core/*print-meta* 'clojure.core/*print-namespace-maps* 'clojure.core/*file* 'clojure.core/*command-line-args* 'clojure.core/*2 'clojure.core/*err* 'clojure.core/*print-length* 'clojure.core/*math-context* 'clojure.core/*e 'clojure.core/*1 'clojure.core/*source-path* 'clojure.core/*unchecked-math* 'clojure.spec/*explain-out* 'clojure.core/*in* 'clojure.core/*print-level* 'replique.server/*session* 'clojure.core/*warn-on-reflection* 'clojure.core/*out* 'clojure.core/*assert* 'clojure.core/*read-eval* 'clojure.core/*ns* 'clojure.core/*compile-path* 'clojure.core.server/*session* 'replique.omniscient/*omniscient-repl?* 'replique.omniscient/*omniscient-sym* 'replique.omniscient/*omniscient-local-syms* 'replique.omniscient/*omniscient-binding-syms* 'replique.omniscient-runtime/*omniscient-env*})
 
 (defn capture-env-clj [qualified-sym method locals]
   ;; exclude dynamic vars that are thread bound when calling "with-redefs". ie those that are
@@ -70,27 +79,53 @@
   (let [locals (mapcat (fn [x] [`(quote ~x) x]) locals)]
     `(swap! registry update (quote ~qualified-sym)
             append-env {:thread (Thread/currentThread)
-                        :time (System/nanoTime)
-                        :ns (find-ns (quote ~(symbol (str *ns*))))
+                        :time (Date.)
+                        :ns (find-ns (quote ~(symbol (namespace qualified-sym))))
                         :var (var ~qualified-sym)
                         ~@(when method [:method `(quote ~method)]) ~@[]
                         :locals {~@locals ~@[]}
                         :bindings (->> (get-thread-bindings)
-                                       (map (fn [[k# v#]] (when-let [sym# (var->sym k#)]
+                                       (map (fn [[k# v#]] (when-let [sym# (var->sym-clj k#)]
                                                             (when (not
                                                                    (contains?
                                                                     excluded-dyn-vars sym#))
                                                               [sym# v#]))))
                                        (into {}))})))
 
+(defn ns-map-filter-dynamic [ns-map]
+  (filter (fn [[k v]] (:dynamic v)) ns-map))
+
+(defn dyn-vars [comp-env ns]
+  (when-let [ns (if (symbol? ns) (env/find-ns comp-env ns) ns)]
+    (let [uses (->> (select-keys ns [:uses :renames])
+                    vals
+                    (map (partial env/cljs-ns-map-resolve comp-env))
+                    (map ns-map-filter-dynamic))
+          defs (->> (select-keys ns [:defs])
+                    vals
+                    (map ns-map-filter-dynamic))]
+      (->> (concat uses defs)
+           (into {})))))
+
 (defn capture-env-cljs [qualified-sym method locals]
-  (let [locals (mapcat (fn [x] [`(quote ~x) x]) locals)]
-    `(swap! replique.cljs-env.omniscient/registry update (quote ~qualified-sym)
-            replique.cljs-env.omniscient/append-env
-            {:ns (find-ns (quote ~(symbol (str *ns*))))
+  (let [locals (mapcat (fn [x] [`(quote ~x) x]) locals)
+        comp-env (env/->CljsCompilerEnv @@cljs-compiler-env)
+        dyn-vars (->> (dyn-vars comp-env (symbol (namespace qualified-sym)))
+                      (map (comp :name second))
+                      (remove (partial contains? excluded-dyn-vars)))]
+    `(swap! replique.omniscient-runtime/registry update (quote ~qualified-sym)
+            replique.omniscient-runtime/append-env
+            {:time (js/Date.)
+             :ns (find-ns (quote ~(symbol (namespace qualified-sym))))
              :var (var ~qualified-sym)
              ~@(when method [:method `(quote ~method)]) ~@[]
-             :locals {~@locals ~@[]}})))
+             :locals {~@locals ~@[]}
+             :bindings ~(zipmap (map (fn [x] `(quote ~x)) dyn-vars) dyn-vars)})))
+
+(defn capture-env [&env qualified-sym method locals]
+  (if (utils/cljs-env? &env)
+    (capture-env-cljs qualified-sym method locals)
+    (capture-env-clj qualified-sym method locals)))
 
 (defn is-omniscient-local? [x]
   (::local (meta x)))
@@ -140,21 +175,31 @@
       conds (cons conds)
       true (cons params))))
 
-(defn compute-qualified-sym [sym]
-  (let [ns-sym (symbol (str (namespace sym)))
-        ns (get (ns-aliases *ns*) ns-sym)
-        ns (or ns (find-ns ns-sym))]
-    (if ns
-      (symbol (str ns) (name sym))
-      (symbol (str *ns*) (name sym)))))
+(defn env-ns [&env]
+  (if (utils/cljs-env? &env)
+    (env/map->CljsNamespace (:ns &env))
+    *ns*))
+
+;; Cannot use ns-resolve because the var may not be defined yet
+(defn compute-qualified-sym [comp-env current-ns sym]
+  (if-let [n (namespace sym)]
+    (let [ns-sym (symbol n)
+          ns-from-sym (get (env/ns-aliases comp-env current-ns) ns-sym
+                           (env/find-ns comp-env ns-sym))]
+      (when ns-from-sym
+        (symbol (str (env/ns-name ns-from-sym)) (name sym))))
+    (symbol (str (env/ns-name current-ns)) (name sym))))
 
 (defn env-locals-clj [&env]
   (->> &env keys (remove is-omniscient-local?)))
 
 (defn env-locals-cljs [&env]
-  #_(doseq [x (->> &env :locals keys)]
-    (.println System/out (meta x)))
   (->> &env :locals keys))
+
+(defn env-locals [&env]
+  (if (utils/cljs-env? &env)
+    (env-locals-cljs &env)
+    (env-locals-clj &env)))
 
 (defn omniscient-defn [defn-o]
   (fn [&form &env name & fdecl]
@@ -174,76 +219,28 @@
           sigs (sigs-normalized fdecl)
           params (map first sigs)
           locals (map sig-symbols params)
-          env-locals (if (utils/cljs-env? &env)
-                       (env-locals-cljs &env)
-                       (env-locals-clj &env))
+          env-locals (env-locals &env)
           locals (map #(clojure.set/union % env-locals) locals)
-          qualified-sym (compute-qualified-sym name)
-          capture-env (if (utils/cljs-env? &env)
-                        capture-env-cljs
-                        capture-env-clj)
-          capture-env-fn (partial capture-env qualified-sym nil)
+          qualified-sym (compute-qualified-sym (get-comp-env &env) (env-ns &env) name)
+          capture-env-fn (partial capture-env &env qualified-sym nil)
           capture-env-exprs (map capture-env-fn locals)
           sigs-with-env-capture (partial sigs-with-env-capture sigs)
           sigs (map sigs-with-env-capture sigs capture-env-exprs)]
       (apply defn-o &form &env name sigs))))
-
-(comment
-  (let [e 3]
-    (defn ff [ee & rr]
-      ee))
-
-  (binding [*print-level* 5]
-    (ff 7 8))
-
-  (def ^:dynamic *tt* 33)
-  (binding [*tt* 5]
-    (ff 7 8))
-
-  (let [e 3]
-    (defn ff [ee & rr]
-      {:pre [(number? ee)]}
-      ee))
-
-  (let [e 3]
-    (defn ff ^{:pre [(number? ee)]} [ee & rr]
-      ee))
-
-  (let [e 3]
-    (defn ff
-      ([ee] ee)
-      ([aa & gg] gg)))
-
-  (do (.start (Thread. (fn [] (with-omniscient (ff 1 2)))))
-      (.start (Thread. (fn [] (with-omniscient (ff 3 4))))))
-  )
 
 (defn omniscient-defmethod [defmethod-o]
   (fn [&form &env multifn dispatch-val & fn-tail]
     (let [sigs (sigs-normalized fn-tail)
           params (map first sigs)
           locals (map sig-symbols params)
-          env-locals (if (utils/cljs-env? &env)
-                       (env-locals-cljs &env)
-                       (env-locals-clj &env))
+          env-locals (env-locals &env)
           locals (map #(clojure.set/union % env-locals) locals)
-          qualified-sym (compute-qualified-sym multifn)
-          capture-env (if (utils/cljs-env? &env)
-                        capture-env-cljs
-                        capture-env-clj)
-          capture-env-fn (partial capture-env qualified-sym nil)
+          qualified-sym (compute-qualified-sym (get-comp-env &env) (env-ns &env) multifn)
+          capture-env-fn (partial capture-env &env qualified-sym nil)
           capture-env-exprs (map capture-env-fn locals)
           sigs-with-env-capture (partial sigs-with-env-capture sigs)
           sigs (map sigs-with-env-capture sigs capture-env-exprs)]
       (apply defmethod-o &form &env multifn dispatch-val sigs))))
-
-(comment
-  (defmulti rrr (fn [g] g))
-
-  (defmethod rrr :e [x] x)
-
-  (defmethod rrr :f [f] f)
-  )
 
 (defn parse-impl [impl]
   (if (vector? (second impl))
@@ -267,14 +264,9 @@
 
 (defn method-with-env-capture-extend-type [&env qualified-sym [method-name & methods]]
   (let [locals (map (comp sig-symbols first) methods)
-        env-locals (if (utils/cljs-env? &env)
-                     (env-locals-cljs &env)
-                     (env-locals-clj &env))
+        env-locals (env-locals &env)
         locals (map #(clojure.set/union % env-locals) locals)
-        capture-env (if (utils/cljs-env? &env)
-                      capture-env-cljs
-                      capture-env-clj)
-        capture-env-fn (partial capture-env qualified-sym method-name)
+        capture-env-fn (partial capture-env &env qualified-sym method-name)
         capture-env-exprs (map capture-env-fn locals)
         methods (map method-expr-with-env-capture capture-env-exprs methods)]
     `(~method-name ~@methods)))
@@ -285,7 +277,7 @@
   )
 
 (defn impl-with-env-capture-extend-type [&env [protocol-name & methods]]
-  (let [qualified-sym (compute-qualified-sym protocol-name)]
+  (let [qualified-sym (compute-qualified-sym (get-comp-env &env) (env-ns &env) protocol-name)]
     `(~protocol-name ~@(map (partial method-with-env-capture-extend-type &env qualified-sym)
                             methods))))
 
@@ -300,54 +292,16 @@
           impls (mapcat (partial impl-with-env-capture-extend-type &env) impls)]
       (apply extend-type-o &form &env t impls))))
 
-(comment
-  (defprotocol Pp
-    (pp [this] [this [e f]])
-    (pp2 [this]))
-
-  (defprotocol Ppp
-    (ppp [this]))
-
-  (deftype Tt [])
-
-  #_(extend-type Tt
-      Pp
-      (pp ([this] 2) ([this [e f]] e))
-      (pp2 [this] 3))
-
-  (extend-type Tt
-    Pp
-    (pp ([this] 2) ([this [e f]] e))
-    (pp2 [this] 3)
-    Ppp
-    (ppp [this] 4))
-
-  (extend-protocol Pp
-    Tt
-    (pp ([this] "a") ([this [e f]] e))
-    (pp2 [this] "c"))
-
-  (comment
-    (pp (Tt.))
-    (pp (Tt.) [1 2])
-    )
-  )
-
 (defn method-with-env-capture-deftype [&env qualified-sym [method-name [params & body]]]
   (let [locals (sig-symbols params)
-        env-locals (if (utils/cljs-env? &env)
-                     (env-locals-cljs &env)
-                     (env-locals-clj &env))
+        env-locals (env-locals &env)
         locals (clojure.set/union env-locals locals)
-        capture-env (if (utils/cljs-env? &env)
-                      capture-env-cljs
-                      capture-env-clj)
-        capture-env-exprs (capture-env qualified-sym method-name locals)
+        capture-env-exprs (capture-env &env qualified-sym method-name locals)
         method (method-expr-with-env-capture capture-env-exprs `(~params ~@body))]
     `(~method-name ~@method)))
 
 (defn impl-with-env-capture-deftype [&env [protocol-name & methods]]
-  (let [qualified-sym (compute-qualified-sym protocol-name)]
+  (let [qualified-sym (compute-qualified-sym (get-comp-env &env) (env-ns &env) protocol-name)]
     `(~protocol-name ~@(map (partial method-with-env-capture-deftype &env qualified-sym)
                             methods))))
 
@@ -359,28 +313,13 @@
 (defn omniscient-deftype [deftype-o]
   (fn [&form &env name fields & opts+specs]
     (#'clojure.core/validate-fields fields name)
-    (let [qualified-sym (compute-qualified-sym name)
+    (let [qualified-sym (compute-qualified-sym (get-comp-env &env) (env-ns &env) name)
           [opts specs] (#'clojure.core/parse-opts opts+specs)
           impls (parse-impls specs)
           impls (mapcat (partial impl-with-env-capture-deftype &env) impls)]
       (when-let [bad-opts (seq (remove #{:no-print :load-ns} (keys opts)))]
         (throw (IllegalArgumentException. (apply print-str "Unsupported option(s) -" bad-opts))))
       (apply deftype-o &form &env name fields (concat (apply concat opts) impls)))))
-
-(comment
-  (deftype Tt [a b] :load-ns true
-    Pp
-    (pp [this] a)
-    (pp [this [e f]] e)
-    (pp2 [this] 3)
-    Ppp
-    (ppp [this] 4))
-
-  (comment
-    (pp (Tt. "a" "b"))
-    (pp (Tt. "a" "b") [1 2])
-    )
-  )
 
 (defn with-redefs-clj [body]
   (with-lock lock
@@ -393,7 +332,8 @@
       (alter-var-root #'extend-type omniscient-extend-type)
       (alter-var-root #'deftype omniscient-deftype)
       (try
-        (eval `(do ~@body))
+        ;; we must print the result to avoid it to be evaluated
+        (prn (eval `(do ~@body)))
         (finally
           (alter-var-root #'defn (constantly defn-tmp))
           (alter-var-root #'defmethod (constantly defmethod-tmp))
@@ -403,22 +343,23 @@
 (defn with-redefs-cljs [body]
   (with-lock lock
     (let [defn-tmp @cljs-defn
-          defmethod-tmp @#'defmethod
-          extend-type-tmp @#'extend-type
-          deftype-tmp @#'deftype]
+          defmethod-tmp @cljs-defmethod
+          extend-type-tmp @cljs-extend-type
+          deftype-tmp @cljs-deftype]
+      ;; do not use the var literal syntax because clojurescript may not be loaded
       (alter-var-root (resolve 'cljs.core/defn) omniscient-defn)
-      (alter-var-root #'defmethod omniscient-defmethod)
-      (alter-var-root #'extend-type omniscient-extend-type)
-      (alter-var-root #'deftype omniscient-deftype)
+      (alter-var-root (resolve 'cljs.core/defmethod) omniscient-defmethod)
+      (alter-var-root (resolve 'cljs.core/extend-type) omniscient-extend-type)
+      (alter-var-root (resolve 'cljs.core/deftype) omniscient-deftype)
       (try
         ;; evaluate the body, the result is wrapped in a string.
         ;; the result of the macro is then evaluated by the cljs repl
         (println (@cljs-eval-cljs-form `(do ~@body)))
         (finally
           (alter-var-root (resolve 'cljs.core/defn) (constantly defn-tmp))
-          (alter-var-root #'defmethod (constantly defmethod-tmp))
-          (alter-var-root #'extend-type (constantly extend-type-tmp))
-          (alter-var-root #'deftype (constantly deftype-tmp)))))))
+          (alter-var-root (resolve 'cljs.core/defmethod) (constantly defmethod-tmp))
+          (alter-var-root (resolve 'cljs.core/extend-type) (constantly extend-type-tmp))
+          (alter-var-root (resolve 'cljs.core/deftype) (constantly deftype-tmp)))))))
 
 (defmacro with-redefs [& body]
   (if (utils/cljs-env? &env)
@@ -451,15 +392,12 @@
   (form-with-bindings '(+ 1 2) '(nn/*tt*))
   )
 
-#_(defn eval-with-env [bindings form]
-    (if (= *ns* (:ns *omniscient-env*))
-      (with-bindings bindings
-        (eval (form-with-locals form)))
-      (eval form)))
-
-(defn eval-with-env [local-syms binding-syms form]
+(defn eval-with-env [form]
   (if (= (str *ns*) (namespace *omniscient-sym*))
-    (-> form (form-with-locals local-syms) (form-with-bindings binding-syms) eval)
+    (-> form
+        (form-with-locals *omniscient-local-syms*)
+        (form-with-bindings *omniscient-binding-syms*)
+        eval)
     (eval form)))
 
 (defn repl-read
@@ -481,85 +419,43 @@
   (into {} (for [[k v] m] 
              [(f k) v])))
 
-(defn- repl-clj [sym {:keys [locals bindings] :as env}]
-  (let [local-syms (keys locals)
-        binding-syms (keys bindings)]
-    (binding [*omniscient-repl?* true
-              *omniscient-sym* sym
-              *omniscient-env* env]
-      (reset! time (:time env))
-      (clojure.main/repl
-       :read repl-read
-       :eval (partial eval-with-env local-syms binding-syms)
-       :init (fn [] (in-ns (symbol (str (:ns env)))))
-       :prompt repl-prompt))))
+(defn- repl-clj* [sym {:keys [locals bindings] :as env}]
+  (binding [*omniscient-repl?* true
+            *omniscient-sym* sym
+            *omniscient-env* env
+            *omniscient-local-syms* (keys locals)
+            *omniscient-binding-syms* (keys bindings)]
+    (clojure.main/repl
+     :read repl-read
+     :eval (partial eval-with-env)
+     :init (fn [] (in-ns (ns-name (:ns env))))
+     :prompt repl-prompt)))
 
-(defn repl [sym index]
-  (let [env (get-env sym index)]
-    (println (format "Type :omniscient/quit to quit" (:var env)))
+(defn repl-clj [qualified-sym index]
+  (let [{:keys [locals bindings] :as env} (get-in @registry [qualified-sym index])]
+    (println "Type :omniscient/quit to quit")
     (if *omniscient-repl?*
       (do (set! *omniscient-env* env)
-          (reset! time (:time env))
-          (in-ns (symbol (str (:ns env)))))
-      (do (repl-clj sym env)
+          (set! *omniscient-local-syms* (keys locals))
+          (set! *omniscient-binding-syms* (keys bindings))
+          (swap! last-selected assoc qualified-sym index)
+          (in-ns (ns-name (:ns env))))
+      (do (swap! last-selected assoc qualified-sym index)
+          (repl-clj* qualified-sym env)
           (println "Omniscient REPL exited")))
     nil))
 
-(defn clear []
-  (reset! registry {}))
+(defmacro repl [sym index]
+  (let [qualified-sym (compute-qualified-sym (get-comp-env &env) *ns* sym)]
+    `(repl-clj (quote ~qualified-sym) ~index)))
 
-(defn match-val? [filter-v env-v]
-  (or (= filter-v env-v)
-      (when (ifn? filter-v)
-        (try (filter-v env-v) (catch Exception e nil)))))
-
-(defn symbolize-keys [m]
-  (for [[k v] m]
-    (if (symbol? k)
-      [`(quote ~k) v]
-      [k v])))
-
-(defn match-env? [filter env]
-  (if (= "" (clojure.string/trim filter))
-    env
-    (let [filter-form (try
-                        (read-string filter)
-                        (catch Exception e nil))]
-      (when (map? filter-form)
-        (when-let [filter (try (->> filter-form symbolize-keys (cons `list) eval)
-                               (catch Exception e nil))]
-          (loop [[[k filter-v] & filter-rest] filter]
-            (if k
-              (let [placeholder (make-array Integer 0)
-                    env-v (get env k (get (:locals env) k (get (:bindings env) k placeholder)))]
-                (when (not (identical? env-v placeholder))
-                  (let [env-v (if (= :thread k) (.getName env-v) env-v)]
-                    (when (match-val? filter-v env-v)
-                      (recur filter-rest)))))
-              env)))))))
-
-(comment
-  (->> "{r \"e\"}" read-string symbolize-keys (cons `list) eval)
-  
-  (match-env? "{f 44}" '{e "e" f 44})
-  (match-env? "{:f #(number? %)}" {:e "e" :f 44})
-  )
-
-(defn index-of [xs pred]
-  (when (not (empty? xs))
-    (loop [a (first xs)
-           r (rest xs)
-           i 0]
-      (cond
-        (pred a) i
-        (empty? r) nil
-        :else (recur (first r) (rest r) (inc i))))))
+(defmacro get-env [sym index]
+  (let [qualified-sym (compute-qualified-sym (get-comp-env &env) (env-ns &env) sym)]
+    `(get-in @registry [(quote ~qualified-sym) ~index])))
 
 ;; Some dynamic var, eg clojure.core/*data-readers*, may always be bound, only display them after
 ;; other dynamic var
-(def low-priority-namespaces #{"clojure.core" "clojure.spec" "clojure.core.server"
-                               "replique.server"
-                               "replique.omniscient" "replique.omniscient-runtime"})
+(def low-priority-namespaces #{"clojure.core"})
 
 (defn print-omniscient-map [m print-one w]
   (let [locals (dissoc (:locals m) '&env '&form)
@@ -594,7 +490,7 @@
         (print-one (.getName (:thread m)) w))
     (.write w ", ")
     (do (print-one :time w) (.append w \space)
-        (print-one (:time m) w))
+        (print-one (str (:time m)) w))
     (when has-more?
       (.write w ", ..."))
     (.write w "}")))
@@ -606,50 +502,96 @@
         ;; remove line breaks (for example, when printing #error {...})
         (.replace "\n" ""))))
 
+(defn match-val? [filter-v env-v]
+  (or (= filter-v env-v)
+      (when (ifn? filter-v)
+        (try (filter-v env-v) (catch Exception e nil)))))
+
+(defn match-env? [filters env]
+  (when (list? filters)
+    (loop [[[k filter-v] & filter-rest] filters]
+      (if k
+        (let [placeholder (make-array Integer 0)
+              env-v (get env k (get (:locals env) k (get (:bindings env) k placeholder)))]
+          (when (not (identical? env-v placeholder))
+            (let [env-v (if (= :thread k) (.getName env-v) env-v)]
+              (when (match-val? filter-v env-v)
+                (recur filter-rest)))))
+        env))))
+
+(defn index-of [xs pred]
+  (when (not (empty? xs))
+    (loop [a (first xs)
+           r (rest xs)
+           i 0]
+      (cond
+        (pred a) i
+        (empty? r) nil
+        :else (recur (first r) (rest r) (inc i))))))
+
 (defn filter-last-index [envs]
   (max (dec (count envs)) 0))
-
-(defn filter-index-time [envs]
-  (when @time
-    (let [next-index (index-of envs #(>= (:time %) @time))
-          next-time (:time (get envs next-index))]
-      (when next-time
-        (if (= next-time @time)
-          next-index
-          (let [prev-index (dec next-index)
-                prev-time (:time (get envs next-index))]
-            (if prev-time
-              (let [diff-prev (Math/abs (- @time prev-time))
-                    diff-next (Math/abs (- @time next-time))]
-                (if (< diff-prev diff-next)
-                  prev-index
-                  next-index))
-              next-index)))))))
 
 (defn filter-index-prev [envs prev-index]
   (index-of envs #(>= (:index %) prev-index)))
 
-(defmethod tooling-msg/tooling-msg-handle :omniscient-filter
-  [{sym :symbol ns :ns is-string? :is-string? filter-term :filter-term
+(defn symbolize-keys [m]
+  (for [[k v] m]
+    (if (symbol? k)
+      [`(quote ~k) v]
+      [k v])))
+
+(defmethod tooling-msg/tooling-msg-handle :omniscient-filter-clj
+  [{sym :symbol session-ns :session-ns is-string? :is-string? filter-term :filter-term
     prev-index :prev-index msg-id :msg-id
     :as msg}]
   (tooling-msg/with-tooling-response msg
-    (let [ns (and ns (symbol ns))
-          sym (and sym (symbol sym))]
-      (when (and (not is-string?) ns sym)
-        (let [envs (get @registry (symbol (str ns "/" sym)))
-              envs (into [] (filter (partial match-env? filter-term)) envs)]
-          {:msg-id msg-id
-           :locals (envs->str envs)
-           :indexes (mapv :index envs)
-           :index (-> (if prev-index
-                        (filter-index-prev envs prev-index)
-                        (filter-index-time envs))
-                      (or (filter-last-index envs)))})))))
+    (let [session-ns (and session-ns (find-ns (symbol session-ns)))
+          sym (and sym (symbol sym))
+          qualified-sym (compute-qualified-sym nil session-ns sym)
+          filter-form (when (= "" (clojure.string/trim filter-term)) "{}")
+          filter-form (try
+                        (read-string filter-form)
+                        (catch Exception e nil))
+          filter-form (when (map? filter-form)
+                        (->> filter-form symbolize-keys (cons `list) eval))]
+      (when (and (not is-string?) qualified-sym)
+        (assoc (replique.omniscient-runtime/filter-envs qualified-sym prev-index filter-form)
+               :msg-id msg-id)))))
+
+(defmethod tooling-msg/tooling-msg-handle :omniscient-filter-cljs
+  [{sym :symbol session-ns :session-ns is-string? :is-string? filter-term :filter-term
+    prev-index :prev-index msg-id :msg-id
+    :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (let [comp-env (env/->CljsCompilerEnv @@cljs-compiler-env)
+          session-ns (and session-ns (env/find-ns comp-env (symbol session-ns)))
+          sym (and sym (symbol sym))
+          qualified-sym (compute-qualified-sym comp-env session-ns sym)
+          filter-form (when (= "" (clojure.string/trim filter-term)) "{}")
+          filter-form (try
+                        (read-string filter-form)
+                        (catch Exception e nil))
+          filter-form (when (map? filter-form)
+                        (->> filter-form symbolize-keys (cons 'cljs.core/list)))]
+      #_(.println System/out (pr-str (@cljs-eval-cljs-form
+                                    `(replique.omniscient-runtime/filter-envs
+                                      (quote ~qualified-sym) ~prev-index ~filter-form))))
+      #_(.println System/out (pr-str filter-term))
+      #_(.println System/out (@cljs-eval-cljs-form '(+ 1 2)))
+      (when (and (not is-string?) qualified-sym)
+        (-> (@cljs-eval-cljs-form
+             `(replique.omniscient-runtime/filter-envs
+               (quote ~qualified-sym) ~prev-index ~filter-form))
+            read-string
+            (assoc :msg-id msg-id))))))
 
 ;; cljs support
 ;; cljs repl-caught compiler exception printing
 ;; cljs repl-caught js error printing
 
-;; omniscient only captures locals and (not all) dynamic vars. Omniscient does not capture
-;; all vars even though they can all be redefined
+;; omniscient only captures locals and (not all) dynamic vars. Omniscient only captures dynamic
+;; vars even through in theory, all vars can be redefined
+
+;; cljs dynamic vars are only captured if they had already been required at the moment of the
+;; compiliation with "with-redefs"
