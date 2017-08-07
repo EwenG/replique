@@ -36,6 +36,12 @@
                                   :ns (ns-name new-ns)}))))
   new-ns)
 
+(defn after-load [wrapped]
+  (fn [name]
+    (let [current-ns *ns*]
+      (try (wrapped name)
+           (finally (in-ns (ns-name current-ns)))))))
+
 (defn start-repl-process [project-map {:keys [process-id host port cljs-compile-path version]}]
   (try
     (alter-var-root #'utils/process-out (constantly *out*))
@@ -88,7 +94,12 @@
         (tooling-msg/uncaught-exception thread ex))))
    (let [init-fn (fn []
                    (in-ns 'replique.repl)
-                   (alter-var-root #'in-ns (fn [wrapped] (comp on-ns-change wrapped))))]
+                   ;; keep track of namespace changes
+                   (alter-var-root #'in-ns (fn [wrapped] (comp on-ns-change wrapped)))
+                   ;; load and load-file do not restore the namespace using #'in-ns but
+                   ;; using pop-thread-bindings instead
+                   (alter-var-root #'load-file (fn [wrapped] (after-load wrapped)))
+                   (alter-var-root #'load (fn [wrapped] (after-load wrapped))))]
      (clojure.main/repl
       :init init-fn
       :prompt #()
