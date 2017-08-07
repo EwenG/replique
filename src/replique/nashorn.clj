@@ -20,8 +20,7 @@
 (defonce engine (utils/delay (init-engine (create-engine)
                                           (cljs.util/output-directory
                                            (:options @@replique.repl-cljs/compiler-env)))))
-(declare init-repl-env)
-(defonce repl-env (utils/delay (init-repl-env)))
+(defonce repl-env (utils/delay (->NashornEnv)))
 
 (defn create-engine []
   (let [factories (.getEngineFactories (ScriptEngineManager.))
@@ -71,7 +70,7 @@
   engine)
 
 ;; Defrecord instead of deftype because cljs.repl uses the repl-env as a hashmap. Why ??? 
-(defrecord NashornEnv [repl-opts]
+(defrecord NashornEnv []
   cljs.repl/IJavaScriptEnv
   (-setup [this opts]
     (cljs.repl/evaluate-form this replique.repl-cljs/env "<cljs repl>"
@@ -116,8 +115,6 @@
   (-load [this ns url]
     (load-ns @engine ns))
   (-tear-down [this] nil)
-  cljs.repl/IReplEnvOptions
-  (-repl-options [this] repl-opts)
   cljs.repl/IParseStacktrace
   (-parse-stacktrace [this frames-str ret opts]
     (st/parse-stacktrace this frames-str (assoc ret :ua-product :nashorn) opts))
@@ -127,42 +124,21 @@
                (fn [st]
                  (string/join "\n" (drop 1 (string/split st #"\n")))))))
 
-(defn init-repl-env []
-  (let [repl-opts {:special-fns {'in-ns replique.repl-cljs/in-ns-special
-                                 'clojure.core/in-ns replique.repl-cljs/in-ns-special}}]
-    (merge (NashornEnv. repl-opts) repl-opts)))
-
 (defn cljs-repl []
   (let [repl-env @repl-env
         compiler-env @replique.repl-cljs/compiler-env
-        repl-opts (if (tooling-msg/tooling-available?)
-                    {:compiler-env compiler-env
-                     ;; Code modifying the runtime should not be put in :init, otherwise it would
-                     ;; be lost on browser refresh
-                     :init (fn []
-                             ;; Let the client know that we are entering a cljs repl
-                             ;; Also sends the new namespace
-                             (binding [*out* tooling-msg/tooling-out]
-                               (utils/with-lock tooling-msg/tooling-out-lock
-                                 (tooling-msg/tooling-prn {:type :repl-type
-                                                           :process-id tooling-msg/process-id
-                                                           :repl-type :cljs
-                                                           :session *session*
-                                                           :ns ana/*cljs-ns*}))))}
-                    {:compiler-env compiler-env})]
+        repl-opts (replique.repl/options-with-ns-change
+                   {:compiler-env compiler-env
+                    :init (fn [] (replique.repl-cljs/in-ns* 'cljs.user))
+                    :print println
+                    :caught cljs.repl/repl-caught})]
     (swap! replique.repl-cljs/cljs-outs conj *out*)
-    (apply
-     (partial replique.cljs/repl repl-env)
-     (->> (merge (:options @compiler-env) repl-opts {:eval replique.repl-cljs/eval-cljs})
-          (apply concat)))
-    (swap! replique.repl-cljs/cljs-outs disj *out*)
-    (binding [*out* tooling-msg/tooling-out]
-      (utils/with-lock tooling-msg/tooling-out-lock
-        (tooling-msg/tooling-prn {:type :repl-type
-                                  :process-id tooling-msg/process-id
-                                  :repl-type utils/*repl-type*
-                                  :session *session*
-                                  :ns (utils/repl-ns utils/*repl-type*)})))))
+    (binding [utils/*repl-type* :cljs]
+      (apply
+       (partial replique.cljs/repl repl-env)
+       (->> (merge (:options @compiler-env) repl-opts {:eval replique.repl-cljs/eval-cljs})
+            (apply concat))))
+    (swap! replique.repl-cljs/cljs-outs disj *out*)))
 
 (defmethod tooling-msg/tooling-msg-handle :list-css [msg]
   (tooling-msg/with-tooling-response msg

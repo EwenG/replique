@@ -1,8 +1,6 @@
 (ns replique.repl
-  (:require [clojure.main]
-            [replique.utils :as utils]
+  (:require [replique.utils :as utils]
             [replique.tooling-msg :as tooling-msg]
-            [replique.interactive :as interactive]
             [replique.server :as server]
             [replique.tooling]))
 
@@ -25,29 +23,20 @@
    :prompt #()
    :print (fn [result] (tooling-msg/tooling-prn result))))
 
-(defn on-ns-change [new-ns]
+(defn on-ns-change []
   (when (and (tooling-msg/tooling-available?) server/*session*)
     (binding [*out* tooling-msg/tooling-out]
       (utils/with-lock tooling-msg/tooling-out-lock
-        (tooling-msg/tooling-prn {:type :in-ns
+        (tooling-msg/tooling-prn {:type :ns-change
                                   :process-id tooling-msg/process-id
                                   :session server/*session*
-                                  :repl-type :clj
-                                  :ns (ns-name new-ns)}))))
-  new-ns)
-
-(defn after-load [wrapped]
-  (fn [name]
-    (let [current-ns *ns*]
-      (try (wrapped name)
-           (finally (in-ns (ns-name current-ns)))))))
+                                  :repl-type utils/*repl-type*
+                                  :ns (utils/repl-ns utils/*repl-type*)})))))
 
 (defn start-repl-process [project-map {:keys [process-id host port cljs-compile-path version]}]
   (try
     (alter-var-root #'utils/process-out (constantly *out*))
     (alter-var-root #'utils/process-err (constantly *err*))
-    (alter-var-root #'interactive/process-out (constantly *out*))
-    (alter-var-root #'interactive/process-err (constantly *err*))
     (alter-var-root #'utils/project-map (constantly project-map))
     (alter-var-root #'tooling-msg/process-id (constantly process-id))
     (alter-var-root #'utils/cljs-compile-path (constantly cljs-compile-path))
@@ -92,14 +81,7 @@
     (reify Thread$UncaughtExceptionHandler
       (uncaughtException [_ thread ex]
         (tooling-msg/uncaught-exception thread ex))))
-   (let [init-fn (fn []
-                   (in-ns 'replique.repl)
-                   ;; keep track of namespace changes
-                   (alter-var-root #'in-ns (fn [wrapped] (comp on-ns-change wrapped)))
-                   ;; load and load-file do not restore the namespace using #'in-ns but
-                   ;; using pop-thread-bindings instead
-                   (alter-var-root #'load-file (fn [wrapped] (after-load wrapped)))
-                   (alter-var-root #'load (fn [wrapped] (after-load wrapped))))]
+   (let [init-fn (fn [] (in-ns 'replique.repl))]
      (clojure.main/repl
       :init init-fn
       :prompt #()
@@ -115,8 +97,19 @@
 (defmethod utils/repl-ns :clj [repl-type]
   (ns-name *ns*))
 
+(defn options-with-ns-change [{:keys [init caught print]
+                               :as options-map}]
+  (assert (and init print caught) "init print and caught are required")
+  (assoc options-map
+         :init (fn [] (init) (on-ns-change))
+         :print (fn [& args] (apply print args) (on-ns-change))
+         :caught (fn [& args] (apply caught args) (on-ns-change))))
+
 (defn repl []
-  (clojure.main/repl :init (fn [] (in-ns 'user))))
+  (apply clojure.main/repl (->> {:init (fn [] (in-ns 'user))
+                                 :print prn :caught clojure.main/repl-caught}
+                                options-with-ns-change
+                                (apply concat))))
 
 ;; Behavior of the socket REPL on repl closing
 ;; The read fn returns (end of stream), the parent REPL prints the result of the repl command.
@@ -131,9 +124,4 @@
 ;; It seems (requireing) namespaces in the init fn sometimes throws an exception. I am not sure
 ;; why, maybe we just cannot dynamically (require) a namespace and immediately use its vars
 ;; without the use of (resolve)
-
-;; Keeping track of the REPL current ns is done by mutating the in-ns (clj) var and customizing
-;; the in-ns special fn (cljs)
-;; Keeping track of the repl type is done by sending a tooling message on startup of a repl of
-;; a new type, and when quitting the REPL
 

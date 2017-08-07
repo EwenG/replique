@@ -1,23 +1,27 @@
 (ns replique.interactive
   "Replique REPL public API"
   (:refer-clojure :exclude [load-file])
-  (:require [replique.utils :as utils]
+  (:require [replique.repl]
+            [replique.utils :as utils]
             [replique.server :as server]))
-
-(defonce
-  ^{:doc "Output stream that send its content to the standard output of the JVM process"}
-  process-out nil)
-(defonce
-  ^{:doc "Output stream that send its content to the standard error of the JVM process"}
-  process-err nil)
 
 (def ^:private cljs-repl* (utils/dynaload 'replique.repl-cljs/cljs-repl))
 (def ^:private cljs-repl-nashorn* (utils/dynaload 'replique.nashorn/cljs-repl))
 (def ^:private cljs-load-file (utils/dynaload 'replique.repl-cljs/load-file))
-(def ^:private cljs-in-ns* (utils/dynaload 'replique.repl-cljs/cljs-in-ns))
+(def ^:private cljs-in-ns* (utils/dynaload 'replique.repl-cljs/in-ns*))
 (def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
 (def ^:private cljs-set-repl-verbose
   (utils/dynaload 'replique.repl-cljs/set-repl-verbose))
+
+(defn repl [& options]
+  (let [options-map (apply hash-map options)
+        options-map (cond-> options-map
+                      (not (contains? options-map :init)) (assoc :init #())
+                      (not (contains? options-map :print)) (assoc :print prn)
+                      (not (contains? options-map :caught))
+                      (assoc :caught clojure.main/repl-caught)
+                      true replique.repl/options-with-ns-change)]
+    (apply clojure.main/repl (apply concat options-map))))
 
 (defn cljs-repl
   "Start a Clojurescript REPL"
