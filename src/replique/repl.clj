@@ -1,8 +1,7 @@
 (ns replique.repl
   (:require [replique.utils :as utils]
             [replique.tooling-msg :as tooling-msg]
-            [replique.server :as server]
-            [replique.tooling]))
+            [replique.server :as server]))
 
 (def ^:private dispatch-request
   (utils/dynaload 'replique.repl-cljs/dispatch-request))

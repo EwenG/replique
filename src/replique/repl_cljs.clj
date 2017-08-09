@@ -18,6 +18,7 @@
             [cljs.stacktrace :as st]
             [clojure.edn :as edn]
             [clojure.tools.reader :as reader]
+            [clojure.tools.reader.reader-types :as readers]
             [replique.cljs])
   (:import [java.io File BufferedReader InputStreamReader]
            [java.nio.file Files Paths Path]
@@ -415,6 +416,27 @@ replique.cljs_env.repl.connect(\"" url "\");
 (defmethod utils/repl-ns :cljs [repl-type]
   ana/*cljs-ns*)
 
+;; Customized REPL to allow exiting the REPL with :cljs/quit
+(defn repl-read-with-exit [exit-keyword]
+  (fn repl-read
+    ([request-prompt request-exit]
+     (repl-read request-prompt request-exit cljs.repl/*repl-opts*))
+    ([request-prompt request-exit opts]
+     (let [current-in *in*
+           bind-in?   (true? (:source-map-inline opts))]
+       (binding [*in* (if bind-in?
+                        ((:reader opts))
+                        *in*)]
+         (or ({:line-start request-prompt :stream-end request-exit}
+              (cljs.repl/skip-whitespace *in*))
+             (let [input (reader/read {:read-cond :allow :features #{:cljs}} *in*)]
+               ;; Transfer 1-char buffer to original *in*
+               (readers/unread current-in (readers/read-char *in*))
+               (cljs.repl/skip-if-eol (if bind-in? current-in *in*))
+               (if (= input exit-keyword)
+                 request-exit
+                 input))))))))
+
 (defn cljs-repl []
   (let [repl-env @repl-env
         compiler-env @compiler-env
@@ -426,7 +448,8 @@ replique.cljs_env.repl.connect(\"" url "\");
                     :init (fn [] (in-ns* 'cljs.user))
                     ;; cljs results are strings, so we must not print with prn
                     :print println
-                    :caught cljs.repl/repl-caught})]
+                    :caught cljs.repl/repl-caught
+                    :read (repl-read-with-exit :cljs/quit)})]
     (swap! cljs-outs conj *out*)
     (when (not= :started state)
       (println (format "Waiting for browser to connect on port %d ..." (server/server-port))))

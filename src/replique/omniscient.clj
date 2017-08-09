@@ -1,6 +1,7 @@
 (ns replique.omniscient
   (:refer-clojure :exclude [with-redefs])
   (:require [clojure.set]
+            [replique.repl] 
             [replique.tooling-msg :as tooling-msg]
             [replique.utils :as utils]
             [replique.omniscient-runtime :refer
@@ -16,8 +17,14 @@
 (def ^:private cljs-extend-type (utils/dynaload 'cljs.core/extend-type))
 (def ^:private cljs-deftype (utils/dynaload 'cljs.core/deftype))
 (def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
+(def ^:private cljs-eval-cljs (utils/dynaload 'replique.repl-cljs/eval-cljs))
 (def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
-(def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
+(def ^:private cljs-repl-env (utils/dynaload 'replique.repl-cljs/repl-env))
+(def ^:private cljs-in-ns* (utils/dynaload 'replique.repl-cljs/in-ns*))
+(def ^:private cljs-repl-caught (utils/dynaload 'cljs.repl/repl-caught))
+(def ^:private cljs-repl (utils/dynaload 'replique.cljs/repl))
+(def ^:private cljs-repl-prompt (utils/dynaload 'cljs.repl/repl-prompt))
+(def ^:private cljs-repl-read-with-exit (utils/dynaload 'replique.repl-cljs/repl-read-with-exit))
 
 (comment
   (env/->CljsCompilerEnv @@cljs-compiler-env)
@@ -25,7 +32,7 @@
 
 ;; whether we are in a debugging REPL
 (defonce ^:dynamic *omniscient-repl?* false)
-;; the namespace where the var currently beeing debugged is defined 
+;; the fully qualified symbol currently beeing debugged
 (defonce ^:dynamic *omniscient-sym* nil)
 ;; locals and bindings symbols must be known by the omniscient REPL "eval" function
 (defonce ^:dynamic *omniscient-local-syms* nil)
@@ -262,14 +269,16 @@
 (defn method-expr-with-env-capture [capture-env-exprs [params & body]]
   `(~params ~@(cons capture-env-exprs body)))
 
-(defn method-with-env-capture-extend-type [&env qualified-sym [method-name & methods]]
-  (let [locals (map (comp sig-symbols first) methods)
+(defn method-with-env-capture-extend-type [&env qualified-sym method]
+  (let [method-meta (meta method) ;; cljs requires the metadata to be preserved
+        [method-name & methods] method
+        locals (map (comp sig-symbols first) methods)
         env-locals (env-locals &env)
         locals (map #(clojure.set/union % env-locals) locals)
         capture-env-fn (partial capture-env &env qualified-sym method-name)
         capture-env-exprs (map capture-env-fn locals)
         methods (map method-expr-with-env-capture capture-env-exprs methods)]
-    `(~method-name ~@methods)))
+    (with-meta `(~method-name ~@methods) method-meta)))
 
 (comment
   (method-with-env-capture-extend-type
@@ -321,6 +330,17 @@
         (throw (IllegalArgumentException. (apply print-str "Unsupported option(s) -" bad-opts))))
       (apply deftype-o &form &env name fields (concat (apply concat opts) impls)))))
 
+(defn omniscient-deftype-cljs [deftype-o]
+  (fn [&form &env name fields & opts+specs]
+    (@(resolve 'cljs.core/validate-fields) "deftype" name fields)
+    (let [qualified-sym (compute-qualified-sym (get-comp-env &env) (env-ns &env) name)
+          [opts specs] (#'clojure.core/parse-opts opts+specs)
+          impls (parse-impls specs)
+          impls (mapcat (partial impl-with-env-capture-deftype &env) impls)]
+      (when-let [bad-opts (seq (remove #{} (keys opts)))]
+        (throw (IllegalArgumentException. (apply print-str "Unsupported option(s) -" bad-opts))))
+      (apply deftype-o &form &env name fields (concat (apply concat opts) impls)))))
+
 (defn with-redefs-clj [body]
   (with-lock lock
     (let [defn-tmp @#'defn
@@ -340,26 +360,27 @@
           (alter-var-root #'extend-type (constantly extend-type-tmp))
           (alter-var-root #'deftype (constantly deftype-tmp)))))))
 
+;; deftype expands to extend-type
 (defn with-redefs-cljs [body]
   (with-lock lock
     (let [defn-tmp @cljs-defn
           defmethod-tmp @cljs-defmethod
-          extend-type-tmp @cljs-extend-type
-          deftype-tmp @cljs-deftype]
+          extend-type-tmp @cljs-extend-type]
       ;; do not use the var literal syntax because clojurescript may not be loaded
       (alter-var-root (resolve 'cljs.core/defn) omniscient-defn)
       (alter-var-root (resolve 'cljs.core/defmethod) omniscient-defmethod)
       (alter-var-root (resolve 'cljs.core/extend-type) omniscient-extend-type)
-      (alter-var-root (resolve 'cljs.core/deftype) omniscient-deftype)
       (try
-        ;; evaluate the body, the result is wrapped in a string.
-        ;; the result of the macro is then evaluated by the cljs repl
-        (println (@cljs-eval-cljs-form `(do ~@body)))
+        ;; bindings potentially set by eval-with-env
+        (with-bindings {(resolve 'cljs.analyzer/*recur-frames*) nil
+                        (resolve 'cljs.analyzer/*loop-lets*) '()}
+          ;; evaluate the body, the result is wrapped in a string.
+          ;; the result of the macro is then evaluated by the cljs repl
+          (println (@cljs-eval-cljs-form `(do ~@body))))
         (finally
           (alter-var-root (resolve 'cljs.core/defn) (constantly defn-tmp))
           (alter-var-root (resolve 'cljs.core/defmethod) (constantly defmethod-tmp))
-          (alter-var-root (resolve 'cljs.core/extend-type) (constantly extend-type-tmp))
-          (alter-var-root (resolve 'cljs.core/deftype) (constantly deftype-tmp)))))))
+          (alter-var-root (resolve 'cljs.core/extend-type) (constantly extend-type-tmp)))))))
 
 (defmacro with-redefs [& body]
   (if (utils/cljs-env? &env)
@@ -400,6 +421,14 @@
         eval)
     (eval form)))
 
+(defn eval-with-env-cljs [repl-env env form opts]
+  (if (= (utils/repl-ns :cljs) (symbol (namespace *omniscient-sym*)))
+    (let [form (-> form
+                   (form-with-locals *omniscient-local-syms*)
+                   (form-with-bindings *omniscient-binding-syms*))]
+      (@cljs-eval-cljs repl-env env form opts))
+    (@cljs-eval-cljs repl-env env form opts)))
+
 (defn repl-read
   "Enhanced :read hook for repl supporting :omniscient/quit."
   [request-prompt request-exit]
@@ -411,13 +440,16 @@
           :omniscient/quit request-exit
           input))))
 
-(defn repl-prompt []
+(defn repl-prompt-clj []
   (print "<omniscient> ")
   (clojure.main/repl-prompt))
 
-(defn map-keys [f m]
-  (into {} (for [[k v] m] 
-             [(f k) v])))
+(defn repl-prompt-cljs []
+  (print "<omniscient> ")
+  (@cljs-repl-prompt))
+
+(defn repl-quit-prompt-cljs []
+  (println "Type :omniscient/quit to quit"))
 
 (defn- repl-clj* [sym {:keys [locals bindings] :as env}]
   (binding [*omniscient-repl?* true
@@ -425,29 +457,69 @@
             *omniscient-env* env
             *omniscient-local-syms* (keys locals)
             *omniscient-binding-syms* (keys bindings)]
-    (clojure.main/repl
-     :read repl-read
-     :eval (partial eval-with-env)
-     :init (fn [] (in-ns (ns-name (:ns env))))
-     :prompt repl-prompt)))
+    (apply clojure.main/repl (->> {:init (fn [] (in-ns (ns-name (:ns env))))
+                                   :print prn :caught clojure.main/repl-caught
+                                   :read repl-read :eval (partial eval-with-env)
+                                   :prompt repl-prompt-clj}
+                                  replique.repl/options-with-ns-change
+                                  (apply concat)))))
+
+(defn- repl-cljs* [sym local-keys binding-keys]
+  (binding [*omniscient-repl?* true
+            *omniscient-sym* sym
+            *omniscient-local-syms* local-keys
+            *omniscient-binding-syms* binding-keys]
+    (let [repl-env @@cljs-repl-env
+          compiler-env @@cljs-compiler-env
+          repl-opts (replique.repl/options-with-ns-change
+                     {:compiler-env compiler-env
+                      :init (fn [] (@cljs-in-ns* (-> sym namespace symbol)))
+                      :print println :caught @cljs-repl-caught
+                      :read (@cljs-repl-read-with-exit :omniscient/quit)
+                      :eval eval-with-env-cljs
+                      :prompt repl-prompt-cljs
+                      :quit-prompt repl-quit-prompt-cljs})]
+      (apply
+       (partial @cljs-repl repl-env)
+       (->> (merge (:options @compiler-env) repl-opts)
+            (apply concat))))))
 
 (defn repl-clj [qualified-sym index]
   (let [{:keys [locals bindings] :as env} (get-in @registry [qualified-sym index])]
-    (println "Type :omniscient/quit to quit")
     (if *omniscient-repl?*
       (do (set! *omniscient-env* env)
           (set! *omniscient-local-syms* (keys locals))
           (set! *omniscient-binding-syms* (keys bindings))
           (swap! last-selected assoc qualified-sym index)
           (in-ns (ns-name (:ns env))))
-      (do (swap! last-selected assoc qualified-sym index)
-          (repl-clj* qualified-sym env)
-          (println "Omniscient REPL exited")))
+      (do (println "Type :omniscient/quit to quit")
+          (swap! last-selected assoc qualified-sym index)
+          (repl-clj* qualified-sym env)))
+    nil))
+
+(defn repl-cljs [qualified-sym index]
+  (let [{:keys [local-keys binding-keys]} (read-string
+                                           (@cljs-eval-cljs-form
+                                            `(replique.omniscient-runtime/locals-bindings-keys
+                                              (quote ~qualified-sym) ~index)))]
+    (@cljs-eval-cljs-form
+     `(do (set! *omniscient-env* (get-in @registry [(quote ~qualified-sym) ~index]))
+          (swap! last-selected assoc (quote ~qualified-sym) ~index)))
+    (if *omniscient-repl?*
+      (do (set! *omniscient-local-syms* local-keys)
+          (set! *omniscient-binding-syms* binding-keys)
+          (@cljs-in-ns* (-> qualified-sym namespace symbol)))
+      (try
+        (repl-cljs* qualified-sym local-keys binding-keys)
+        (finally
+          (@cljs-eval-cljs-form `(set! *omniscient-env* nil)))))
     nil))
 
 (defmacro repl [sym index]
-  (let [qualified-sym (compute-qualified-sym (get-comp-env &env) *ns* sym)]
-    `(repl-clj (quote ~qualified-sym) ~index)))
+  (let [qualified-sym (compute-qualified-sym (get-comp-env &env) (env-ns &env) sym)]
+    (if (utils/cljs-env? &env)
+      (repl-cljs qualified-sym index)
+      `(repl-clj (quote ~qualified-sym) ~index))))
 
 (defmacro get-env [sym index]
   (let [qualified-sym (compute-qualified-sym (get-comp-env &env) (env-ns &env) sym)]
@@ -574,11 +646,6 @@
                         (catch Exception e nil))
           filter-form (when (map? filter-form)
                         (->> filter-form symbolize-keys (cons 'cljs.core/list)))]
-      #_(.println System/out (pr-str (@cljs-eval-cljs-form
-                                    `(replique.omniscient-runtime/filter-envs
-                                      (quote ~qualified-sym) ~prev-index ~filter-form))))
-      #_(.println System/out (pr-str filter-term))
-      #_(.println System/out (@cljs-eval-cljs-form '(+ 1 2)))
       (when (and (not is-string?) qualified-sym)
         (-> (@cljs-eval-cljs-form
              `(replique.omniscient-runtime/filter-envs
@@ -595,3 +662,7 @@
 
 ;; cljs dynamic vars are only captured if they had already been required at the moment of the
 ;; compiliation with "with-redefs"
+
+;; when using with-redefs in an omniscient repl, the eval call in with-redefs ignores
+;; the locals/dynamic bindings of eval-with-env which means we can safely use "with-redefs"
+;; directly inside an omniscient repl

@@ -83,6 +83,7 @@
 ;; patch repl* to remove the binding of *print-namespace-maps*, which is broken
 ;; (*print-namespace-maps* is set whatever the value of the init parameter). A clojurescript
 ;; patch would not be accepted because cljs devs think this is fine ...
+;; Also put the :cljs/quit "magic keyword" handling logic out of repl*  
 (defn repl*
   [repl-env {:keys [init need-prompt quit-prompt prompt flush read eval print caught reader
                     print-no-newline source-map-inline wrap repl-requires
@@ -200,7 +201,6 @@
                                               (cljs.analyzer/get-namespace cljs.analyzer/*cljs-ns*)))]
                               (read request-prompt request-exit))]
                   (or ({request-exit request-exit
-                        :cljs/quit request-exit
                         request-prompt request-prompt} input)
                       (if (and (seq? input) (is-special-fn? (first input)))
                         (do

@@ -135,6 +135,11 @@
                   (get @last-selected qualified-sym))
                 (or (filter-last-index envs)))}))
 
+(defn locals-bindings-keys [qualified-sym index]
+  (let [env (get-in @registry [qualified-sym index])]
+    {:local-keys (-> env :locals keys)
+     :binding-keys (-> env :bindings keys)}))
+
 ;; defn
 (comment
   (let [e 3]
@@ -221,7 +226,7 @@
   
   )
 
-;; extend-type
+;;deftype
 (comment
   (deftype Tt2 [a b] #?@(:clj [:load-ns true])
     Pp
@@ -230,6 +235,7 @@
     (pp2 [this] 3)
     Ppp
     (ppp [this] 4))
+  
 
   (comment
     (pp (Tt2. "a" "b"))
@@ -237,18 +243,5 @@
     )
   )
 
-;; last selected var => global var, mute the value on select
-;; *omniscient-env* => cljs: set! at the start of the repl, set! to null at the end (in a finally)
-;; *omniscient-repl?* bound in the clojure process for both clj and cljs
-;; *omniscient-sym* -> idem
-;; form-with-locals / form-with-bindings -> keys must be known in the clojure process, vals in the cljs process
-;; before starting the repl -> query local keys and binding keys
-;; keymap for replique-mode
+;; omniscient.el session mode handling
 ;; cljs -> require omniscient-runtime when starting the REPL
-;; omniscient repl - use options-with-ns-change
-
-(comment
-  (require '[replique.environment :as env])
-  (require '[replique.repl-cljs :refer [compiler-env]])
-  
-  )
