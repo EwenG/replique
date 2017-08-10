@@ -1,7 +1,7 @@
 (ns replique.omniscient-runtime
   (:refer-clojure :exclude [time])
   (:require [clojure.string]
-            [cljs.pprint]))
+            #?(:cljs [cljs.pprint])))
 
 (defonce registry (atom {}))
 
@@ -30,17 +30,26 @@
       [`(quote ~k) v]
       [k v])))
 
+(defn var->sym [v]
+  (let [{:keys [ns name]} (meta v)]
+    (when (and ns name)
+      (symbol (str ns) (str name)))))
+
 (defn match-env? [filters env]
   (when (list? filters)
     (loop [[[k filter-v] & filter-rest] filters]
-      (if k
-        (let [placeholder (make-array Integer 0)
-              env-v (get env k (get (:locals env) k (get (:bindings env) k placeholder)))]
-          (when (not (identical? env-v placeholder))
-            (let [env-v (if (= :thread k) (.getName env-v) env-v)]
-              (when (match-val? filter-v env-v)
-                (recur filter-rest)))))
-        env))))
+      (let [var-sym (when (var? k) (var->sym k))
+            k (or var-sym k)]
+        (if k
+          (let [placeholder (make-array Integer 0)
+                env-v (get env k (get (:locals env) k
+                                      (get (:bindings env) k
+                                           placeholder)))]
+            (when (not (identical? env-v placeholder))
+              (let [env-v (if (= :thread k) (.getName env-v) env-v)]
+                (when (match-val? filter-v env-v)
+                  (recur filter-rest)))))
+          env)))))
 
 (comment
   (->> "{r \"e\"}" read-string symbolize-keys (cons `list) eval)
@@ -87,6 +96,7 @@
         (print-one (val local)))
       (print ", "))
     (when user-binding
+      (print "#'")
       (print-one (key user-binding)) (print " ")
       (binding [*print-length* 2
                 *print-level* 1]
@@ -243,5 +253,3 @@
     )
   )
 
-;; omniscient.el session mode handling
-;; cljs -> require omniscient-runtime when starting the REPL

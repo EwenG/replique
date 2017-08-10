@@ -10,6 +10,7 @@
 (def ^:private cljs-load-file (utils/dynaload 'replique.repl-cljs/load-file))
 (def ^:private cljs-in-ns* (utils/dynaload 'replique.repl-cljs/in-ns*))
 (def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
+(def ^:private cljs-repl-env (utils/dynaload 'replique.repl-cljs/repl-env))
 (def ^:private cljs-set-repl-verbose
   (utils/dynaload 'replique.repl-cljs/set-repl-verbose))
 
@@ -43,7 +44,7 @@
   "Sequentially read and evaluate the set of forms contained in the file. Works both for Clojure and Clojurescript"
   [file-path]
   (if (utils/cljs-env? &env)
-    (@cljs-load-file (:repl-env &env) file-path)
+    (@cljs-load-file @@cljs-repl-env file-path)
     `(clojure.core/load-file ~file-path)))
 
 ;; It seems that naming this macro "in-ns" make the cljs compiler to crash

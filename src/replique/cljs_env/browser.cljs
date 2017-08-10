@@ -2,7 +2,8 @@
   (:require [cljs.reader :as reader]
             [goog.cssom]
             [goog.date :as date]
-            [goog.Uri])
+            [goog.Uri]
+            [replique.omniscient-runtime])
   (:require-macros [replique.interactive]))
 
 (defn remove-query-string [uri]

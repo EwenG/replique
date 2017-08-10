@@ -5,8 +5,9 @@
             [replique.tooling-msg :as tooling-msg]
             [replique.utils :as utils]
             [replique.omniscient-runtime :refer
-             [registry *omniscient-env* append-env last-selected]]
-            [replique.environment :as env])
+             [registry *omniscient-env* append-env last-selected var->sym]]
+            [replique.environment :as env]
+            [clojure.pprint])
   (:import [java.util Date]
            [java.io Writer]
            [java.util.concurrent LinkedTransferQueue]
@@ -70,11 +71,6 @@
   (sig-symbols '[_])
   )
 
-(defn var->sym-clj [v]
-  (let [{:keys [ns name]} (meta v)]
-    (when (and ns name)
-      (symbol (str ns) (str name)))))
-
 ;; clojure.core/*data-readers* clojure.core/*default-data-reader-fn*
 
 ;; Prevent dynamic vars used by the REPL/system from beeing captured
@@ -92,7 +88,7 @@
                         ~@(when method [:method `(quote ~method)]) ~@[]
                         :locals {~@locals ~@[]}
                         :bindings (->> (get-thread-bindings)
-                                       (map (fn [[k# v#]] (when-let [sym# (var->sym-clj k#)]
+                                       (map (fn [[k# v#]] (when-let [sym# (var->sym k#)]
                                                             (when (not
                                                                    (contains?
                                                                     excluded-dyn-vars sym#))
@@ -525,88 +521,6 @@
   (let [qualified-sym (compute-qualified-sym (get-comp-env &env) (env-ns &env) sym)]
     `(get-in @registry [(quote ~qualified-sym) ~index])))
 
-;; Some dynamic var, eg clojure.core/*data-readers*, may always be bound, only display them after
-;; other dynamic var
-(def low-priority-namespaces #{"clojure.core"})
-
-(defn print-omniscient-map [m print-one w]
-  (let [locals (dissoc (:locals m) '&env '&form)
-        locals (take 3 locals)
-        user-binding (->> (:bindings m)
-                          (filter #(let [ns (namespace (key %))]
-                                     (not (contains? low-priority-namespaces ns))))
-                          first)
-        system-binding (first (:bindings m))
-        has-more? (or (> (count locals) 3)
-                      (> (count (:bindings m)) 1))]
-    (.write w "{")
-    (doseq [local locals]
-      (print-one (key local) w) (.append w \space)
-      (binding [*print-length* 2
-                *print-level* 1]
-        (print-one (val local) w))
-      (.write w ", "))
-    (when user-binding
-      (print-one (key user-binding) w) (.append w \space)
-      (binding [*print-length* 2
-                *print-level* 1]
-        (print-one (val user-binding) w))
-      (.write w ", "))
-    (when (and (nil? user-binding) system-binding)
-      (print-one (key system-binding) w) (.append w \space)
-      (binding [*print-length* 2
-                *print-level* 1]
-        (print-one (val system-binding) w))
-      (.write w ", "))
-    (do (print-one :thread w) (.append w \space)
-        (print-one (.getName (:thread m)) w))
-    (.write w ", ")
-    (do (print-one :time w) (.append w \space)
-        (print-one (str (:time m)) w))
-    (when has-more?
-      (.write w ", ..."))
-    (.write w "}")))
-
-(defn envs->str [envs]
-  (for [{:keys [locals] :as env} envs]
-    (-> (print-omniscient-map env #'clojure.core/pr-on *out*)
-        with-out-str
-        ;; remove line breaks (for example, when printing #error {...})
-        (.replace "\n" ""))))
-
-(defn match-val? [filter-v env-v]
-  (or (= filter-v env-v)
-      (when (ifn? filter-v)
-        (try (filter-v env-v) (catch Exception e nil)))))
-
-(defn match-env? [filters env]
-  (when (list? filters)
-    (loop [[[k filter-v] & filter-rest] filters]
-      (if k
-        (let [placeholder (make-array Integer 0)
-              env-v (get env k (get (:locals env) k (get (:bindings env) k placeholder)))]
-          (when (not (identical? env-v placeholder))
-            (let [env-v (if (= :thread k) (.getName env-v) env-v)]
-              (when (match-val? filter-v env-v)
-                (recur filter-rest)))))
-        env))))
-
-(defn index-of [xs pred]
-  (when (not (empty? xs))
-    (loop [a (first xs)
-           r (rest xs)
-           i 0]
-      (cond
-        (pred a) i
-        (empty? r) nil
-        :else (recur (first r) (rest r) (inc i))))))
-
-(defn filter-last-index [envs]
-  (max (dec (count envs)) 0))
-
-(defn filter-index-prev [envs prev-index]
-  (index-of envs #(>= (:index %) prev-index)))
-
 (defn symbolize-keys [m]
   (for [[k v] m]
     (if (symbol? k)
@@ -621,12 +535,14 @@
     (let [session-ns (and session-ns (find-ns (symbol session-ns)))
           sym (and sym (symbol sym))
           qualified-sym (compute-qualified-sym nil session-ns sym)
-          filter-form (when (= "" (clojure.string/trim filter-term)) "{}")
+          filter-form (if (= "" (clojure.string/trim filter-term)) "{}" filter-term)
           filter-form (try
                         (read-string filter-form)
                         (catch Exception e nil))
-          filter-form (when (map? filter-form)
-                        (->> filter-form symbolize-keys (cons `list) eval))]
+          filter-form (try (when (map? filter-form)
+                             (binding [*ns* session-ns]
+                               (eval (->> filter-form symbolize-keys (cons `list)))))
+                           (catch Exception e nil))]
       (when (and (not is-string?) qualified-sym)
         (assoc (replique.omniscient-runtime/filter-envs qualified-sym prev-index filter-form)
                :msg-id msg-id)))))
@@ -640,18 +556,23 @@
           session-ns (and session-ns (env/find-ns comp-env (symbol session-ns)))
           sym (and sym (symbol sym))
           qualified-sym (compute-qualified-sym comp-env session-ns sym)
-          filter-form (when (= "" (clojure.string/trim filter-term)) "{}")
+          filter-form (if (= "" (clojure.string/trim filter-term)) "{}" filter-term)
           filter-form (try
                         (read-string filter-form)
                         (catch Exception e nil))
           filter-form (when (map? filter-form)
                         (->> filter-form symbolize-keys (cons 'cljs.core/list)))]
       (when (and (not is-string?) qualified-sym)
-        (-> (@cljs-eval-cljs-form
-             `(replique.omniscient-runtime/filter-envs
-               (quote ~qualified-sym) ~prev-index ~filter-form))
-            read-string
-            (assoc :msg-id msg-id))))))
+        (when-let [res (try (@cljs-eval-cljs-form
+                             `(try (replique.omniscient-runtime/filter-envs
+                                    (quote ~qualified-sym) ~prev-index ~filter-form)
+                                   (catch js/Error ~'_ nil))
+                             {:ns (env/ns-name session-ns) :warnings nil})
+                            (catch clojure.lang.ExceptionInfo e
+                              (if (= (.getData e) {:tag :cljs/analysis-error})
+                                nil
+                                (throw e))))]
+          (assoc (read-string res) :msg-id msg-id))))))
 
 ;; cljs support
 ;; cljs repl-caught compiler exception printing

@@ -302,12 +302,15 @@ replique.cljs_env.repl.connect(\"" url "\");
           (let [repl-src "replique/cljs_env/repl.cljs"
                 benv-src "replique/cljs_env/browser.cljs"
                 jfxenv-src "replique/cljs_env/javafx.cljs"
+                omniscient-src "replique/omniscient_runtime.cljc"
                 repl-compiled (repl-compile-cljs repl-src comp-opts false)
                 benv-compiled (repl-compile-cljs benv-src comp-opts false)
-                jfx-compiled (repl-compile-cljs jfxenv-src comp-opts false)]
+                jfx-compiled (repl-compile-cljs jfxenv-src comp-opts false)
+                omniscient-compiled (repl-compile-cljs omniscient-src comp-opts false)]
             (repl-cljs-on-disk repl-compiled (cljs.repl/-repl-options repl-env) comp-opts)
             (repl-cljs-on-disk benv-compiled (cljs.repl/-repl-options repl-env) comp-opts)
             (repl-cljs-on-disk jfx-compiled (cljs.repl/-repl-options repl-env) comp-opts)
+            (repl-cljs-on-disk omniscient-compiled (cljs.repl/-repl-options repl-env) comp-opts)
             (->> (refresh-cljs-deps comp-opts)
                  (closure/output-deps-file
                   (assoc comp-opts :output-to
@@ -408,10 +411,15 @@ replique.cljs_env.repl.connect(\"" url "\");
     (call-post-eval-hooks repl-env comp-env @@compiler-env)
     eval-result))
 
-(defn eval-cljs-form [form]
-  (let [repl-env @repl-env]
-    (cljs-env/with-compiler-env @compiler-env
-      (eval-cljs repl-env env form cljs.repl/*repl-opts*))))
+(defn eval-cljs-form
+  ([form] (eval-cljs-form form nil))
+  ([form {:keys [ns warnings]
+          :or {ns ana/*cljs-ns*
+               warnings ana/*cljs-warnings*}}]
+   (binding [ana/*cljs-ns* ns
+             ana/*cljs-warnings* warnings]
+     (cljs-env/with-compiler-env @compiler-env
+       (eval-cljs @repl-env env form cljs.repl/*repl-opts*)))))
 
 (defmethod utils/repl-ns :cljs [repl-type]
   ana/*cljs-ns*)
