@@ -1,5 +1,8 @@
 # Version 0.0.6
 
+- Add an omniscient debugger
+- Add the replique.interactive/repl command
+
 # Version 0.0.5
 
 - Add support for javafx css file reloading 
