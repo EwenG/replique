@@ -75,29 +75,29 @@
   (swap! @@cljs-compiler-env assoc-in [:options opt-key] opt-val)
   opt-val)
 
-(defn remote-repl
-  "Start a REPL on a remote machine"
-  [host port]
-  {:pre [(string? host) (number? port)]}
-  (let [s (java.net.Socket. host port)
-        s-in (.getInputStream s)
-        s-out (java.io.BufferedWriter. (java.io.OutputStreamWriter. (.getOutputStream s)))]
-    (future
+#_(defn remote-repl
+    "Start a REPL on a remote machine"
+    [host port]
+    {:pre [(string? host) (number? port)]}
+    (let [s (java.net.Socket. host port)
+          s-in (.getInputStream s)
+          s-out (java.io.BufferedWriter. (java.io.OutputStreamWriter. (.getOutputStream s)))]
+      (future
+        (try
+          (loop []
+            (let [input (.read s-in)]
+              (when (not (= -1 input))
+                (.write *out* input)
+                (.flush *out*)
+                (recur))))
+          (catch Exception _ nil)
+          (finally (.close s))))
       (try
         (loop []
-          (let [input (.read s-in)]
-            (when (not (= -1 input))
-              (.write *out* input)
-              (.flush *out*)
-              (recur))))
-        (catch Exception _ nil)
-        (finally (.close s))))
-    (try
-      (loop []
-        (let [input (read {:read-cond :allow} *in*)]
-          (binding [*out* s-out] (prn input))
-          (recur)))
-      (finally (.close s)))))
+          (let [input (read {:read-cond :allow} *in*)]
+            (binding [*out* s-out] (prn input))
+            (recur)))
+        (finally (.close s)))))
 
 (comment
   (require '[clojure.core.server :as core-s])
