@@ -1,5 +1,6 @@
 # Version 0.0.6
 
+- Add support for the :checked-arrays cljs compiler option
 - Remove the replique.interactive/remote-repl command
 - Add an omniscient debugger
 - Add the replique.interactive/repl command

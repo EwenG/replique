@@ -66,7 +66,7 @@
 (def compiler-opts
   "Clojurescript compiler options that can be set at the REPL"
   #{:verbose :warnings :compiler-stats :language-in :language-out
-    :closure-warnings})
+    :closure-warnings :checked-arrays})
 
 (defmacro set-cljs-compiler-opt
   "Set the value of the Clojurescript compiler option named by the key"
