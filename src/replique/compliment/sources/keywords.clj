@@ -34,13 +34,13 @@
   "Returns a list of alias-qualified double-colon keywords (like ::str/foo),
   where alias has to be registered in the given namespace."
   [comp-env prefix ns]
-  (let [[_ alias prefix] (re-matches #"::([^/]+)/(.*)" prefix)
-        resolve-namespace (partial resolve-namespace comp-env)
-        alias-ns-name (-> (symbol alias) (resolve-namespace ns) str)]
-    (for [kw (keywords comp-env)
-          :when (= (namespace kw) alias-ns-name)
-          :when (.startsWith (name kw) prefix)]
-      (tagged-candidate (str "::" alias "/" (name kw))))))
+  (when-let [[_ alias prefix] (re-matches #"::([^/]+)/(.*)" prefix)]
+    (let [resolve-namespace (partial resolve-namespace comp-env)
+          alias-ns-name (-> (symbol alias) (resolve-namespace ns) str)]
+      (for [kw (keywords comp-env)
+            :when (= (namespace kw) alias-ns-name)
+            :when (.startsWith (name kw) prefix)]
+        (tagged-candidate (str "::" alias "/" (name kw)))))))
 
 (defn candidates
   ([^String prefix, ns context]

@@ -84,8 +84,7 @@
            import-ctx (analyze-import-context context)]
        ((comp distinct concat)
         (for [ns-str (concat (map (comp name ns-name) (all-ns comp-env))
-                             (when-not has-dot
-                               (map name (keys (ns-aliases comp-env ns)))))
+                             (map name (keys (ns-aliases comp-env ns))))
               :when (nscl-matches? prefix ns-str)]
           {:candidate ns-str, :type :namespace})
         (when (not comp-env)

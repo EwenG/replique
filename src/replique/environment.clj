@@ -3,7 +3,8 @@
   (:refer-clojure :exclude [ns-name find-ns ns-publics ns-map ns-aliases
                             ns-resolve all-ns ns-interns meta])
   (:require [replique.utils :as utils]
-            [replique.compliment.utils :refer [defmemoized all-files-on-classpath]]
+            [replique.compliment.utils :refer [defmemoized classpath cache-last-result
+                                               all-files-on-classpath]]
             [clojure.set])
   (:import [java.io File]
            [java.lang.reflect Field]
@@ -210,19 +211,21 @@
   (file-extension [_] "clj")
   (default-ns [_] 'user))
 
-(defmemoized namespaces-on-classpath
-  "Returns the list of all Clojure/Clojurescript/... namespaces obtained by classpath scanning."
+(defn namespaces-on-classpath
+  "Returns the list of all Clojure namespaces obtained by classpath scanning."
   [comp-env]
-  (set (for [^String file (all-files-on-classpath)
-             :when (and (.endsWith file (file-extension comp-env))
-                        (not (.startsWith file "META-INF")))
-             :let [[_ ^String nsname] (->
-                                       "[^\\w]?(.+)(\\.%s|\\.cljc)"
-                                       (format (file-extension comp-env))
-                                       re-pattern 
-                                       (re-matches file))]
-             :when nsname]
-         (.. nsname (replace File/separator ".") (replace "_" "-")))))
+  (let [classpath (classpath)]
+    (cache-last-result ::namespaces-on-classpath classpath
+                       (set (for [^String file (all-files-on-classpath classpath)
+                                  :when (and (.endsWith file (file-extension comp-env))
+                                             (not (.startsWith file "META-INF")))
+                                  :let [[_ ^String nsname] (->
+                                                            "[^\\w]?(.+)(\\.%s|\\.cljc)"
+                                                            (format (file-extension comp-env))
+                                                            re-pattern 
+                                                            (re-matches file))]
+                                  :when nsname]
+                              (.. nsname (replace File/separator ".") (replace "_" "-")))))))
 
 (defmemoized provides-from-js-dependency-index [comp-env]
   (->> comp-env get-wrapped (@cljs-get-js-index) vals (mapcat :provides) set))
@@ -264,7 +267,7 @@
 
   (file-extension comp-env)
   (namespaces-on-classpath comp-env)
-  (filter #(.endsWith % "cljs") (all-files-on-classpath))
+  (filter #(.endsWith % "cljs") (all-files-on-classpath (classpath)))
   
   (count (provides-from-js-dependency-index comp-env))
 
