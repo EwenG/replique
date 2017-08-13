@@ -3,7 +3,8 @@
             [goog.cssom]
             [goog.date :as date]
             [goog.Uri]
-            [replique.omniscient-runtime])
+            [replique.omniscient-runtime]
+            [goog.object :as o])
   (:require-macros [replique.interactive]))
 
 (defn remove-query-string [uri]
@@ -76,3 +77,8 @@
 (defn reload-css [url]
   (let [the-stylesheet (stylesheet-with-url url)]
     (reload-css-node (.-ownerNode the-stylesheet))))
+
+(defn global-error-handler [msg url]
+  (println msg))
+
+(o/set js/window "onerror" global-error-handler)
