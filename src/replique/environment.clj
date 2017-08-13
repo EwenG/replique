@@ -242,14 +242,8 @@
 (extend-protocol Env
   CljsCompilerEnv
   (keywords [comp-env]
-    (let [global-constant-table (:cljs.analyzer/constant-table @(get-wrapped comp-env))
-          constant-tables (->>
-                           @(get-wrapped comp-env)
-                           :cljs.analyzer/namespaces
-                           (map (comp :cljs.analyzer/constant-table second))
-                           (cons global-constant-table))]
-      (->> (map constant-table->keyword constant-tables)
-           (reduce #(into %1 %2) #{}))))
+    (let [global-constant-table (:cljs.analyzer/constant-table @(get-wrapped comp-env))]
+      (into #{'cljs/quit} (constant-table->keyword global-constant-table))))
   (special-forms [_]
     (set (map name '[def if do quote recur throw try catch new set!])))
   nil
