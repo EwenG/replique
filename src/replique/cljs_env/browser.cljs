@@ -78,6 +78,7 @@
   (let [the-stylesheet (stylesheet-with-url url)]
     (reload-css-node (.-ownerNode the-stylesheet))))
 
+;; other parameters may not be supported by all browsers
 (defn global-error-handler [msg url]
   (println msg))
 
