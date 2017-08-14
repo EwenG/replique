@@ -51,16 +51,15 @@
     (add-classpath-url cl url)))
 
 (defn classpath->urls [classpath]
-  (->> (clojure.string/split classpath #":")
+  (->> (clojure.string/split (clojure.string/trim classpath) #":")
        (map #(Paths/get % (make-array String 0)))
        (map #(.toUri %))
        (map #(.toURL %))))
 
 (defmethod tooling-msg/tooling-msg-handle :classpath [{:keys [classpath] :as msg}]
   (tooling-msg/with-tooling-response msg
-    (let [cp (clojure.string/split classpath #":")]
-      (if-let [cl (addable-classloader)]
-        (do (add-classpath cl (classpath->urls classpath))
-            {})
-        {:error "Could not find a suitable classloader to update the classpath"}))))
+    (if-let [cl (addable-classloader)]
+      (do (add-classpath cl (classpath->urls classpath))
+          {})
+      {:error "Could not find a suitable classloader to update the classpath"})))
 

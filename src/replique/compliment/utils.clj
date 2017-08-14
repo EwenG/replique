@@ -1,7 +1,8 @@
 (ns replique.compliment.utils
   "Functions and utilities for source implementations."
   (:import java.io.File java.nio.file.Files
-           [java.util.jar JarFile JarEntry]))
+           [java.util.jar JarFile JarEntry]
+           [java.net URLClassLoader]))
 
 (def ^:dynamic *extra-metadata*
   "Signals to downstream sources which additional information about completion
@@ -84,15 +85,25 @@
   "Signifies if the application is running on Android."
   (.contains ^String (System/getProperty "java.vendor") "Android"))
 
+(defn classloader-hierarchy
+  "Returns a seq of classloaders, with the tip of the hierarchy first.
+   Uses the current thread context ClassLoader as the tip ClassLoader
+   if one is not provided."
+  ([] (classloader-hierarchy (.. Thread currentThread getContextClassLoader)))
+  ([tip]
+   (->> tip
+        (iterate #(.getParent %))
+        (take-while boolean))))
+
 (defn classpath
   "Returns a sequence of File objects of the elements on the classpath."
   []
   (if android-vm?
     ()
-    (mapcat #(.split (or (System/getProperty %) "") File/pathSeparator)
-            ["sun.boot.class.path" "java.ext.dirs" "java.class.path"
-             ;; This is where Boot keeps references to dependencies.
-             "fake.class.path"])))
+    (->> (classloader-hierarchy)
+         reverse
+         (mapcat #(seq (.getURLs ^URLClassLoader %)))
+         (map #(.getFile %)))))
 
 (defn- symlink?
   "Checks if the given file is a symlink."
