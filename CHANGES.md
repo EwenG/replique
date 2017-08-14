@@ -1,7 +1,8 @@
 # Version 0.0.7
 
-- javascript errors happening during load-file are now printed by a global error handler
-- update the compliment library (autocompletion)
+- Classpath reloading
+- Javascript errors happening during load-file are now printed by a global error handler
+- Update the compliment library (autocompletion)
 
 # Version 0.0.6
 

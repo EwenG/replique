@@ -6,6 +6,7 @@
             [replique.tooling-msg :as tooling-msg]
             [replique.repliquedoc :as repliquedoc]
             [replique.omniscient :as omniscient]
+            [replique.classpath :as classpath]
             [replique.meta :as r-meta]
             [replique.compliment.core :as compliment]
             [replique.compliment.context :as context]
