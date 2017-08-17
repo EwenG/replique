@@ -9,18 +9,19 @@
             [replique.server :refer [*session*] :as server]
             [replique.tooling-msg :as tooling-msg]
             [clojure.java.io :as io]
-            [clojure.stacktrace :refer [print-stack-trace]])
+            [clojure.stacktrace :refer [print-stack-trace]]
+            [cljs.closure :as closure])
   (:import [java.io File]
            [javax.script ScriptEngine ScriptEngineManager ScriptException ScriptEngineFactory]
-           [jdk.nashorn.api.scripting NashornException]
+           [jdk.nashorn.api.scripting NashornException ScriptObjectMirror]
            [java.util.concurrent.locks ReentrantLock]))
 
-(declare create-engine init-engine ->NashornEnv)
+(declare create-engine init-engine init-repl-env)
 
 (defonce engine (utils/delay (init-engine (create-engine)
                                           (cljs.util/output-directory
                                            (:options @@replique.repl-cljs/compiler-env)))))
-(defonce repl-env (utils/delay (->NashornEnv)))
+(defonce repl-env (utils/delay (init-repl-env)))
 
 (defn create-engine []
   (let [factories (.getEngineFactories (ScriptEngineManager.))
@@ -37,8 +38,7 @@
   (.eval engine s))
 
 (defn load-ns [engine ns]
-  (eval-str engine
-            (format "goog.require(\"%s\");" (comp/munge (first ns)))))
+  (eval-str engine (format "goog.require(\"%s\");" (comp/munge (first ns)))))
 
 (defn eval-resource
   "Evaluate a file on the classpath in the engine."
@@ -56,7 +56,12 @@
             (format
              (str "var nashorn_load = function(path) {"
                   "  var outputPath = \"%s\" + \"/\" + path;"
-                  "  load(outputPath);"
+                  "  try {"
+                  "    load(outputPath);"
+                  "} catch(e) {"
+                  "  cljs.core._STAR_e = e;"
+                  "  throw e;"
+                  "}"
                   "};")
              output-dir))
   (eval-str engine
@@ -69,8 +74,45 @@
   (load-js-file engine "replique/cljs_env/javafx.js")
   engine)
 
+(defn evaluate-form [repl-env js]
+  (try
+    {:status :success
+     :value (if-let [r (eval-str @engine js)]
+              (if (and (instance? ScriptObjectMirror r) (.containsKey r "stack"))
+                (let [cst (cljs.repl/-parse-stacktrace
+                           repl-env (.get r "stack") {} cljs.repl/*repl-opts*)]
+                  (if (vector? cst)
+                    (->> (replique.repl-cljs/mapped-stacktrace cst cljs.repl/*repl-opts*)
+                         (str (.toString r)))
+                    (.toString r)))
+                (.toString r))
+              "")}
+    (catch ScriptException e
+      (let [^Throwable root-cause (clojure.stacktrace/root-cause e)]
+        {:status :exception
+         :value (.getMessage root-cause)
+         :stacktrace (NashornException/getScriptStackString root-cause)}))
+    (catch Throwable e
+      (let [^Throwable root-cause (clojure.stacktrace/root-cause e)]
+        {:status :exception
+         :value (.getMessage root-cause)
+         :stacktrace
+         (apply str
+                (interpose "\n"
+                           (map str
+                                (.getStackTrace root-cause))))}))))
+
+(defn repl-eval-compiled [compiled repl-env f opts]
+  (let [src (replique.repl-cljs/f->src f)]
+    (cljs.repl/-evaluate
+     repl-env "<cljs repl>" 1
+     (slurp (str (cljs.util/output-directory opts)
+                 File/separator "cljs_deps.js")))
+    `(~'js* ~(closure/src-file->goog-require
+              src {:wrap true :reload true :macros-ns (:macros-ns compiled)}))))
+
 ;; Defrecord instead of deftype because cljs.repl uses the repl-env as a hashmap. Why ??? 
-(defrecord NashornEnv []
+(defrecord NashornEnv [repl-opts]
   cljs.repl/IJavaScriptEnv
   (-setup [this opts]
     (cljs.repl/evaluate-form this replique.repl-cljs/env "<cljs repl>"
@@ -93,28 +135,15 @@
                 (when (or (not (contains? *loaded-libs* name)) reload)
                   (set! *loaded-libs* (conj (or *loaded-libs* #{}) name))
                   (js/CLOSURE_IMPORT_SCRIPT
-                   (aget (.. js/goog -dependencies_ -nameToPath) name))))))))
+                   (aget (.. js/goog -dependencies_ -nameToPath) name)))))))
+    nil)
   (-evaluate [this _ _ js]
-    (try
-      {:status :success
-       :value (if-let [r (eval-str @engine js)] (.toString r) "")}
-      (catch ScriptException e
-        (let [^Throwable root-cause (clojure.stacktrace/root-cause e)]
-          {:status :exception
-           :value (.getMessage root-cause)
-           :stacktrace (NashornException/getScriptStackString root-cause)}))
-      (catch Throwable e
-        (let [^Throwable root-cause (clojure.stacktrace/root-cause e)]
-          {:status :exception
-           :value (.getMessage root-cause)
-           :stacktrace
-           (apply str
-                  (interpose "\n"
-                             (map str
-                                  (.getStackTrace root-cause))))}))))
+    (evaluate-form this js))
   (-load [this ns url]
     (load-ns @engine ns))
   (-tear-down [this] nil)
+  cljs.repl/IReplEnvOptions
+  (-repl-options [this] repl-opts)
   cljs.repl/IParseStacktrace
   (-parse-stacktrace [this frames-str ret opts]
     (st/parse-stacktrace this frames-str (assoc ret :ua-product :nashorn) opts))
@@ -122,7 +151,20 @@
   (-parse-error [_ err _]
     (update-in err [:stacktrace]
                (fn [st]
-                 (string/join "\n" (drop 1 (string/split st #"\n")))))))
+                 (string/join "\n" (drop 1 (string/split st #"\n"))))))
+  cljs.repl/IPrintStacktrace
+  (-print-stacktrace [repl-env stacktrace error build-options]
+    ;; (:value error) was already printed by repl.cljc
+    ;; we don't want to print the full stracktrace here
+    )
+  replique.repl-cljs/ReplLoadFile
+  (replique.repl-cljs/-load-file [repl-env file-path]
+    (let [opts (:options @@replique.repl-cljs/compiler-env)
+          compiled (replique.repl-cljs/compile-file repl-env file-path opts)]
+      (repl-eval-compiled compiled repl-env file-path opts))))
+
+(defn init-repl-env []
+  (NashornEnv. {:wrap #'replique.repl-cljs/wrap-fn}))
 
 (defn cljs-repl []
   (let [repl-env @repl-env
@@ -157,3 +199,5 @@
       (if (not (= :success status))
         (assoc msg :error value)
         (assoc msg :result value)))))
+
+;; unlike with a browser env, load-file is called synchronously (see nashorn_load)

@@ -1,5 +1,6 @@
 # Version 0.0.7
 
+- Cljs error printing and stacktrace handling now follows clojure behavior more closely
 - Classpath reloading
 - Javascript errors happening during load-file are now printed by a global error handler
 - Update the compliment library (autocompletion)

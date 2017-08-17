@@ -7,7 +7,7 @@
 
 (def ^:private cljs-repl* (utils/dynaload 'replique.repl-cljs/cljs-repl))
 (def ^:private cljs-repl-nashorn* (utils/dynaload 'replique.nashorn/cljs-repl))
-(def ^:private cljs-load-file (utils/dynaload 'replique.repl-cljs/load-file))
+(def ^:private cljs-load-file (utils/dynaload 'replique.repl-cljs/-load-file))
 (def ^:private cljs-in-ns* (utils/dynaload 'replique.repl-cljs/in-ns*))
 (def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
 (def ^:private cljs-repl-env (utils/dynaload 'replique.repl-cljs/repl-env))

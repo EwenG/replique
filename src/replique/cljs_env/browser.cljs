@@ -79,7 +79,12 @@
     (reload-css-node (.-ownerNode the-stylesheet))))
 
 ;; other parameters may not be supported by all browsers
-(defn global-error-handler [msg url]
+(defn global-error-handler [msg url line col error]
+  (when error
+    ;; this is not set synchronously, but this should work ok in
+    ;; most cases anyway
+    (set! *e error))
   (println msg))
 
+;; handle errors during a load-file
 (o/set js/window "onerror" global-error-handler)

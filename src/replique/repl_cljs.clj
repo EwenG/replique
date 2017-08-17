@@ -27,7 +27,8 @@
             RejectedExecutionException ExecutorService]
            [clojure.lang IExceptionInfo]
            [java.util.regex Pattern]
-           [java.util.concurrent.locks ReentrantLock]))
+           [java.util.concurrent.locks ReentrantLock]
+           [com.google.common.base Throwables]))
 
 (declare init-repl-env)
 (declare init-compiler-env)
@@ -69,10 +70,10 @@
 
 (defn shutdown-eval-executor [executor]
   (let [pendingTasks (.shutdownNow ^ExecutorService executor)]
-        ;; Tasks are run on this thread
-        (binding [*stopped-eval-executor?* true]
-          (doseq [task pendingTasks]
-            (.run ^Runnable task)))))
+    ;; Tasks are run on this thread
+    (binding [*stopped-eval-executor?* true]
+      (doseq [task pendingTasks]
+        (.run ^Runnable task)))))
 
 (defmethod dispatch-request :init [{{host :host} :headers} callback]
   (let [url (format "http://%s" host)]
@@ -231,15 +232,41 @@ replique.cljs_env.repl.connect(\"" url "\");
   [repl-env provides url]
   (cljs.repl/-evaluate repl-env nil nil (slurp url)))
 
-(defn evaluate-form [js]
+(defn mapped-stacktrace [stacktrace opts]
+  (with-out-str
+    (doseq [{:keys [function file line column]}
+            (cljs.repl/mapped-stacktrace stacktrace opts)]
+      (println "\t"
+               (str (when function (str function " "))
+                    "(" file (when line (str ":" line)) (when column (str ":" column)) ")")))))
+
+;; resolve the stacktrace using sourcemaps when the evaluation result contains a stacktrace
+(defn handle-stacktrace [repl-env ret]
+  (if (= :success (:status ret))
+    (try
+      (let [cst (cljs.repl/-parse-stacktrace
+                 repl-env (:stacktrace ret) ret cljs.repl/*repl-opts*)]
+        (if (vector? cst)
+          (->> (mapped-stacktrace cst cljs.repl/*repl-opts*)
+               (str (:value ret))
+               (assoc ret :value))
+          ret))
+      (catch Throwable e
+        {:status :error
+         :value (Throwables/getStackTraceAsString e)}))
+    ret))
+
+(defn evaluate-form [repl-env js]
   (let [port (server/server-port)
         {:keys [state eval-executor]} @server/cljs-server]
     (cond
       (= :stopped state)
       {:status :error
        :value (format "Waiting for browser to connect on port %d ..." port)}
-      :else (try (.get (.submit ^ExecutorService eval-executor
-                                ^Callable (make-eval-task js)))
+      :else (try (->> (.submit ^ExecutorService eval-executor
+                               ^Callable (make-eval-task js))
+                      (.get)
+                      (handle-stacktrace repl-env))
                  (catch RejectedExecutionException e
                    {:status :error
                     :value "Connection broken"})))))
@@ -249,7 +276,7 @@ replique.cljs_env.repl.connect(\"" url "\");
   cljs.repl/IJavaScriptEnv
   (-setup [this opts] nil)
   (-evaluate [this _ _ js]
-    (evaluate-form js))
+    (evaluate-form this js))
   (-load [this provides url]
     (load-javascript this provides url))
   ;; We don't want the repl-env to be closed on cljs-repl exit
@@ -267,7 +294,12 @@ replique.cljs_env.repl.connect(\"" url "\");
                                  (pr-str
                                   {:ua-product (clojure.browser.repl/get-ua-product)
                                    :value (str ~e)
-                                   :stacktrace (.-stack ~e)}))))))
+                                   :stacktrace (.-stack ~e)})))))
+  cljs.repl/IPrintStacktrace
+  (-print-stacktrace [repl-env stacktrace error build-options]
+    ;; (:value error) was already printed by repl.cljc
+    ;; we don't want to print the full stracktrace here
+    ))
 
 (defn in-ns* [ns-name]
   (when-not (ana/get-namespace ns-name)
@@ -279,10 +311,37 @@ replique.cljs_env.repl.connect(\"" url "\");
      (str "goog.provide('" (comp/munge ns-name) "');")))
   (set! ana/*cljs-ns* ns-name))
 
+;; Customize cljs.repl/wrap-fn to be able to print the sourcemapped stacktrace of errors
+(defn- wrap-fn [form]
+  (cond
+    (and (seq? form)
+         (#{'ns 'require 'require-macros
+            'use 'use-macros 'import 'refer-clojure} (first form)))
+    identity
+
+    ('#{*1 *2 *3 *e} form) (fn [x] `(let [x# ~x]
+                                      (if (cljs.core/instance? js/Error x#)
+                                        x#
+                                        (cljs.core/pr-str x#))))
+    :else
+    (fn [x]
+      `(try
+         (let [ret# ~x]
+           (set! *3 *2)
+           (set! *2 *1)
+           (set! *1 ret#)
+           (if (cljs.core/instance? js/Error ret#)
+             ret#
+             (cljs.core/pr-str ret#)))
+         (catch :default e#
+           (set! *e e#)
+           (throw e#))))))
+
 (defn init-repl-env []
   ;; Merge repl-opts in browserenv because clojurescript expects this. This is weird
   (let [repl-opts {:analyze-path []
-                   :static-dir [utils/cljs-compile-path]}]
+                   :static-dir [utils/cljs-compile-path]
+                   :wrap #'wrap-fn}]
     (merge (BrowserEnv. repl-opts) repl-opts
            ;; st/parse-stacktrace expects host host-port and port to be defined on the repl-env
            {:host "localhost" :host-port (server/server-port) :port (server/server-port)})))
@@ -474,10 +533,12 @@ replique.cljs_env.repl.connect(\"" url "\");
     (when eval-executor (shutdown-eval-executor eval-executor))
     (when result-executor (.shutdownNow ^ExecutorService result-executor))))
 
-(defn load-file [repl-env file-path]
+(defprotocol ReplLoadFile
+  (-load-file [repl-env file-path]))
+
+(defn compile-file [repl-env file-path opts]
   (cljs-env/with-compiler-env @compiler-env
-    (let [opts (:options @@compiler-env)
-          compiled (repl-compile-cljs file-path opts)]
+    (let [compiled (repl-compile-cljs file-path opts)]
       (repl-cljs-on-disk
        compiled (#'cljs.repl/env->opts repl-env) opts)
       (->> (refresh-cljs-deps opts)
@@ -485,7 +546,17 @@ replique.cljs_env.repl.connect(\"" url "\");
             (assoc opts :output-to
                    (str (cljs.util/output-directory opts)
                         File/separator "cljs_deps.js"))))
-      (:value (repl-eval-compiled compiled repl-env file-path opts)))))
+      compiled)))
+
+(defn load-file [repl-env file-path]
+  (let [opts (:options @@compiler-env)
+        compiled (compile-file repl-env file-path opts)]
+    (:value (repl-eval-compiled compiled repl-env file-path opts))))
+
+(extend-type BrowserEnv
+  ReplLoadFile
+  (-load-file [repl-env file-path]
+    (load-file repl-env file-path)))
 
 (defn set-repl-verbose [b]
   (set! cljs.repl/*cljs-verbose* b))
@@ -525,3 +596,17 @@ replique.cljs_env.repl.connect(\"" url "\");
             result (cljs-env/with-compiler-env @compiler-env
                      (eval-cljs repl-env env form (:repl-opts repl-env)))]
         (assoc msg :result result)))))
+
+
+;; stacktraces:
+;; Sourcemaps are only handled for errors sent via the evaluation result cljs REPL communication
+;; channel (ie not for errors printed on the client side)
+;; Unlike clojure, cljs errors do not print with their stacktrace
+;; It would not be possible to resolve the sourcemaps on the client side anyway
+;; Replique do not extend the printing of errors to include their stacktrace because the behavior
+;; would be different between cljs code started with/without replique
+;; Errors printed as evaluation results are not printed as data. Their printing is REPL specific
+;; anyway
+
+;; cljs files are loaded by appending a <script> tag to the page. Errors during a load-file
+;; are handled by a global error handler, which prints the error

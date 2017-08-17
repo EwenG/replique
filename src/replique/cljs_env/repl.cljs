@@ -67,8 +67,17 @@
   [block]
   (let [result
         (try
-          {:status :success
-           :value (str (js* "eval(~{block})"))}
+          (let [eval-result (js* "eval(~{block})")]
+            (if (instance? js/Error eval-result)
+              {:status :success
+               :ua-product (get-ua-product)
+               :value (str eval-result)
+               :stacktrace
+               (if (.hasOwnProperty eval-result "stack")
+                 (.-stack eval-result)
+                 "No stacktrace available.")}
+              {:status :success
+               :value (str eval-result)}))
           (catch :default e
             {:status :exception
              :ua-product (get-ua-product)
