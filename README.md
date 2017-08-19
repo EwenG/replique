@@ -80,16 +80,18 @@ Notice that no prompt is printed. By not pinting a rompt, we make the REPL outpu
 Enter the following in the tooling REPL:
 
 ```clojure
-(replique.tooling-msg/tooling-msg-handle {:type :clj-completion
+(replique.tooling-msg/tooling-msg-handle {:type :completion 
+                                          :repl-env :replique/clj
                                           :context nil
                                           :ns 'replique.repl
                                           :prefix "tooli"})
 ```
 => 
 ```clojure
-{:type :clj-completion
- :process-id #uuid "5e1ffe41-797a-4379-a52a-e1d82d1704cd"
- :candidates ({:candidate "tooling-msg" :type :namespace}
+{:repl-env :replique/clj
+ :type :completion
+ :process-id #uuid "79de3c8b-2d53-41fd-a089-73afc9efed22"
+ :candidates ({:candidate "tooling-msg" :type :namespace} 
               {:candidate "tooling-repl" :type :function :ns "replique.repl"})}
 ```
 
