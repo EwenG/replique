@@ -1,3 +1,5 @@
+# Version 0.0.8
+
 # Version 0.0.7
 
 - The omniscient debugger now captures the deftype and defrecord fields
