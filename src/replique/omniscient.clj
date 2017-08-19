@@ -5,7 +5,7 @@
             [replique.tooling-msg :as tooling-msg]
             [replique.utils :as utils]
             [replique.omniscient-runtime :refer
-             [registry *omniscient-env* append-env last-selected var->sym]]
+             [registry *omniscient-env* append-env last-selected]]
             [replique.environment :as env]
             [clojure.pprint])
   (:import [java.util Date]
@@ -16,7 +16,6 @@
 (def ^:private cljs-defn (utils/dynaload 'cljs.core/defn))
 (def ^:private cljs-defmethod (utils/dynaload 'cljs.core/defmethod))
 (def ^:private cljs-extend-type (utils/dynaload 'cljs.core/extend-type))
-(def ^:private cljs-deftype (utils/dynaload 'cljs.core/deftype))
 (def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
 (def ^:private cljs-eval-cljs (utils/dynaload 'replique.repl-cljs/eval-cljs))
 (def ^:private cljs-repl-env (utils/dynaload 'replique.repl-cljs/repl-env))
@@ -56,6 +55,11 @@
   (if (utils/cljs-env? &env)
     (env/->CljsCompilerEnv @@cljs-compiler-env) nil))
 
+(defn var->sym [comp-env v]
+  (let [{:keys [ns name]} (env/meta comp-env v)]
+    (when (and ns name)
+      (symbol (str (env/ns-name ns)) (str name)))))
+
 (defn sig-symbols [sig]
   (cond
     (and (symbol? sig) (not= '& sig)) #{sig}
@@ -89,7 +93,7 @@
                         ~@(when method [:method `(quote ~method)]) ~@[]
                         :locals {~@locals ~@[]}
                         :bindings (->> (get-thread-bindings)
-                                       (map (fn [[k# v#]] (when-let [sym# (var->sym k#)]
+                                       (map (fn [[k# v#]] (when-let [sym# (var->sym nil k#)]
                                                             (when (not
                                                                    (contains?
                                                                     excluded-dyn-vars sym#))
@@ -184,15 +188,21 @@
     (env/map->CljsNamespace (:ns &env))
     *ns*))
 
-;; Cannot use ns-resolve because the var may not be defined yet
+;; ns-resolve is not sufficient because the var may not be defined yet
 (defn compute-qualified-sym [comp-env current-ns sym]
-  (if-let [n (namespace sym)]
-    (let [ns-sym (symbol n)
-          ns-from-sym (get (env/ns-aliases comp-env current-ns) ns-sym
-                           (env/find-ns comp-env ns-sym))]
-      (when ns-from-sym
-        (symbol (str (env/ns-name ns-from-sym)) (name sym))))
-    (symbol (str (env/ns-name current-ns)) (name sym))))
+  (if-let [resolved (env/ns-resolve comp-env current-ns sym)]
+    (var->sym comp-env resolved)
+    (if-let [n (namespace sym)]
+      (let [ns-sym (symbol n)
+            ns-from-sym (get (env/ns-aliases comp-env current-ns) ns-sym
+                             (env/find-ns comp-env ns-sym))]
+        (when ns-from-sym
+          (symbol (str (env/ns-name ns-from-sym)) (name sym))))
+      (symbol (str (env/ns-name current-ns)) (name sym)))))
+
+(comment
+  (compute-qualified-sym (env/->CljsCompilerEnv @@cljs-compiler-env) 'replique.omniscient-runtime 'ILookup)
+  )
 
 (defn env-locals-clj [&env]
   (->> &env keys (remove is-omniscient-local?)))
@@ -298,22 +308,22 @@
           impls (mapcat (partial impl-with-env-capture-extend-type &env) impls)]
       (apply extend-type-o &form &env t impls))))
 
-(defn method-with-env-capture-deftype [&env qualified-sym [method-name [params & body]]]
+(defn method-with-env-capture-deftype [&env qualified-sym fields [method-name [params & body]]]
   (let [locals (sig-symbols params)
         env-locals (env-locals &env)
-        locals (clojure.set/union env-locals locals)
+        locals (clojure.set/union env-locals fields locals)
         capture-env-exprs (capture-env &env qualified-sym method-name locals)
         method (method-expr-with-env-capture capture-env-exprs `(~params ~@body))]
     `(~method-name ~@method)))
 
-(defn impl-with-env-capture-deftype [&env [protocol-name & methods]]
+(defn impl-with-env-capture-deftype [&env fields [protocol-name & methods]]
   (let [qualified-sym (compute-qualified-sym (get-comp-env &env) (env-ns &env) protocol-name)]
-    `(~protocol-name ~@(map (partial method-with-env-capture-deftype &env qualified-sym)
+    `(~protocol-name ~@(map (partial method-with-env-capture-deftype &env qualified-sym fields)
                             methods))))
 
 (comment
   (impl-with-env-capture-deftype
-    nil '(Pp (pp ([this] 2)) (pp ([this [e f] h] e)) (pp2 ([this] 3))))
+   nil '[a b] '(Pp (pp ([this] 2)) (pp ([this [e f] h] e)) (pp2 ([this] 3))))
   )
 
 (defn omniscient-deftype [deftype-o]
@@ -322,19 +332,8 @@
     (let [qualified-sym (compute-qualified-sym (get-comp-env &env) (env-ns &env) name)
           [opts specs] (#'clojure.core/parse-opts opts+specs)
           impls (parse-impls specs)
-          impls (mapcat (partial impl-with-env-capture-deftype &env) impls)]
+          impls (mapcat (partial impl-with-env-capture-deftype &env fields) impls)]
       (when-let [bad-opts (seq (remove #{:no-print :load-ns} (keys opts)))]
-        (throw (IllegalArgumentException. (apply print-str "Unsupported option(s) -" bad-opts))))
-      (apply deftype-o &form &env name fields (concat (apply concat opts) impls)))))
-
-(defn omniscient-deftype-cljs [deftype-o]
-  (fn [&form &env name fields & opts+specs]
-    (@(resolve 'cljs.core/validate-fields) "deftype" name fields)
-    (let [qualified-sym (compute-qualified-sym (get-comp-env &env) (env-ns &env) name)
-          [opts specs] (#'clojure.core/parse-opts opts+specs)
-          impls (parse-impls specs)
-          impls (mapcat (partial impl-with-env-capture-deftype &env) impls)]
-      (when-let [bad-opts (seq (remove #{} (keys opts)))]
         (throw (IllegalArgumentException. (apply print-str "Unsupported option(s) -" bad-opts))))
       (apply deftype-o &form &env name fields (concat (apply concat opts) impls)))))
 
@@ -343,11 +342,13 @@
     (let [defn-tmp @#'defn
           defmethod-tmp @#'defmethod
           extend-type-tmp @#'extend-type
-          deftype-tmp @#'deftype]
+          deftype-tmp @#'deftype
+          defrecord-tmp @#'defrecord]
       (alter-var-root #'defn omniscient-defn)
       (alter-var-root #'defmethod omniscient-defmethod)
       (alter-var-root #'extend-type omniscient-extend-type)
       (alter-var-root #'deftype omniscient-deftype)
+      (alter-var-root #'defrecord omniscient-deftype)
       (try
         ;; we must print the result to avoid it to be evaluated
         (prn (eval `(do ~@body)))
@@ -355,9 +356,10 @@
           (alter-var-root #'defn (constantly defn-tmp))
           (alter-var-root #'defmethod (constantly defmethod-tmp))
           (alter-var-root #'extend-type (constantly extend-type-tmp))
-          (alter-var-root #'deftype (constantly deftype-tmp)))))))
+          (alter-var-root #'deftype (constantly deftype-tmp))
+          (alter-var-root #'defrecord (constantly defrecord-tmp)))))))
 
-;; deftype expands to extend-type
+;; deftype and defrecord expands to extend-type
 (defn with-redefs-cljs [env body]
   (with-lock lock
     (let [defn-tmp @cljs-defn

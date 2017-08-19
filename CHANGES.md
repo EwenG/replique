@@ -1,5 +1,7 @@
 # Version 0.0.7
 
+- The omniscient debugger now captures the deftype and defrecord fields
+- Omniscient debugger support for defrecord
 - Cljs repls did not work when starting a browser repl and a nashorn repl simultaneously
 - Cljs error printing and stacktrace handling now follows clojure behavior more closely
 - Classpath reloading
