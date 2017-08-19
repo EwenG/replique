@@ -253,3 +253,20 @@
     )
   )
 
+;;defrecord
+(comment
+  (defrecord Tt2 [a b] #?@(:clj [:load-ns true])
+    Pp
+    (pp [this] a)
+    (pp [this [e f]] e)
+    (pp2 [this] 3)
+    Ppp
+    (ppp [this] 4))
+  
+
+  (comment
+    (pp (Tt2. "a" "b"))
+    (pp (Tt2. "a" "b") [1 2])
+    )
+  )
+

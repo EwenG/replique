@@ -18,8 +18,9 @@
   [env]
   (boolean (:ns env)))
 
-(def ^:dynamic *repl-type* :clj)
+(def ^:dynamic *repl-env* :replique/clj)
 
+(defmulti repl-type identity)
 (defmulti repl-ns identity)
 
 ;; Same as Delay but don't realize the Delay on exception.

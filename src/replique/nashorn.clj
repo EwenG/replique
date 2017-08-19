@@ -169,20 +169,22 @@
 (defn cljs-repl []
   (let [repl-env @repl-env
         compiler-env @replique.repl-cljs/compiler-env
-        repl-opts (replique.repl/options-with-ns-change
+        repl-opts (replique.repl/options-with-repl-meta
                    {:compiler-env compiler-env
-                    :init (fn [] (replique.repl-cljs/in-ns* 'cljs.user))
+                    :init (fn [] (replique.repl-cljs/in-ns* repl-env 'cljs.user))
                     :print println
                     :caught cljs.repl/repl-caught})]
     (swap! replique.repl-cljs/cljs-outs conj *out*)
-    (binding [utils/*repl-type* :cljs]
+    (binding [utils/*repl-env* :replique/nashorn]
       (apply
        (partial replique.cljs/repl repl-env)
        (->> (merge (:options @compiler-env) repl-opts {:eval replique.repl-cljs/eval-cljs})
             (apply concat))))
     (swap! replique.repl-cljs/cljs-outs disj *out*)))
 
-(defmethod tooling-msg/tooling-msg-handle :list-css [msg]
+(derive :replique/nashorn :replique/cljs)
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :list-css] [msg]
   (tooling-msg/with-tooling-response msg
     (let [{:keys [status value]} (cljs.repl/-evaluate
                                   @repl-env "<cljs repl>" 1
@@ -191,7 +193,8 @@
         (assoc msg :error value)
         (assoc msg :css-urls (read-string value))))))
 
-(defmethod tooling-msg/tooling-msg-handle :load-css [{:keys [url] :as msg}]
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :load-css]
+  [{:keys [url] :as msg}]
   (tooling-msg/with-tooling-response msg
     (let [{:keys [status value]} (->> (pr-str url)
                                       (format "replique.cljs_env.javafx.reload_css(%s);")
@@ -199,5 +202,13 @@
       (if (not (= :success status))
         (assoc msg :error value)
         (assoc msg :result value)))))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :load-js] [msg]
+  (tooling-msg/with-tooling-response msg
+    (replique.repl-cljs/load-js @repl-env msg)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :eval] [msg]
+  (tooling-msg/with-tooling-response msg
+    (replique.repl-cljs/tooling-eval-cljs @repl-env msg)))
 
 ;; unlike with a browser env, load-file is called synchronously (see nashorn_load)

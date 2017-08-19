@@ -301,14 +301,13 @@ replique.cljs_env.repl.connect(\"" url "\");
     ;; we don't want to print the full stracktrace here
     ))
 
-(defn in-ns* [ns-name]
+(defn in-ns* [repl-env ns-name]
   (when-not (ana/get-namespace ns-name)
     (swap! cljs-env/*compiler*
            assoc-in [::ana/namespaces ns-name]
            {:name ns-name})
     (cljs.repl/-evaluate
-     @repl-env "<cljs repl>" 1
-     (str "goog.provide('" (comp/munge ns-name) "');")))
+     repl-env "<cljs repl>" 1 (str "goog.provide('" (comp/munge ns-name) "');")))
   (set! ana/*cljs-ns* ns-name))
 
 ;; Customize cljs.repl/wrap-fn to be able to print the sourcemapped stacktrace of errors
@@ -471,17 +470,20 @@ replique.cljs_env.repl.connect(\"" url "\");
     eval-result))
 
 (defn eval-cljs-form
-  ([form] (eval-cljs-form form nil))
-  ([form {:keys [ns warnings]
-          :or {ns ana/*cljs-ns*
-               warnings ana/*cljs-warnings*}}]
+  ([repl-env form] (eval-cljs-form repl-env form nil))
+  ([repl-env form {:keys [ns warnings]
+                   :or {ns ana/*cljs-ns*
+                        warnings ana/*cljs-warnings*}}]
    (binding [ana/*cljs-ns* ns
              ana/*cljs-warnings* warnings]
      (cljs-env/with-compiler-env @compiler-env
-       (eval-cljs @repl-env env form cljs.repl/*repl-opts*)))))
+       (eval-cljs repl-env env form cljs.repl/*repl-opts*)))))
 
-(defmethod utils/repl-ns :cljs [repl-type]
+(defmethod utils/repl-ns :replique/cljs [repl-env]
   ana/*cljs-ns*)
+
+(defmethod utils/repl-type :replique/cljs [repl-env]
+  :cljs)
 
 ;; Customized REPL to allow exiting the REPL with :cljs/quit
 (defn repl-read-with-exit [exit-keyword]
@@ -508,11 +510,11 @@ replique.cljs_env.repl.connect(\"" url "\");
   (let [repl-env @repl-env
         compiler-env @compiler-env
         {:keys [state]} @server/cljs-server
-        repl-opts (replique.repl/options-with-ns-change
+        repl-opts (replique.repl/options-with-repl-meta
                    {:compiler-env compiler-env
                     ;; Code modifying the runtime should not be put in :init, otherwise it
                     ;; would be lost on browser refresh
-                    :init (fn [] (in-ns* 'cljs.user))
+                    :init (fn [] (in-ns* repl-env 'cljs.user))
                     ;; cljs results are strings, so we must not print with prn
                     :print println
                     :caught cljs.repl/repl-caught
@@ -520,7 +522,7 @@ replique.cljs_env.repl.connect(\"" url "\");
     (swap! cljs-outs conj *out*)
     (when (not= :started state)
       (println (format "Waiting for browser to connect on port %d ..." (server/server-port))))
-    (binding [utils/*repl-type* :cljs]
+    (binding [utils/*repl-env* :replique/browser]
       (apply
        (partial replique.cljs/repl repl-env)
        (->> (merge (:options @compiler-env) repl-opts {:eval eval-cljs})
@@ -561,7 +563,9 @@ replique.cljs_env.repl.connect(\"" url "\");
 (defn set-repl-verbose [b]
   (set! cljs.repl/*cljs-verbose* b))
 
-(defmethod tooling-msg/tooling-msg-handle :list-css [msg]
+(derive :replique/browser :replique/cljs)
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :list-css] [msg]
   (tooling-msg/with-tooling-response msg
     (let [{:keys [status value]} (cljs.repl/-evaluate
                                   @repl-env "<cljs repl>" 1
@@ -570,7 +574,7 @@ replique.cljs_env.repl.connect(\"" url "\");
         (assoc msg :error value)
         (assoc msg :css-urls (read-string value))))))
 
-(defmethod tooling-msg/tooling-msg-handle :load-css [{:keys [url] :as msg}]
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :load-css] [{:keys [url] :as msg}]
   (tooling-msg/with-tooling-response msg
     (let [{:keys [status value]} (->> (pr-str url)
                                       (format "replique.cljs_env.browser.reload_css(%s);")
@@ -579,23 +583,28 @@ replique.cljs_env.repl.connect(\"" url "\");
         (assoc msg :error value)
         (assoc msg :result value)))))
 
-(defmethod tooling-msg/tooling-msg-handle :load-js [{:keys [file-path] :as msg}]
-  (tooling-msg/with-tooling-response msg
-    (let [{:keys [status value]} (->> (slurp file-path)
-                                      (cljs.repl/-evaluate @repl-env "<cljs repl>" 1))]
-      (if (not (= :success status))
-        (assoc msg :error value)
-        (assoc msg :result value)))))
+(defn load-js [repl-env {:keys [file-path] :as msg}]
+  (let [{:keys [status value]} (->> (slurp file-path)
+                                    (cljs.repl/-evaluate repl-env "<cljs repl>" 1))]
+    (if (not (= :success status))
+      (assoc msg :error value)
+      (assoc msg :result value))))
 
-(defmethod tooling-msg/tooling-msg-handle :eval-cljs [{:keys [form] :as msg}]
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :load-js] [msg]
   (tooling-msg/with-tooling-response msg
-    (binding [*out* utils/process-out
-              *err* utils/process-err]
-      (let [repl-env @repl-env
-            form (reader/read-string {:read-cond :allow :features #{:cljs}} form)
-            result (cljs-env/with-compiler-env @compiler-env
-                     (eval-cljs repl-env env form (:repl-opts repl-env)))]
-        (assoc msg :result result)))))
+    (load-js @repl-env msg)))
+
+(defn tooling-eval-cljs [repl-env {:keys [form] :as msg}]
+  (binding [*out* utils/process-out
+            *err* utils/process-err]
+    (let [form (reader/read-string {:read-cond :allow :features #{:cljs}} form)
+          result (cljs-env/with-compiler-env @compiler-env
+                   (eval-cljs repl-env env form (:repl-opts repl-env)))]
+      (assoc msg :result result))))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :eval] [msg]
+  (tooling-msg/with-tooling-response msg
+    (tooling-eval-cljs @repl-env msg)))
 
 
 ;; stacktraces:

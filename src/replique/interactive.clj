@@ -21,7 +21,7 @@
                       (not (contains? options-map :print)) (assoc :print prn)
                       (not (contains? options-map :caught))
                       (assoc :caught clojure.main/repl-caught)
-                      true replique.repl/options-with-ns-change)]
+                      true replique.repl/options-with-repl-meta)]
     (apply clojure.main/repl (apply concat options-map))))
 
 (defn cljs-repl
@@ -56,7 +56,7 @@
         ns-name (and (seq? ns-quote) (second ns-quote))]
     (when-not (and (= 'quote quote) (symbol? ns-name))
       (throw (IllegalArgumentException. "Argument to in-ns must be a symbol.")))
-    (list 'quote (@cljs-in-ns* ns-name))))
+    (list 'quote (@cljs-in-ns* (:repl-env &env) ns-name))))
 
 (defmacro set-cljs-repl-verbose
   "Switch the clojurescript REPL into verbose mode"

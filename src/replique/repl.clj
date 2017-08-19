@@ -22,15 +22,18 @@
    :prompt #()
    :print (fn [result] (tooling-msg/tooling-prn result))))
 
-(defn on-ns-change []
+(defn print-repl-meta []
   (when (and (tooling-msg/tooling-available?) server/*session*)
     (binding [*out* tooling-msg/tooling-out]
       (utils/with-lock tooling-msg/tooling-out-lock
-        (tooling-msg/tooling-prn {:type :ns-change
+        (tooling-msg/tooling-prn {:type :repl-meta
                                   :process-id tooling-msg/process-id
                                   :session server/*session*
-                                  :repl-type utils/*repl-type*
-                                  :ns (utils/repl-ns utils/*repl-type*)})))))
+                                  ;; use dynamic vars for repl-type and repl-env in order to
+                                  ;; come back to the right repl-type when leaving a repl
+                                  :repl-type (utils/repl-type utils/*repl-env*)
+                                  :repl-env utils/*repl-env*
+                                  :ns (utils/repl-ns utils/*repl-env*)})))))
 
 (defn start-repl-process [project-map {:keys [process-id host port cljs-compile-path version]}]
   (try
@@ -93,21 +96,24 @@
   (.start (Thread. (fn [] (throw (Exception. "f")))))
   )
 
-(defmethod utils/repl-ns :clj [repl-type]
+(defmethod utils/repl-type :replique/clj [repl-env]
+  :clj)
+
+(defmethod utils/repl-ns :replique/clj [repl-env]
   (ns-name *ns*))
 
-(defn options-with-ns-change [{:keys [init caught print]
+(defn options-with-repl-meta [{:keys [init caught print]
                                :as options-map}]
   (assert (and init print caught) "init print and caught are required")
   (assoc options-map
-         :init (fn [] (init) (on-ns-change))
-         :print (fn [& args] (apply print args) (on-ns-change))
-         :caught (fn [& args] (apply caught args) (on-ns-change))))
+         :init (fn [] (init) (print-repl-meta))
+         :print (fn [& args] (apply print args) (print-repl-meta))
+         :caught (fn [& args] (apply caught args) (print-repl-meta))))
 
 (defn repl []
   (apply clojure.main/repl (->> {:init (fn [] (in-ns 'user))
                                  :print prn :caught clojure.main/repl-caught}
-                                options-with-ns-change
+                                options-with-repl-meta
                                 (apply concat))))
 
 ;; Behavior of the socket REPL on repl closing

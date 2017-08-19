@@ -11,20 +11,23 @@
 (defonce tooling-prn prn)
 
 (defmacro with-tooling-response [msg & resp]
-  `(let [type# (:type ~msg)]
-     (try (merge {:type type# :process-id ~process-id} (~'do ~@resp))
+  `(let [type# (:type ~msg)
+         repl-env# (:repl-env ~msg)]
+     (try (merge {:type type# :repl-env repl-env# :process-id ~process-id} (~'do ~@resp))
           (catch Exception t#
             {:process-id ~process-id
              :type type#
+             :repl-env repl-env#
              :error t#}))))
 
-(defmulti tooling-msg-handle :type)
+(defmulti tooling-msg-handle (fn [{:keys [repl-env type]}] [repl-env type]))
 
 (defmethod tooling-msg-handle :default
-  [{:keys [process-id type] :as msg}]
+  [{:keys [process-id repl-env type] :as msg}]
   {:process-id process-id
    :type type
-   :error (format "Invalid tooling message type: %s" type)})
+   :repl-env repl-env
+   :error (format "Invalid tooling message type: %s for repl-env: %s" type repl-env)})
 
 (defn uncaught-exception [thread ex]
   (if (or (nil? tooling-err) (nil? tooling-out-lock))
@@ -33,7 +36,8 @@
       (utils/with-lock tooling-out-lock
         (tooling-prn {:type :error
                       :process-id process-id
-                      :repl-type :clj
+                      :repl-type (utils/repl-type utils/*repl-env*)
+                      :repl-env utils/*repl-env*
                       :thread (.getName ^Thread thread)
                       :ns (ns-name *ns*)
                       :value (with-out-str (print-stack-trace ex))})))))

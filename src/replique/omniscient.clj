@@ -19,8 +19,9 @@
 (def ^:private cljs-deftype (utils/dynaload 'cljs.core/deftype))
 (def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
 (def ^:private cljs-eval-cljs (utils/dynaload 'replique.repl-cljs/eval-cljs))
-(def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
 (def ^:private cljs-repl-env (utils/dynaload 'replique.repl-cljs/repl-env))
+(def ^:private cljs-repl-env-nashorn (utils/dynaload 'replique.nashorn/repl-env))
+(def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
 (def ^:private cljs-in-ns* (utils/dynaload 'replique.repl-cljs/in-ns*))
 (def ^:private cljs-repl-caught (utils/dynaload 'cljs.repl/repl-caught))
 (def ^:private cljs-repl (utils/dynaload 'replique.cljs/repl))
@@ -357,7 +358,7 @@
           (alter-var-root #'deftype (constantly deftype-tmp)))))))
 
 ;; deftype expands to extend-type
-(defn with-redefs-cljs [body]
+(defn with-redefs-cljs [env body]
   (with-lock lock
     (let [defn-tmp @cljs-defn
           defmethod-tmp @cljs-defmethod
@@ -372,7 +373,7 @@
                         (resolve 'cljs.analyzer/*loop-lets*) '()}
           ;; evaluate the body, the result is wrapped in a string.
           ;; the result of the macro is then evaluated by the cljs repl
-          (println (@cljs-eval-cljs-form `(do ~@body))))
+          (println (@cljs-eval-cljs-form (:repl-env env) `(do ~@body))))
         (finally
           (alter-var-root (resolve 'cljs.core/defn) (constantly defn-tmp))
           (alter-var-root (resolve 'cljs.core/defmethod) (constantly defmethod-tmp))
@@ -380,7 +381,7 @@
 
 (defmacro with-redefs [& body]
   (if (utils/cljs-env? &env)
-    (with-redefs-cljs body)
+    (with-redefs-cljs &env body)
     (with-redefs-clj body)))
 
 (defn locals-reducer [acc local-sym]
@@ -418,7 +419,7 @@
     (eval form)))
 
 (defn eval-with-env-cljs [repl-env env form opts]
-  (if (= (utils/repl-ns :cljs) (symbol (namespace *omniscient-sym*)))
+  (if (= (utils/repl-ns :replique/cljs) (symbol (namespace *omniscient-sym*)))
     (let [form (-> form
                    (form-with-locals *omniscient-local-syms*)
                    (form-with-bindings *omniscient-binding-syms*))]
@@ -457,19 +458,18 @@
                                    :print prn :caught clojure.main/repl-caught
                                    :read repl-read :eval (partial eval-with-env)
                                    :prompt repl-prompt-clj}
-                                  replique.repl/options-with-ns-change
+                                  replique.repl/options-with-repl-meta
                                   (apply concat)))))
 
-(defn- repl-cljs* [sym local-keys binding-keys]
+(defn- repl-cljs* [repl-env sym local-keys binding-keys]
   (binding [*omniscient-repl?* true
             *omniscient-sym* sym
             *omniscient-local-syms* local-keys
             *omniscient-binding-syms* binding-keys]
-    (let [repl-env @@cljs-repl-env
-          compiler-env @@cljs-compiler-env
-          repl-opts (replique.repl/options-with-ns-change
+    (let [compiler-env @@cljs-compiler-env
+          repl-opts (replique.repl/options-with-repl-meta
                      {:compiler-env compiler-env
-                      :init (fn [] (@cljs-in-ns* (-> sym namespace symbol)))
+                      :init (fn [] (@cljs-in-ns* repl-env (-> sym namespace symbol)))
                       :print println :caught @cljs-repl-caught
                       :read (@cljs-repl-read-with-exit :omniscient/quit)
                       :eval eval-with-env-cljs
@@ -493,28 +493,30 @@
           (repl-clj* qualified-sym env)))
     nil))
 
-(defn repl-cljs [qualified-sym index]
+(defn repl-cljs [repl-env qualified-sym index]
   (let [{:keys [local-keys binding-keys]} (read-string
                                            (@cljs-eval-cljs-form
+                                            repl-env
                                             `(replique.omniscient-runtime/locals-bindings-keys
                                               (quote ~qualified-sym) ~index)))]
     (@cljs-eval-cljs-form
+     repl-env
      `(do (set! *omniscient-env* (get-in @registry [(quote ~qualified-sym) ~index]))
           (swap! last-selected assoc (quote ~qualified-sym) ~index)))
     (if *omniscient-repl?*
       (do (set! *omniscient-local-syms* local-keys)
           (set! *omniscient-binding-syms* binding-keys)
-          (@cljs-in-ns* (-> qualified-sym namespace symbol)))
+          (@cljs-in-ns* repl-env (-> qualified-sym namespace symbol)))
       (try
-        (repl-cljs* qualified-sym local-keys binding-keys)
+        (repl-cljs* repl-env qualified-sym local-keys binding-keys)
         (finally
-          (@cljs-eval-cljs-form `(set! *omniscient-env* nil)))))
+          (@cljs-eval-cljs-form repl-env `(set! *omniscient-env* nil)))))
     nil))
 
 (defmacro repl [sym index]
   (let [qualified-sym (compute-qualified-sym (get-comp-env &env) (env-ns &env) sym)]
     (if (utils/cljs-env? &env)
-      (repl-cljs qualified-sym index)
+      (repl-cljs (:repl-env &env) qualified-sym index)
       `(repl-clj (quote ~qualified-sym) ~index))))
 
 (defmacro get-env [sym index]
@@ -527,7 +529,7 @@
       [`(quote ~k) v]
       [k v])))
 
-(defmethod tooling-msg/tooling-msg-handle :omniscient-filter-clj
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :omniscient-filter]
   [{sym :symbol session-ns :session-ns is-string? :is-string? filter-term :filter-term
     prev-index :prev-index msg-id :msg-id
     :as msg}]
@@ -547,32 +549,40 @@
         (assoc (replique.omniscient-runtime/filter-envs qualified-sym prev-index filter-form)
                :msg-id msg-id)))))
 
-(defmethod tooling-msg/tooling-msg-handle :omniscient-filter-cljs
-  [{sym :symbol session-ns :session-ns is-string? :is-string? filter-term :filter-term
-    prev-index :prev-index msg-id :msg-id
-    :as msg}]
+(defn omniscient-filter-cljs [repl-env {sym :symbol session-ns :session-ns
+                                        is-string? :is-string? filter-term :filter-term
+                                        prev-index :prev-index msg-id :msg-id
+                                        :as msg}]
+  (let [comp-env (env/->CljsCompilerEnv @@cljs-compiler-env)
+        session-ns (and session-ns (env/find-ns comp-env (symbol session-ns)))
+        sym (and sym (symbol sym))
+        qualified-sym (compute-qualified-sym comp-env session-ns sym)
+        filter-form (if (= "" (clojure.string/trim filter-term)) "{}" filter-term)
+        filter-form (try
+                      (read-string filter-form)
+                      (catch Exception e nil))
+        filter-form (when (map? filter-form)
+                      (->> filter-form symbolize-keys (cons 'cljs.core/list)))]
+    (when (and (not is-string?) qualified-sym)
+      (when-let [res (try (@cljs-eval-cljs-form
+                           repl-env
+                           `(try (replique.omniscient-runtime/filter-envs
+                                  (quote ~qualified-sym) ~prev-index ~filter-form)
+                                 (catch js/Error ~'_ nil))
+                           {:ns (env/ns-name session-ns) :warnings nil})
+                          (catch clojure.lang.ExceptionInfo e
+                            (if (= (.getData e) {:tag :cljs/analysis-error})
+                              nil
+                              (throw e))))]
+        (assoc (read-string res) :msg-id msg-id))))) 
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :omniscient-filter] [msg]
   (tooling-msg/with-tooling-response msg
-    (let [comp-env (env/->CljsCompilerEnv @@cljs-compiler-env)
-          session-ns (and session-ns (env/find-ns comp-env (symbol session-ns)))
-          sym (and sym (symbol sym))
-          qualified-sym (compute-qualified-sym comp-env session-ns sym)
-          filter-form (if (= "" (clojure.string/trim filter-term)) "{}" filter-term)
-          filter-form (try
-                        (read-string filter-form)
-                        (catch Exception e nil))
-          filter-form (when (map? filter-form)
-                        (->> filter-form symbolize-keys (cons 'cljs.core/list)))]
-      (when (and (not is-string?) qualified-sym)
-        (when-let [res (try (@cljs-eval-cljs-form
-                             `(try (replique.omniscient-runtime/filter-envs
-                                    (quote ~qualified-sym) ~prev-index ~filter-form)
-                                   (catch js/Error ~'_ nil))
-                             {:ns (env/ns-name session-ns) :warnings nil})
-                            (catch clojure.lang.ExceptionInfo e
-                              (if (= (.getData e) {:tag :cljs/analysis-error})
-                                nil
-                                (throw e))))]
-          (assoc (read-string res) :msg-id msg-id))))))
+    (omniscient-filter-cljs @@cljs-repl-env msg)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :omniscient-filter] [msg]
+  (tooling-msg/with-tooling-response msg
+    (omniscient-filter-cljs @@cljs-repl-env-nashorn msg)))
 
 ;; cljs support
 ;; cljs repl-caught compiler exception printing

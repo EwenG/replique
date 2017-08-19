@@ -56,7 +56,8 @@
        (map #(.toUri %))
        (map #(.toURL %))))
 
-(defmethod tooling-msg/tooling-msg-handle :classpath [{:keys [classpath] :as msg}]
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :classpath]
+  [{:keys [classpath] :as msg}]
   (tooling-msg/with-tooling-response msg
     (if-let [cl (addable-classloader)]
       (do (add-classpath cl (classpath->urls classpath))
