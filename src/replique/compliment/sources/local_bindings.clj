@@ -12,6 +12,14 @@
 
 (def letfn-like-forms '#{letfn})
 
+(defn tree-leaves [t]
+  (filter #(not (coll? %)) (tree-seq coll? seq t)))
+
+(defn even-seq [s]
+  (if (even? (count s))
+    s
+    (take (dec (count s)) s)))
+
 (defn parse-binding
   "Given a binding node returns the list of local bindings introduced by that
   node. Handles vector and map destructuring."
@@ -39,14 +47,20 @@
   (let [fn-name (when (symbol? (first fn-body))
                   (name (first fn-body)))
         fn-body (if fn-name (rest fn-body) fn-body)]
-    (cond->
-        (mapcat parse-binding
-                (loop [[c & r] fn-body, bnodes []]
-                  (cond (nil? c) bnodes
-                        (list? c) (recur r (conj bnodes (first c))) ;; multi-arity case
-                        (vector? c) c                               ;; single-arity case
-                        :else (recur r bnodes))))
-      fn-name (conj fn-name))))
+    (let [params-bindings
+          (mapcat parse-binding
+                  (loop [[c & r] fn-body, bnodes []]
+                    (cond (nil? c) bnodes
+                          (list? c) (recur r (conj bnodes (first c))) ;; multi-arity case
+                          (vector? c) c                               ;; single-arity case
+                          :else (recur r bnodes))))
+          all-bindings (if fn-name (conj params-bindings fn-name) params-bindings)]
+      (if (first (filter #(= "__prefix__" %) all-bindings))
+        '()
+        all-bindings))))
+
+(defn has-prefix? [s]
+  (first (filter #(= '__prefix__ %) (tree-leaves s))))
 
 (defn extract-local-bindings
   "When given a form that has a binding vector traverses that binding vector and
@@ -54,7 +68,11 @@
   [form]
   (when (list? form)
     (cond (let-like-forms (first form))
-          (mapcat parse-binding (take-nth 2 (second form)))
+          (->> (second form)
+               (take-while (comp not has-prefix?))
+               even-seq
+               (take-nth 2)
+               (mapcat parse-binding))
 
           (defn-like-forms (first form)) (parse-fn-body (rest form))
 
@@ -64,11 +82,38 @@
           (doseq-like-forms (first form))
           (->> (partition 2 (second form))
                (mapcat (fn [[left right]]
-                         (if (= left :let)
-                           (take-nth 2 right) [left])))
+                         (case left
+                           :let right
+                           :while []
+                           :when []
+                           [left right])))
+               (take-while (comp not has-prefix?))
+               even-seq
+               (take-nth 2)
                (mapcat parse-binding))
           
-          (= 'as-> (first form)) [(name (nth form 2))])))
+          (= 'as-> (first form)) (let [b (nth form 2)]
+                                   (if (= '__prefix__ b)
+                                     []
+                                     [(name b)])))))
+
+(comment
+  (extract-local-bindings '(let [a b [x x2] [y __prefix__] z zb]))
+  (extract-local-bindings '(let [a b c]
+                             c))
+  
+  (extract-local-bindings '(defn ff [x y z __prefix__]
+                             (let [e 33] e)))
+  (extract-local-bindings '(defn __prefix__))
+  (extract-local-bindings '(fn [a b]))
+
+  (extract-local-bindings '(doseq [a b
+                                   :when [c d]
+                                   :let [f g]] a))
+  
+  (extract-local-bindings '(as-> 0 __prefix__))
+  )
+
 (defn bindings-from-context
   "Returns all local bindings that are established inside the given context."
   [ctx]
