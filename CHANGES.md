@@ -1,5 +1,7 @@
 # Version 0.0.8
 
+- fix the omniscient debugger when updating the var beeing debugged in an already started omniscient repl
+
 # Version 0.0.7
 
 - The omniscient debugger now captures the deftype and defrecord fields

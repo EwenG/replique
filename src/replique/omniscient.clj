@@ -488,6 +488,7 @@
       (do (set! *omniscient-env* env)
           (set! *omniscient-local-syms* (keys locals))
           (set! *omniscient-binding-syms* (keys bindings))
+          (set! *omniscient-sym* qualified-sym)
           (swap! last-selected assoc qualified-sym index)
           (in-ns (ns-name (:ns env))))
       (do (println "Type :omniscient/quit to quit")
@@ -508,6 +509,7 @@
     (if *omniscient-repl?*
       (do (set! *omniscient-local-syms* local-keys)
           (set! *omniscient-binding-syms* binding-keys)
+          (set! *omniscient-sym* qualified-sym)
           (@cljs-in-ns* repl-env (-> qualified-sym namespace symbol)))
       (try
         (repl-cljs* repl-env qualified-sym local-keys binding-keys)
