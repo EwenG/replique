@@ -12,7 +12,7 @@
             [replique.compliment.context :as context]
             [replique.compliment.sources.local-bindings
              :refer [bindings-from-context]]
-            [replique.environment :refer [->CljsCompilerEnv]]
+            [replique.environment :as env :refer [->CljsCompilerEnv]]
             [replique.compliment.context :as context]))
 
 (def ^:private cljs-compiler-env
@@ -246,4 +246,49 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
     [{:keys [context ns symbol] :as msg}]
     )
   )
+
+(defn ns-files [comp-env the-ns]
+  (distinct
+   (for [[s v] (env/ns-interns comp-env the-ns)
+         :let [f (:file (env/meta comp-env v))]
+         ;; exclude vars defined at the repl
+         :when (and f (or (.endsWith f (env/file-extension comp-env))
+                          (.endsWith f ".cljc")))]
+     f)))
+
+(defn var-with-meta [comp-env [v-name v]]
+  (let [metas (env/meta comp-env v)
+        filtered-metas (select-keys metas [:line :column])
+        f (r-meta/resource-str (:file metas))
+        f (when (and f (or (.endsWith f (env/file-extension comp-env))
+                           (.endsWith f ".cljc"))) f)
+        filtered-metas (if f
+                         (assoc filtered-metas :file f)
+                         filtered-metas)]
+    [v-name filtered-metas]))
+
+(defn list-vars-with-meta [comp-env the-ns]
+  (let [indexes (range)
+        vars-with-meta (map (partial var-with-meta comp-env)
+                            (env/ns-interns comp-env the-ns))
+        file-sort-fn #(-> % second :file)
+        line-sort-fn #(-> % second :line)
+        column-sort-fn #(-> % second :column)]
+    (sort-by (juxt file-sort-fn line-sort-fn column-sort-fn)
+             vars-with-meta)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :list-vars]
+  [{:keys [ns] :as msg}]
+  (let [ns (symbol ns)
+        the-ns (find-ns ns)]
+    (when the-ns
+      {:vars (list-vars-with-meta nil the-ns)})))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/cljs :list-vars]
+  [{:keys [ns] :as msg}]
+  (let [comp-env (->CljsCompilerEnv @@cljs-compiler-env)
+        ns (symbol ns)
+        the-ns (env/find-ns comp-env ns)]
+    (when the-ns
+      {:vars (list-vars-with-meta comp-env the-ns)})))
 

@@ -1,7 +1,8 @@
 (ns replique.environment
   "Unify Clojure platforms (Clojure, Clojurescript, ...) environments"
   (:refer-clojure :exclude [ns-name find-ns ns-publics ns-map ns-aliases
-                            ns-resolve all-ns ns-interns meta])
+                            ns-resolve all-ns ns-interns meta remove-ns
+                            ns-unmap])
   (:require [replique.utils :as utils]
             [replique.compliment.utils :refer [defmemoized classpath cache-last-result
                                                all-files-on-classpath]]
@@ -17,6 +18,7 @@
 ;; into polymorphism
 (defprotocol ICljsCompilerEnv
   (get-wrapped [compile-env]))
+
 (deftype CljsCompilerEnv [wrapped]
   ICljsCompilerEnv
   (get-wrapped [this] wrapped))
@@ -27,13 +29,13 @@
 (def ^:private cljs-find-ns
   (utils/dynaload 'cljs.analyzer.api/find-ns))
 
+(def ^:private cljs-remove-ns
+  (utils/dynaload 'cljs.analyzer.api/remove-ns))
+
 ;; We don't use the function from the analyzer API because ns-publics can be used with
 ;; symbols or namespaces
 #_(def ^:private cljs-ns-publics
     (utils/dynaload 'cljs.analyzer.api/ns-publics))
-
-(def ^:private cljs-ns-var
-  (utils/dynaload 'cljs.analyzer/*cljs-ns*))
 
 (def ^:private cljs-get-js-index
   (utils/dynaload 'cljs.analyzer.api/get-js-index))
@@ -47,7 +49,9 @@
   (ns-aliases [comp-env ns])
   (ns-resolve [comp-env ns sym])
   (looks-like-var? [comp-env var])
-  (meta [comp-env var]))
+  (meta [comp-env var])
+  (remove-ns [comp-env the-ns])
+  (ns-unmap [comp-env ns sym]))
 
 (defprotocol Namespace
   (ns-name [ns]))
@@ -93,10 +97,24 @@
   (->> (map (partial cljs-ns-map-resolve* comp-env) ns-map)
        (into {})))
 
+(defn- unmap-from-ns [{:keys [uses use-macros renames rename-macros] :as ns} sym]
+  (-> ns
+      (update :uses dissoc sym)
+      (update :use-macros dissoc sym)
+      
+      (update :renames dissoc sym)
+      (update :rename-macros dissoc sym)
+
+      (update :defs dissoc sym)
+      (update :macros dissoc sym)
+
+      (update :imports dissoc sym)))
+
 (extend-protocol NamespaceEnv
   CljsCompilerEnv
   (all-ns [comp-env]
-    (->> (get-wrapped comp-env) (@cljs-all-ns) (remove nil?)))
+    (->> (get-wrapped comp-env) (@cljs-all-ns) (remove nil?)
+         (map (partial find-ns comp-env))))
   (find-ns [comp-env sym]
     (when-let [found-ns (@cljs-find-ns (get-wrapped comp-env) sym)]
       ;; name may be null for clojure namespaces (those defining macros)
@@ -155,6 +173,12 @@
                        :ns ns
                        :name var-sym))
               :else (assoc var :name qualified-name)))))
+  (remove-ns [comp-env ns-sym] (@cljs-remove-ns ns-sym))
+  (ns-unmap [comp-env ns sym]
+    (let [ns-sym (if (symbol? ns) ns (ns-name ns))]
+      (swap! (get-wrapped comp-env) update-in [:cljs.analyzer/namespaces ns-sym]
+             unmap-from-ns sym)
+      nil))
   nil
   (all-ns [comp-env]
     (clojure.core/all-ns))
@@ -173,7 +197,9 @@
   (looks-like-var? [_ var]
     (var? var))
   (meta [_ var]
-    (clojure.core/meta var)))
+    (clojure.core/meta var))
+  (remove-ns [_ ns-sym] (clojure.core/remove-ns ns-sym))
+  (ns-unmap [comp-env ns sym] (clojure.core/ns-unmap ns sym)))
 
 (comment
 
@@ -203,7 +229,7 @@
 
 (extend-protocol EnvDefaults
   CljsCompilerEnv
-  (ns-var [comp-env] (find-ns comp-env @cljs-ns-var))
+  (ns-var [comp-env] (find-ns comp-env @(resolve 'cljs.analyzer/*cljs-ns*)))
   (file-extension [_] "cljs")
   (default-ns [_] 'cljs.user)
   nil

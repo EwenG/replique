@@ -3,7 +3,8 @@
   (:refer-clojure :exclude [load-file])
   (:require [replique.repl]
             [replique.utils :as utils]
-            [replique.server :as server]))
+            [replique.server :as server]
+            [replique.environment :as env]))
 
 (def ^:private cljs-repl* (utils/dynaload 'replique.repl-cljs/cljs-repl))
 (def ^:private cljs-repl-nashorn* (utils/dynaload 'replique.nashorn/cljs-repl))
@@ -11,8 +12,9 @@
 (def ^:private cljs-in-ns* (utils/dynaload 'replique.repl-cljs/in-ns*))
 (def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
 (def ^:private cljs-repl-env (utils/dynaload 'replique.repl-cljs/repl-env))
-(def ^:private cljs-set-repl-verbose
-  (utils/dynaload 'replique.repl-cljs/set-repl-verbose))
+(def ^:private cljs-set-repl-verbose (utils/dynaload 'replique.repl-cljs/set-repl-verbose))
+(def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
+(def ^:private cljs-munge (utils/dynaload 'cljs.compiler/munge))
 
 (defn repl [& options]
   (let [options-map (apply hash-map options)
@@ -118,3 +120,36 @@
   (remote-repl "localhost" 9000)
   )
 
+(defmacro remove-var [var-sym]
+  (assert (symbol? var-sym))
+  (let [comp-env (when (utils/cljs-env? &env)
+                   (env/->CljsCompilerEnv @@cljs-compiler-env))
+        var-ns-sym (env/safe-symbol (namespace var-sym))
+        var-ns (when var-ns-sym (env/find-ns comp-env var-ns-sym))
+        the-var (when var-ns (env/ns-resolve comp-env var-ns var-sym))]
+    (assert (and the-var var-sym var-ns))
+    (env/ns-unmap comp-env var-ns (-> var-sym name symbol))
+    (doseq [n (env/all-ns comp-env)]
+      (if (utils/cljs-env? &env)
+        (do (doseq [[m-s m-ns-sym] (:uses n)
+                    :when (= m-ns-sym var-ns-sym)]
+              (env/ns-unmap comp-env n m-s))
+            (doseq [[m-s m-qualified-sym] (:renames n)
+                    :when (= m-qualified-sym var-sym)]
+              (env/ns-unmap comp-env n m-s))
+            (@cljs-eval-cljs-form
+             (:repl-env &env)
+             `(cljs.core/js-delete ~(symbol "js" (str var-ns-sym))
+                                   ~(@cljs-munge (-> var-sym name)))))
+        (do (doseq [[m-s m-var] (ns-refers n)
+                    :when (identical? m-var the-var)]
+              (ns-unmap n m-s))
+            (when (and (find-ns 'replique.repl-cljs)
+                       (realized? @cljs-compiler-env))
+              (doseq [n (env/all-ns (env/->CljsCompilerEnv @@cljs-compiler-env))]
+                (doseq [[m-s m-ns-sym] (:use-macros n)
+                        :when (= m-ns-sym var-ns-sym)]
+                  (env/ns-unmap comp-env n m-s))
+                (doseq [[m-s m-qualified-sym] (:rename-macros n)
+                        :when (= m-qualified-sym var-sym)]
+                  (env/ns-unmap comp-env n m-s)))))))))

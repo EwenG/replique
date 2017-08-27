@@ -43,6 +43,8 @@
     (alter-var-root #'tooling-msg/process-id (constantly process-id))
     (alter-var-root #'utils/cljs-compile-path (constantly cljs-compile-path))
     (alter-var-root #'utils/version (constantly version))
+    ;; *file* is set by leiningen to a temporary file
+    (set! *file* "NO_SOURCE_PATH")
     ;; Let leiningen :global-vars option propagate to other REPLs
     ;; The tooling REPL printing is a custom one and thus is not affected by those bindings,
     ;; and it must not !!

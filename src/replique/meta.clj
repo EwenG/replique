@@ -35,15 +35,27 @@
   (let [interns (ns-interns comp-env the-ns)]
     (some (fn [[_ v]] (:file (meta comp-env v))) interns)))
 
+;; The "jar:" protocol is not always added by the clojurescript compiler
+(defn url-with-protocol-prefix [url-str]
+  (cond
+    (and (.contains url-str ".jar!") (not (.startsWith url-str "jar:")))
+    (format "jar:%s" url-str)
+    (and (.contains url-str ".zip!") (not (.startsWith url-str "zip:")))
+    (format "zip:%s" url-str)
+    :else url-str))
+
 (defn resource-str [^String f]
   (when f
     (try
-      (let [file (java.io.File. f)]
-        (if (.exists file)
-          (.getAbsolutePath file)
-          (when-let [res (io/resource f)]
-            (str res))))
-      (catch Exception _ nil))))
+      (url-with-protocol-prefix (str (io/as-url f)))
+      (catch Exception _
+        (try
+          (let [file (java.io.File. f)]
+            (if (.exists file)
+              (.getAbsolutePath file)
+              (when-let [res (io/resource f)]
+                (str res))))
+          (catch Exception _ nil))))))
 
 (defn handle-meta [comp-env ns context sym-at-point]
   (let [ns (compliment/ensure-ns comp-env (when ns (symbol ns)))
