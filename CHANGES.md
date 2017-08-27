@@ -1,5 +1,7 @@
 # Version 0.0.8
 
+- Add the remove-var interactive macro
+- Update the minimum cljs version required to 1.9.183
 - Improve local bindings analysis
 - The omniscient debugger now only capture environments of functions executed directly from the REPL, unless the global-mode is true
 - Fix the omniscient debugger when updating the var beeing debugged in an already started omniscient repl
