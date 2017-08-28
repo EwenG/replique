@@ -10,4 +10,7 @@
 
 (defmacro my-macro [])
 
+(defmacro mmmm [])
+(defmacro mmmm2 [])
+
 ::fffffff
