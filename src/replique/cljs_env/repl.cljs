@@ -19,8 +19,6 @@
 
 (defonce print-queue (array))
 
-(def ^:dynamic *repl-eval* false)
-
 (defn send-result [conn url data]
   (.setTimeoutInterval conn 0)
   (.send conn url "POST" data nil))
@@ -69,8 +67,7 @@
   [block]
   (let [result
         (try
-          (let [eval-result (binding [*repl-eval* true]
-                              (js* "eval(~{block})"))]
+          (let [eval-result (js* "eval(~{block})")]
             (if (instance? js/Error eval-result)
               {:status :success
                :ua-product (get-ua-product)

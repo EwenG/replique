@@ -4,9 +4,8 @@
             [replique.repl] 
             [replique.tooling-msg :as tooling-msg]
             [replique.utils :as utils]
-            [replique.server]
             [replique.omniscient-runtime :refer
-             [registry *omniscient-env* append-env last-selected global-mode]]
+             [registry *omniscient-env* append-env last-selected]]
             [replique.environment :as env]
             [clojure.pprint])
   (:import [java.util Date]
@@ -86,21 +85,20 @@
   ;; exclude dynamic vars that are thread bound when calling "with-redefs". ie those that are
   ;; needed by the REPL/system
   (let [locals (mapcat (fn [x] [`(quote ~x) x]) locals)]
-    `(when (or @global-mode replique.server/*session*)
-       (swap! registry update (quote ~qualified-sym)
-              append-env {:thread (Thread/currentThread)
-                          :time (Date.)
-                          :ns (find-ns (quote ~(symbol (namespace qualified-sym))))
-                          :var (var ~qualified-sym)
-                          ~@(when method [:method `(quote ~method)]) ~@[]
-                          :locals {~@locals ~@[]}
-                          :bindings (->> (get-thread-bindings)
-                                         (map (fn [[k# v#]] (when-let [sym# (var->sym nil k#)]
-                                                              (when (not
-                                                                     (contains?
-                                                                      excluded-dyn-vars sym#))
-                                                                [sym# v#]))))
-                                         (into {}))}))))
+    `(swap! registry update (quote ~qualified-sym)
+            append-env {:thread (Thread/currentThread)
+                        :time (Date.)
+                        :ns (find-ns (quote ~(symbol (namespace qualified-sym))))
+                        :var (var ~qualified-sym)
+                        ~@(when method [:method `(quote ~method)]) ~@[]
+                        :locals {~@locals ~@[]}
+                        :bindings (->> (get-thread-bindings)
+                                       (map (fn [[k# v#]] (when-let [sym# (var->sym nil k#)]
+                                                            (when (not
+                                                                   (contains?
+                                                                    excluded-dyn-vars sym#))
+                                                              [sym# v#]))))
+                                       (into {}))})))
 
 (defn ns-map-filter-dynamic [ns-map]
   (filter (fn [[k v]] (:dynamic v)) ns-map))
@@ -123,15 +121,14 @@
         dyn-vars (->> (dyn-vars comp-env (symbol (namespace qualified-sym)))
                       (map (comp :name second))
                       (remove (partial contains? excluded-dyn-vars)))]
-    `(when (or @global-mode replique.cljs-env.repl/*repl-eval*)
-       (swap! replique.omniscient-runtime/registry update (quote ~qualified-sym)
-              replique.omniscient-runtime/append-env
-              {:time (js/Date.)
-               :ns (find-ns (quote ~(symbol (namespace qualified-sym))))
-               :var (var ~qualified-sym)
-               ~@(when method [:method `(quote ~method)]) ~@[]
-               :locals {~@locals ~@[]}
-               :bindings ~(zipmap (map (fn [x] `(quote ~x)) dyn-vars) dyn-vars)}))))
+    `(swap! replique.omniscient-runtime/registry update (quote ~qualified-sym)
+            replique.omniscient-runtime/append-env
+            {:time (js/Date.)
+             :ns (find-ns (quote ~(symbol (namespace qualified-sym))))
+             :var (var ~qualified-sym)
+             ~@(when method [:method `(quote ~method)]) ~@[]
+             :locals {~@locals ~@[]}
+             :bindings ~(zipmap (map (fn [x] `(quote ~x)) dyn-vars) dyn-vars)})))
 
 (defn capture-env [&env qualified-sym method locals]
   (if (utils/cljs-env? &env)
@@ -581,7 +578,7 @@
                             (if (= (.getData e) {:tag :cljs/analysis-error})
                               nil
                               (throw e))))]
-        (assoc (read-string res) :msg-id msg-id))))) 
+        (assoc (read-string res) :msg-id msg-id)))))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/browser :omniscient-filter] [msg]
   (tooling-msg/with-tooling-response msg
@@ -590,10 +587,6 @@
 (defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :omniscient-filter] [msg]
   (tooling-msg/with-tooling-response msg
     (omniscient-filter-cljs @@cljs-repl-env-nashorn msg)))
-
-;; cljs support
-;; cljs repl-caught compiler exception printing
-;; cljs repl-caught js error printing
 
 ;; omniscient only captures locals and (not all) dynamic vars. Omniscient only captures dynamic
 ;; vars even through in theory, all vars can be redefined
@@ -604,3 +597,11 @@
 ;; when using with-redefs in an omniscient repl, the eval call in with-redefs ignores
 ;; the locals/dynamic bindings of eval-with-env which means we can safely use "with-redefs"
 ;; directly inside an omniscient repl
+
+
+;; print in a read only buffer, with the page number
+;; custom edn printer (with (point) positions) + hide-region-hide
+;; print values in the clj process
+;; save the folded positions
+;; filter expression -> match on all values / provide fn to check the type / save the REPL session ID / or to match on multiple args/vals
+;; remove global/session mode

@@ -5,8 +5,6 @@
 
 (defonce registry (atom {}))
 
-(defonce global-mode (atom false))
-
 ;; the env currently beeing debugged.
 ;; ie the one that is bound in the omniscient REPL
 (defonce ^:dynamic *omniscient-env* nil)
