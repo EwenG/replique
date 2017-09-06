@@ -8,7 +8,8 @@
   ([project-map host port]
    (replique project-map host port (UUID/randomUUID)))
   ([project-map host port process-id]
-   (let [replique-version (get (->> project-map :plugins (into {})) 'replique/replique)
+   (let [replique-dep-filter (fn [[k v]] (when (= k 'replique/replique) v))
+         replique-version (->> project-map :plugins (keep replique-dep-filter) first)
          cljs-compile-path (get-in project-map [:replique :cljs-compile-path] "%s/cljs")
          cljs-compile-path (if (.startsWith ^String cljs-compile-path "%s")
                              (format cljs-compile-path (:target-path project-map))
