@@ -111,17 +111,35 @@
   
   )
 
+;; All clojure symbols cannot be read by the elisp reader
+(defn stringify-symbols [args]
+  (cond (symbol? args) (str args)
+        (map? args) (into {} (map stringify-symbols args))
+        (seq? args) (map stringify-symbols args)
+        (vector? args) (mapv stringify-symbols args)
+        :else args))
+
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :repliquedoc]
   [{:keys [context ns symbol] :as msg}]
   (tooling-msg/with-tooling-response msg
-    {:doc (repliquedoc/handle-repliquedoc nil ns context symbol)}))
+    {:doc (-> (repliquedoc/handle-repliquedoc nil ns context symbol)
+              (update :arglists stringify-symbols))}))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :repliquedoc]
   [{:keys [context ns symbol] :as msg}]
   (tooling-msg/with-tooling-response msg
-    {:doc (repliquedoc/handle-repliquedoc
-           (->CljsCompilerEnv @@cljs-compiler-env)
-           ns context symbol)}))
+    {:doc (-> (repliquedoc/handle-repliquedoc
+               (->CljsCompilerEnv @@cljs-compiler-env)
+               ns context symbol)
+              (update :arglists stringify-symbols))}))
+
+(comment
+  (tooling-msg/tooling-msg-handle {:type :repliquedoc
+                                   :repl-env :replique/clj
+                                   :context "(__prefix__)"
+                                   :ns "replique.tooling"
+                                   :symbol "stringify-symbols"})
+  )
 
 ;; not used but could be useful to dispatch on the reader conditional around the cursor
 #_(defmethod tooling-msg/tooling-msg-handle :repliquedoc-cljc
@@ -151,7 +169,8 @@ __prefix__)"))
           context (reverse context)
           m (if is-string?
               (r-meta/handle-meta-str sym-at-point)
-              (r-meta/handle-meta nil ns context sym-at-point))]
+              (r-meta/handle-meta nil ns context sym-at-point))
+          m (update m :arglists stringify-symbols)]
       (assoc msg :meta m))))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :meta]
@@ -163,7 +182,8 @@ __prefix__)"))
           context (reverse context)
           m (if is-string?
               (r-meta/handle-meta-str sym-at-point)
-              (r-meta/handle-meta comp-env ns context sym-at-point))]
+              (r-meta/handle-meta comp-env ns context sym-at-point))
+          m (update m :arglists stringify-symbols)]
       (assoc msg :meta m))))
 
 ;; not used but could be useful to dispatch on the reader conditional around the cursor
@@ -187,6 +207,13 @@ __prefix__)"))
                                    :ns "replique.repl"
                                    :symbol "clojure.core$str"
                                    :is-string? true
+                                   :context nil})
+
+  (tooling-msg/tooling-msg-handle {:type :meta
+                                   :repl-env :replique/clj
+                                   :ns "replique.tooling"
+                                   :symbol "output-main-js-file"
+                                   :is-string? false
                                    :context nil})
   )
 
@@ -292,3 +319,4 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
     (when the-ns
       {:vars (list-vars-with-meta comp-env the-ns)})))
 
+;; Watch out: all clojure symbols cannot be read by the elisp reader. For example symbols that start by a question mark "?" cannot be read. Thus they must be returned as string

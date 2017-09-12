@@ -1,5 +1,6 @@
 # Version 0.0.8
 
+- Stringify all Clojure symbols in tooling messages
 - Starting a REPL did not work when some dependencies were excluded
 - Add the remove-var interactive macro
 - Update the minimum cljs version required to 1.9.183
