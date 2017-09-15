@@ -139,8 +139,10 @@
               (env/ns-unmap comp-env n m-s))
             (@cljs-eval-cljs-form
              (:repl-env &env)
-             `(cljs.core/js-delete ~(symbol "js" (str var-ns-sym))
-                                   ~(@cljs-munge (-> var-sym name)))))
+             `(try
+                (cljs.core/js-delete ~(symbol "js" (str var-ns-sym))
+                                     ~(@cljs-munge (-> var-sym name)))
+                (catch js/Error _# nil))))
         (do (doseq [[m-s m-var] (ns-refers n)
                     :when (identical? m-var the-var)]
               (ns-unmap n m-s))
