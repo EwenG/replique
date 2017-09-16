@@ -22,6 +22,7 @@
 
 (defn read-post [line rdr]
   (let [[_ path _] (str/split line #" ")
+        [path _] (str/split path #"\?")
         headers1 (read-headers rdr)
         headers (parse-headers headers1)
         content-length (Integer/parseInt (:content-length headers))
@@ -35,6 +36,7 @@
 
 (defn read-get [line rdr]
   (let [[_ path _] (str/split line #" ")
+        [path _] (str/split path #"\?")
         headers (parse-headers (read-headers rdr))]
     {:method :get
      :path path

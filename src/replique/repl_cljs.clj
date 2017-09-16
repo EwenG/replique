@@ -44,9 +44,7 @@
 (def env {:context :expr :locals {}})
 
 (defn dispatcher [{:keys [method path content]} callback]
-  (cond (and (= :get method) (some #(.endsWith ^String path %) (keys http/ext->mime-type)))
-        :assets
-        (and (= :get method) (= path "/"))
+  (cond (and (= :get method) (= path "/"))
         :init
         (and (= :post method) (= :ready (:type content)))
         :ready
@@ -57,7 +55,9 @@
         (and (= :post method) (= :result (:type content)))
         :result
         (and (= :post method) (= :print (:type content)))
-        :print))
+        :print
+        (and (= :get method))
+        :assets))
 
 (defmulti dispatch-request dispatcher)
 
@@ -116,13 +116,13 @@ replique.cljs_env.repl.connect(\"" url "\");
                        local-path)]
       (if local-path
         (if-let [ext (some #(if (.endsWith ^String path %) %) (keys http/ext->mime-type))]
-          (let [mime-type (http/ext->mime-type ext "text/plain")
-                encoding (http/mime-type->encoding mime-type "UTF-8")]
+          (let [mime-type (http/ext->mime-type ext)
+                encoding (http/mime-type->encoding mime-type)]
             {:status 200
              :body (slurp local-path :encoding encoding)
              :content-type mime-type
              :encoding encoding})
-          {:status 200 :body (slurp local-path) :content-type "text/plain"})
+          {:status 200 :body (slurp local-path)})
         (http/make-404 path)))
     (http/make-404 path)))
 
