@@ -1,5 +1,6 @@
 # Version 0.0.8
 
+- Replique now checks the clojurescript version number for compatibility
 - The browser REPL now supports query string parameters
 - Stringify all Clojure symbols in tooling messages
 - Starting a REPL did not work when some dependencies were excluded

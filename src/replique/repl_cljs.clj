@@ -30,6 +30,14 @@
            [java.util.concurrent.locks ReentrantLock]
            [com.google.common.base Throwables]))
 
+(let [{cljs-major :major
+       cljs-minor :minor
+       cljs-qualifier :qualifier} cljs.util/*clojurescript-version*]
+  (assert (or (> cljs-major 1) (> cljs-minor 9)
+              (and (= cljs-major 1) (= cljs-minor 9)
+                   (>= cljs-qualifier 183)))
+          (format "Replique is compatible with clojurescript 1.9.183+, current version is: %s.%s.%s" cljs-major cljs-minor cljs-qualifier)))
+
 (declare init-repl-env)
 (declare init-compiler-env)
 
