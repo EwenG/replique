@@ -377,11 +377,12 @@ replique.cljs_env.repl.connect(\"" url "\");
             (repl-cljs-on-disk benv-compiled (cljs.repl/-repl-options repl-env) comp-opts)
             (repl-cljs-on-disk jfx-compiled (cljs.repl/-repl-options repl-env) comp-opts)
             (repl-cljs-on-disk omniscient-compiled (cljs.repl/-repl-options repl-env) comp-opts)
-            (->> (refresh-cljs-deps comp-opts)
-                 (closure/output-deps-file
-                  (assoc comp-opts :output-to
-                         (str (cljs.util/output-directory comp-opts)
-                              File/separator "cljs_deps.js"))))
+            (let [cljs-deps-path (str (cljs.util/output-directory comp-opts)
+                                      File/separator "cljs_deps.js")]
+              (when-not (.exists (File. cljs-deps-path))
+                (->> (refresh-cljs-deps comp-opts)
+                     (closure/output-deps-file
+                      (assoc comp-opts :output-to cljs-deps-path)))))
             (doto (io/file (cljs.util/output-directory comp-opts) "goog" "deps.js")
               cljs.util/mkdirs (spit (slurp (io/resource "goog/deps.js"))))
             (spit (File. ^String utils/cljs-compile-path "replique/cljs_env/bootstrap.js")
