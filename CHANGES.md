@@ -1,5 +1,6 @@
 # Version 0.0.8
 
+- The omniscient no longer always use the namespace of the session when resolving symbols 
 - Replique now checks the clojurescript version number for compatibility
 - The browser REPL now supports query string parameters
 - Stringify all Clojure symbols in tooling messages
@@ -7,7 +8,7 @@
 - Add the remove-var interactive macro
 - Update the minimum cljs version required to 1.9.183
 - Improve local bindings analysis
-- Fix the omniscient debugger when updating the var beeing debugged in an already started omniscient repl
+- Fix the omniscient debugger when updating the var being debugged in an already started omniscient repl
 
 # Version 0.0.7
 

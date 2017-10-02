@@ -456,7 +456,7 @@
             *omniscient-env* env
             *omniscient-local-syms* (keys locals)
             *omniscient-binding-syms* (keys bindings)]
-    (apply clojure.main/repl (->> {:init (fn [] (in-ns (ns-name (:ns env))))
+    (apply clojure.main/repl (->> {:init (fn [] (in-ns (-> sym namespace symbol)))
                                    :print prn :caught clojure.main/repl-caught
                                    :read repl-read :eval (partial eval-with-env)
                                    :prompt repl-prompt-clj}
@@ -490,7 +490,8 @@
           (set! *omniscient-binding-syms* (keys bindings))
           (set! *omniscient-sym* qualified-sym)
           (swap! last-selected assoc qualified-sym index)
-          (in-ns (ns-name (:ns env))))
+          (prn qualified-sym)
+          (in-ns (-> qualified-sym namespace symbol)))
       (do (println "Type :omniscient/quit to quit")
           (swap! last-selected assoc qualified-sym index)
           (repl-clj* qualified-sym env)))
@@ -534,33 +535,33 @@
       [k v])))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :omniscient-filter]
-  [{sym :symbol session-ns :session-ns is-string? :is-string? filter-term :filter-term
+  [{sym :symbol ns :ns is-string? :is-string? filter-term :filter-term
     prev-index :prev-index msg-id :msg-id
     :as msg}]
   (tooling-msg/with-tooling-response msg
-    (let [session-ns (and session-ns (find-ns (symbol session-ns)))
+    (let [the-ns (and ns (find-ns (symbol ns)))
           sym (and sym (symbol sym))
-          qualified-sym (compute-qualified-sym nil session-ns sym)
+          qualified-sym (compute-qualified-sym nil the-ns sym)
           filter-form (if (= "" (clojure.string/trim filter-term)) "{}" filter-term)
           filter-form (try
                         (read-string filter-form)
                         (catch Exception e nil))
           filter-form (try (when (map? filter-form)
-                             (binding [*ns* session-ns]
+                             (binding [*ns* the-ns]
                                (eval (->> filter-form symbolize-keys (cons `list)))))
                            (catch Exception e nil))]
       (when (and (not is-string?) qualified-sym)
         (assoc (replique.omniscient-runtime/filter-envs qualified-sym prev-index filter-form)
                :msg-id msg-id)))))
 
-(defn omniscient-filter-cljs [repl-env {sym :symbol session-ns :session-ns
+(defn omniscient-filter-cljs [repl-env {sym :symbol ns :ns
                                         is-string? :is-string? filter-term :filter-term
                                         prev-index :prev-index msg-id :msg-id
                                         :as msg}]
   (let [comp-env (env/->CljsCompilerEnv @@cljs-compiler-env)
-        session-ns (and session-ns (env/find-ns comp-env (symbol session-ns)))
+        the-ns (and ns (env/find-ns comp-env (symbol ns)))
         sym (and sym (symbol sym))
-        qualified-sym (compute-qualified-sym comp-env session-ns sym)
+        qualified-sym (compute-qualified-sym comp-env the-ns sym)
         filter-form (if (= "" (clojure.string/trim filter-term)) "{}" filter-term)
         filter-form (try
                       (read-string filter-form)
@@ -573,7 +574,7 @@
                            `(try (replique.omniscient-runtime/filter-envs
                                   (quote ~qualified-sym) ~prev-index ~filter-form)
                                  (catch js/Error ~'_ nil))
-                           {:ns (env/ns-name session-ns) :warnings nil})
+                           {:ns (env/ns-name the-ns) :warnings nil})
                           (catch clojure.lang.ExceptionInfo e
                             (if (= (.getData e) {:tag :cljs/analysis-error})
                               nil
