@@ -100,9 +100,11 @@
          (send-result
           (eval-connection url) url (wrap-message :result result (:session @connection))))))
     ;; Reconnection logic. Try to reconnect once per second
-    (js/setTimeout
-     #(event/listen conn "error" (fn [] (connect url)))
-     1000)
+    ;; We don't try to reconnect immediatly because otherwise, when reloading the page,
+    ;; the error listener is triggered, which generates an error on the server side
+    ;; (broken socket)
+    (event/listen conn "error" (fn []
+                                 (js/setTimeout #(connect url) 1000)))
     conn))
 
 (defn connect [url]

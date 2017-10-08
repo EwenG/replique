@@ -4,7 +4,9 @@
   (:require [replique.repl]
             [replique.utils :as utils]
             [replique.server :as server]
-            [replique.environment :as env]))
+            [replique.environment :as env]
+            [clojure.java.io :as io])
+  (:import [java.net URL]))
 
 (def ^:private cljs-repl* (utils/dynaload 'replique.repl-cljs/cljs-repl))
 (def ^:private cljs-repl-nashorn* (utils/dynaload 'replique.nashorn/cljs-repl))
@@ -49,6 +51,20 @@
     ;; (:repl-env &env) can be a browser/nashorn/whatever... env
     (@cljs-load-file (:repl-env &env) file-path)
     `(clojure.core/load-file ~file-path)))
+
+(defmacro load-url
+  "Sequentially read and evaluate the set of forms contained at the URL. Works both for Clojure and Clojurescript"
+  [url]
+  (if (utils/cljs-env? &env)
+    ;; (:repl-env &env) can be a browser/nashorn/whatever... env
+    (@cljs-load-file (:repl-env &env) url)
+    `(clojure.core/load-reader ~(io/reader (URL. url)))))
+
+(comment
+  (import '[java.net URL])
+  (require '[clojure.java.io :as io])
+  (load-reader (io/reader (URL. "jar:file:/home/ewen/.m2/repository/org/clojure/clojurescript/1.9.473/clojurescript-1.9.473.jar!/cljs/repl.cljc")))
+  )
 
 ;; It seems that naming this macro "in-ns" make the cljs compiler to crash
 (defmacro cljs-in-ns
