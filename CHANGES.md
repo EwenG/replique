@@ -1,5 +1,6 @@
 # Version 0.0.8
 
+- Replace load-file by load-url. clj/cljs/cljc files can now be loaded from files or from files in jar archives
 - Fix a "broken link" exception when reloading a web browser page connected to the browser REPL
 - The omniscient no longer always use the namespace of the session when resolving symbols 
 - Replique now checks the clojurescript version number for compatibility
