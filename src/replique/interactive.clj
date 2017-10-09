@@ -1,12 +1,13 @@
 (ns replique.interactive
   "Replique REPL public API"
-  (:refer-clojure :exclude [load-file])
+  (:refer-clojure :exclude [load-file load])
   (:require [replique.repl]
             [replique.utils :as utils]
             [replique.server :as server]
             [replique.environment :as env]
             [clojure.java.io :as io])
-  (:import [java.net URL]))
+  (:import [java.net URL]
+           [java.io File]))
 
 (def ^:private cljs-repl* (utils/dynaload 'replique.repl-cljs/cljs-repl))
 (def ^:private cljs-repl-nashorn* (utils/dynaload 'replique.nashorn/cljs-repl))
@@ -52,19 +53,30 @@
     (@cljs-load-file (:repl-env &env) file-path)
     `(clojure.core/load-file ~file-path)))
 
+(defmulti load (fn [protocol env url] protocol))
+
+(defmethod load "file" [protocol env url]
+  (if (utils/cljs-env? env)
+    ;; (:repl-env &env) can be a browser/nashorn/whatever... env
+    (@cljs-load-file (:repl-env env) url)
+    `(clojure.core/load-file ~(.getFile url))))
+
+(defmethod load "jar" [protocol env url]
+  (let [url-str (str url)
+        path (when (.contains url-str "!/")
+               (last (.split url-str "!/")))
+        file (when path (.getName (File. path)))]
+    (assert path (str "Cannot load url: " url-str))
+    (if (utils/cljs-env? env)
+      (@cljs-load-file (:repl-env env) url)
+      `(Compiler/load (io/reader (URL. ~url-str)) ~path ~file))))
+
 (defmacro load-url
   "Sequentially read and evaluate the set of forms contained at the URL. Works both for Clojure and Clojurescript"
-  [url]
-  (if (utils/cljs-env? &env)
-    ;; (:repl-env &env) can be a browser/nashorn/whatever... env
-    (@cljs-load-file (:repl-env &env) url)
-    `(clojure.core/load-reader ~(io/reader (URL. url)))))
-
-(comment
-  (import '[java.net URL])
-  (require '[clojure.java.io :as io])
-  (load-reader (io/reader (URL. "jar:file:/home/ewen/.m2/repository/org/clojure/clojurescript/1.9.473/clojurescript-1.9.473.jar!/cljs/repl.cljc")))
-  )
+  [url-str]
+  (let [url (URL. url-str)
+        protocol (.getProtocol url)]
+    (load protocol &env url)))
 
 ;; It seems that naming this macro "in-ns" make the cljs compiler to crash
 (defmacro cljs-in-ns
