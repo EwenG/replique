@@ -1,5 +1,6 @@
 # Version 0.0.8
 
+- Fix undefined var warning for cljs 1.9.854 +
 - Fix the cljs repl when using clojurescript version 1.9.655 or 1.9.660
 - Replace load-file by load-url. clj/cljs/cljc files can now be loaded from files or from files in jar archives
 - Fix a "broken link" exception when reloading a web browser page connected to the browser REPL
