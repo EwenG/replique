@@ -169,7 +169,8 @@ replique.cljs_env.repl.connect(\"" url "\");
          target-path (.toPath (closure/src-file->target-file src))
          target-path (.resolve output-path target-path)
          output-file (.toFile ^Path (.relativize output-path target-path))
-         compiled (binding [ana/*reload-macros* reload-macros]
+         compiled (binding [ana/*reload-macros* reload-macros
+                            ana/*analyze-deps* true]
                     (closure/compile
                      src
                      (assoc opts
