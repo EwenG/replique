@@ -362,6 +362,7 @@ replique.cljs_env.repl.connect(\"" url "\");
         compiler-env (-> comp-opts
                          closure/add-implicit-options
                          cljs-env/default-compiler-env)]
+    (closure/load-data-readers! compiler-env)
     (cljs-env/with-compiler-env compiler-env
       (comp/with-core-cljs nil
         (fn []
