@@ -297,7 +297,7 @@
           (-tear-down repl-env))))))
 
 (with-version
-  [1 9 671]
+  [1 9 655]
   [1 9 671]
   (defn repl*
     [repl-env {:keys [init need-prompt quit-prompt prompt flush read eval print caught reader
