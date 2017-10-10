@@ -16,7 +16,7 @@
 (defn cljs-env?
   "Take the &env from a macro, and tell whether we are expanding into cljs."
   [env]
-  (boolean (:ns env)))
+  (contains? env :ns))
 
 (def ^:dynamic *repl-env* :replique/clj)
 
