@@ -18,6 +18,8 @@
 (def ^:private cljs-set-repl-verbose (utils/dynaload 'replique.repl-cljs/set-repl-verbose))
 (def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
 (def ^:private cljs-munge (utils/dynaload 'cljs.compiler/munge))
+#_(def ^:private cljs-install-node-deps!
+  (utils/dynaload 'replique.repl-cljs/install-node-deps!))
 
 (defn repl [& options]
   (let [options-map (apply hash-map options)
@@ -183,3 +185,6 @@
                 (doseq [[m-s m-qualified-sym] (:rename-macros n)
                         :when (= m-qualified-sym var-sym)]
                   (env/ns-unmap comp-env n m-s)))))))))
+
+#_(defmacro install-node-deps! []
+  (boolean (@cljs-install-node-deps!)))

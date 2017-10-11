@@ -19,7 +19,8 @@
             [clojure.edn :as edn]
             [clojure.tools.reader :as reader]
             [clojure.tools.reader.reader-types :as readers]
-            [replique.cljs])
+            [replique.cljs]
+            #_[replique.npm-deps :as npm-deps])
   (:import [java.io File BufferedReader InputStreamReader]
            [java.nio.file Files Paths Path]
            [java.nio.file.attribute FileAttribute]
@@ -354,17 +355,32 @@ replique.cljs_env.repl.connect(\"" url "\");
            ;; st/parse-stacktrace expects host host-port and port to be defined on the repl-env
            {:host "localhost" :host-port (server/server-port) :port (server/server-port)})))
 
+#_(comment
+  (cljs-env/with-compiler-env @compiler-env
+    (npm-deps/handle-js-modules))
+
+  (keys (:options @@compiler-env))
+  )
+
 (defn init-compiler-env [repl-env]
   (let [comp-opts {:output-to (str (File. ^String utils/cljs-compile-path "main.js"))
                    :output-dir utils/cljs-compile-path
                    :optimizations :none
                    :recompile-dependents false
-                   :cache-analysis true}
+                   :cache-analysis true
+                   ;; Do not automatically install node deps. This must be done explicitly instead
+                   :install-deps false}
         compiler-env (-> comp-opts
                          closure/add-implicit-options
                          cljs-env/default-compiler-env)]
     (closure/load-data-readers! compiler-env)
+
     (cljs-env/with-compiler-env compiler-env
+
+      ;; process and index :npm-deps
+      #_(let [opts (npm-deps/handle-js-modules)]
+        (swap! compiler-env update-in [:options] merge opts))
+
       (comp/with-core-cljs nil
         (fn []
           (let [repl-src "replique/cljs_env/repl.cljs"
@@ -573,6 +589,18 @@ replique.cljs_env.repl.connect(\"" url "\");
 
 (defn set-repl-verbose [b]
   (set! cljs.repl/*cljs-verbose* b))
+
+#_(defn install-node-deps! []
+  (replique.cljs/with-version
+    [0 0 0]
+    [1 9 494]
+    (prn ":npm-deps is not supported by clojurescript version "
+         cljs.util/*clojurescript-version*))
+  (replique.cljs/with-version
+    [1 9 518]
+    [nil nil nil]
+    (closure/maybe-install-node-deps! (assoc (:options @@compiler-env)
+                                             :verbose true))))
 
 (derive :replique/browser :replique/cljs)
 
