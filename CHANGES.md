@@ -1,3 +1,5 @@
+# Version 0.0.9
+
 # Version 0.0.8
 
 - Fix undefined var warning for cljs 1.9.854 +
