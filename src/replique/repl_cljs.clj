@@ -86,7 +86,9 @@
 
 (defmethod dispatch-request :init [{{host :host} :headers} callback]
   (let [url (format "http://%s" host)]
-    {:status 200 :body (str "<html>
+    {:status 200
+     :content-type "text/html"
+     :body (str "<html>
 <head></head>
 <body>
 <script>var CLOSURE_UNCOMPILED_DEFINES = null;</script>
@@ -126,7 +128,7 @@ replique.cljs_env.repl.connect(\"" url "\");
       (if local-path
         (if-let [ext (some #(if (.endsWith ^String path %) %) (keys http/ext->mime-type))]
           (let [mime-type (http/ext->mime-type ext)
-                encoding (http/mime-type->encoding mime-type)]
+                encoding (if (contains? http/text-encoding mime-type) "UTF-8" "ISO-8859-1")]
             {:status 200
              :body (slurp local-path :encoding encoding)
              :content-type mime-type
@@ -444,7 +446,7 @@ replique.cljs_env.repl.connect(\"" url "\");
              :result-queue new-result-queue
              :session (inc session)
              :state :started)
-      {:status 200 :body js})))
+      {:status 200 :body js :content-type "text/javascript"})))
 
 (defmethod dispatch-request :result [{:keys [content]} callback]
   (let [{:keys [result-queue js-queue result-executor]} @server/cljs-server
@@ -453,7 +455,9 @@ replique.cljs_env.repl.connect(\"" url "\");
                         (try
                           (.put ^SynchronousQueue result-queue (read-string (:content content)))
                           (try
-                            (callback {:status 200 :body (.take ^SynchronousQueue js-queue)})
+                            (callback {:status 200
+                                       :content-type "text/javascript"
+                                       :body (.take ^SynchronousQueue js-queue)})
                             (catch InterruptedException e (throw e))
                             ;; Socket closed ...
                             (catch Exception e
