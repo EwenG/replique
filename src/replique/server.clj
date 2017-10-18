@@ -70,7 +70,8 @@
                           (catch Exception e
                             (try
                               (tooling-msg/uncaught-exception (Thread/currentThread) e)
-                              (http/send-and-close out 500 "Could not read request")
+                              (http/send-and-close out 500 "Could not read request"
+                                                   "text/plain" "UTF-8")
                               ;; Socket closed
                               (catch Exception e
                                 (tooling-msg/uncaught-exception (Thread/currentThread) e)))
