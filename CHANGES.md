@@ -1,5 +1,7 @@
 # Version 0.0.9
 
+- Add support for reloading a clojurescript file an all its dependencies (like the :reload-all option of require in Clojure)
+
 # Version 0.0.8
 
 - Fix undefined var warning for cljs 1.9.854 +
