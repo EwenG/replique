@@ -1,12 +1,14 @@
 (ns replique.cljs-env.repl
   "Xhr based repl. Uses CORS to bypass the same origin policy.
   Adapted from https://github.com/clojure/clojurescript/blob/master/src/main/cljs/clojure/browser/repl.cljs.
-  Also, replace :order by a :session id in messages sent to the server"
+  Other changes: 
+  Replace :order by a :session id in messages sent to the server.
+  Remove the use of goog.event because it is not compatible with reloading (reload-all)."
   (:require
    [goog.array :as garray]
    [goog.userAgent.product :as product]
-   [clojure.browser.event :as event])
-  [:import [goog.net XhrIo CorsXmlHttpFactory]])
+   [goog.net.EventType])
+  (:import [goog.net XhrIo CorsXmlHttpFactory]))
 
 (defonce connection (atom nil))
 
@@ -30,13 +32,14 @@
    (send-print url data 0))
   ([url data n]
    (let [conn (xhr-connection)]
-     (event/listen conn :error
-                   (fn [_]
-                     (if (< n 10)
-                       (send-print url data (inc n))
-                       (.log js/console
-                             (str "Could not send " data
-                                  " after " n " attempts.")))))
+     (.listen conn goog.net.EventType/ERROR
+              (fn [_]
+                (if (< n 10)
+                  (send-print url data (inc n))
+                  (.log js/console
+                        (str "Could not send " data
+                             " after " n " attempts."))))
+              false)
      (.setTimeoutInterval conn 0)
      (.send conn url "POST" data nil))))
 
@@ -92,19 +95,20 @@
 
 (defn eval-connection [url]
   (let [conn (xhr-connection)]
-    (event/listen
-     conn "success"
-     (fn [e]
-       (let [js (.getResponseText (.-currentTarget e))
-             result (evaluate-javascript js)]
-         (send-result
-          (eval-connection url) url (wrap-message :result result (:session @connection))))))
+    (.listen conn goog.net.EventType/SUCCESS
+             (fn [e]
+               (let [js (.getResponseText (.-currentTarget e))
+                     result (evaluate-javascript js)]
+                 (send-result
+                  (eval-connection url) url (wrap-message :result result (:session @connection)))))
+              false)
     ;; Reconnection logic. Try to reconnect once per second
     ;; We don't try to reconnect immediatly because otherwise, when reloading the page,
     ;; the error listener is triggered, which generates an error on the server side
     ;; (broken socket)
-    (event/listen conn "error" (fn []
-                                 (js/setTimeout #(connect url) 1000)))
+    (.listen conn goog.net.EventType/ERROR
+             (fn [] (js/setTimeout #(connect url) 1000))
+             false)
     conn))
 
 (defn connect [url]

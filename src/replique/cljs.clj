@@ -717,3 +717,65 @@
     "Arguments after repl-env must be interleaved key value pairs")
   (repl* repl-env (apply hash-map opts)))
 
+;; Support for :reload-all
+(def ^:dynamic *reload-all* false)
+
+;; Alternative to cljs.closure/src-file->goog-require in order to support goog.require
+;; with :reload-all
+(defn ^String src-file->goog-require
+  ([src] (src-file->goog-require src {:wrap true}))
+  ([src {:keys [wrap all-provides macros-ns] :as options}]
+    (let [goog-ns
+          (case (util/ext src)
+            ("cljs" "cljc") (let [ns-str (str (comp/munge (:ns (ana/parse-ns src))))]
+                              (cond-> ns-str
+                                (and macros-ns (not (.endsWith ns-str "$macros")))
+                                (str "$macros")))
+            "js" (cond-> (:provides (cljsc/parse-js-ns src))
+                   (not all-provides) first)
+            (throw
+              (IllegalArgumentException.
+               (str "Can't create goog.require expression for " src))))]
+      (if (and (not all-provides) wrap)
+        (cond
+          (:reload-all options) (str "goog.require(\"" goog-ns "\", \"reload-all\");")
+          (:reload options) (str "goog.require(\"" goog-ns "\", true);")
+          :else (str "goog.require(\"" goog-ns "\");"))
+        (if (vector? goog-ns)
+          goog-ns
+          (str goog-ns))))))
+
+;; Patch parse 'def to allow :const redefinition
+;; Remove constants from the environment before parsing 'def expressions
+
+(defonce parse-def-o (get (methods cljs.analyzer/parse) 'def))
+
+(defn maybe-dissoc-const [env form]
+  (if-let [sym (second form)]
+    (let [maybe-const-var (get-in env [:ns :defs sym])]
+      (if (:const maybe-const-var)
+        (do
+          (swap! cljs.env/*compiler* update-in
+                 [:cljs.analyzer/namespaces (-> env :ns :name) :defs] dissoc sym)
+          (update-in env [:ns :defs] dissoc sym))
+        env))
+    env))
+
+(defmethod cljs.analyzer/parse 'def
+  [op env form _1 _2]
+  (parse-def-o op (maybe-dissoc-const env form) form _1 _2))
+
+
+;; patch parse 'ns to allow :reload-all
+;; parse 'ns* is not patched since (require ... :reload-all) doesn't really work
+
+(defonce parse-ns-o (get (methods cljs.analyzer/parse) 'ns))
+
+(defmethod cljs.analyzer/parse 'ns
+  [_1 env [_2 name & args :as form] _3 opts]
+  (let [ns-infos (parse-ns-o _1 env form _3 opts)]
+    (if *reload-all*
+      (-> ns-infos
+          (assoc-in [:reload :user-macros] :reload)
+          (assoc-in [:reload :require-macros] :reload))
+      ns-infos)))

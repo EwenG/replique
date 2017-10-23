@@ -48,37 +48,40 @@
 ;; At the moment, load file does not intern macros in the cljs-env, making dynamically loaded
 ;; macros unavailable to autocompletion/repliquedoc
 (defmacro load-file
-  "Sequentially read and evaluate the set of forms contained in the file. Works both for Clojure and Clojurescript"
-  [file-path]
-  (if (utils/cljs-env? &env)
-    ;; (:repl-env &env) can be a browser/nashorn/whatever... env
-    (@cljs-load-file (:repl-env &env) file-path)
-    `(clojure.core/load-file ~file-path)))
+  "Sequentially read and evaluate the set of forms contained in the file.
+  Works both for Clojure and Clojurescript"
+  [file-path & opts]
+  (let [opts (into #{} opts)]
+    (if (utils/cljs-env? &env)
+      ;; (:repl-env &env) can be a browser/nashorn/whatever... env
+      (@cljs-load-file (:repl-env &env) file-path opts)
+      `(clojure.core/load-file ~file-path))))
 
-(defmulti load (fn [protocol env url] protocol))
+(defmulti load (fn [protocol env url opts] protocol))
 
-(defmethod load "file" [protocol env url]
+(defmethod load "file" [protocol env url opts]
   (if (utils/cljs-env? env)
     ;; (:repl-env &env) can be a browser/nashorn/whatever... env
-    (@cljs-load-file (:repl-env env) url)
+    (@cljs-load-file (:repl-env env) url opts)
     `(clojure.core/load-file ~(.getFile url))))
 
-(defmethod load "jar" [protocol env url]
+(defmethod load "jar" [protocol env url opts]
   (let [url-str (str url)
         path (when (.contains url-str "!/")
                (last (.split url-str "!/")))
         file (when path (.getName (File. path)))]
     (assert path (str "Cannot load url: " url-str))
     (if (utils/cljs-env? env)
-      (@cljs-load-file (:repl-env env) url)
+      (@cljs-load-file (:repl-env env) url opts)
       `(Compiler/load (io/reader (URL. ~url-str)) ~path ~file))))
 
 (defmacro load-url
   "Sequentially read and evaluate the set of forms contained at the URL. Works both for Clojure and Clojurescript"
-  [url-str]
+  [url-str & opts]
   (let [url (URL. url-str)
-        protocol (.getProtocol url)]
-    (load protocol &env url)))
+        protocol (.getProtocol url)
+        opts (into #{} opts)]
+    (load protocol &env url opts)))
 
 ;; It seems that naming this macro "in-ns" make the cljs compiler to crash
 (defmacro cljs-in-ns

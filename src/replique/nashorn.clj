@@ -10,7 +10,8 @@
             [replique.tooling-msg :as tooling-msg]
             [clojure.java.io :as io]
             [clojure.stacktrace :refer [print-stack-trace]]
-            [cljs.closure :as closure])
+            [cljs.closure :as closure]
+            [replique.cljs])
   (:import [java.io File]
            [javax.script ScriptEngine ScriptEngineManager ScriptException ScriptEngineFactory]
            [jdk.nashorn.api.scripting NashornException ScriptObjectMirror]
@@ -108,8 +109,11 @@
      repl-env "<cljs repl>" 1
      (slurp (str (cljs.util/output-directory opts)
                  File/separator "cljs_deps.js")))
-    `(~'js* ~(closure/src-file->goog-require
-              src {:wrap true :reload true :macros-ns (:macros-ns compiled)}))))
+    `(~'js* ~(replique.cljs/src-file->goog-require
+              src {:wrap true
+                   :reload true
+                   :reload-all replique.cljs/*reload-all*
+                   :macros-ns (:macros-ns compiled)}))))
 
 ;; Defrecord instead of deftype because cljs.repl uses the repl-env as a hashmap. Why ??? 
 (defrecord NashornEnv [repl-opts]
@@ -159,9 +163,12 @@
     )
   replique.repl-cljs/ReplLoadFile
   (replique.repl-cljs/-load-file [repl-env file-path]
-    (let [opts (:options @@replique.repl-cljs/compiler-env)
-          compiled (replique.repl-cljs/compile-file repl-env file-path opts)]
-      (repl-eval-compiled compiled repl-env file-path opts))))
+    (replique.repl-cljs/-load-file repl-env file-path nil))
+  (replique.repl-cljs/-load-file [repl-env file-path opts]
+    (binding [replique.cljs/*reload-all* (boolean (contains? opts :reload-all))]
+      (let [comp-opts (:options @@replique.repl-cljs/compiler-env)
+            compiled (replique.repl-cljs/compile-file repl-env file-path comp-opts)]
+        (repl-eval-compiled compiled repl-env file-path comp-opts)))))
 
 (defn init-repl-env []
   (NashornEnv. {:wrap #'replique.repl-cljs/wrap-fn}))

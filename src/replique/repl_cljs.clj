@@ -161,9 +161,9 @@ replique.cljs_env.repl.connect(\"" url "\");
         :else (io/resource f)))
 
 (defn repl-compile-cljs
-  ([f opts]
-   (repl-compile-cljs f opts true))
-  ([f opts reload-macros]
+  ([f repl-opts opts]
+   (repl-compile-cljs f repl-opts opts true))
+  ([f repl-opts opts reload-macros]
    (let [src (f->src f)
          ;; prior to cljs 1.9.456, closure/src-file->target-file returned a relative path. After
          ;; cljs 1.9.456, closure/src-file->target-file returns an absolute path. Let's normalize
@@ -172,15 +172,27 @@ replique.cljs_env.repl.connect(\"" url "\");
          target-path (.toPath (closure/src-file->target-file src))
          target-path (.resolve output-path target-path)
          output-file (.toFile ^Path (.relativize output-path target-path))
-         compiled (binding [ana/*reload-macros* reload-macros
+         ns-info (ana/parse-ns src output-file opts)
+         sources (binding [ana/*reload-macros* replique.cljs/*reload-all*]
+                   ;; Compile dependencies. This must be done before compiling the requested file
+                   (closure/add-dependencies
+                    (-> repl-opts (merge opts)
+                        ;; :force -> force compilation (require-compile? -> true)
+                        (assoc :force replique.cljs/*reload-all*
+                               ;; :interactive -> do not clear namespace analysis data before
+                               ;;                 reloading
+                               :mode :interactive))
+                    ns-info))
+         _ (doseq [source sources]
+             (closure/source-on-disk opts source))
+         compiled (binding [ana/*reload-macros* (or reload-macros replique.cljs/*reload-all*)
                             ana/*analyze-deps* true]
                     (closure/compile
                      src
                      (assoc opts
                             :output-file output-file
                             :force true
-                            :mode :interactive)))
-         ns-info (ana/parse-ns src output-file opts)]
+                            :mode :interactive)))]
      ;; copy over the original source file if source maps enabled
      (when-let [ns (and (:source-map opts) (first (:provides ns-info)))]
        (spit
@@ -217,13 +229,6 @@ replique.cljs_env.repl.connect(\"" url "\");
                       (into js-files))]
     (deps/dependency-order js-files)))
 
-(defn repl-cljs-on-disk [compiled repl-opts opts]
-  (let [sources (closure/add-dependencies
-                 (merge repl-opts opts)
-                 compiled)]
-    (doseq [source sources]
-      (closure/source-on-disk opts source))))
-
 (defn repl-eval-compiled [compiled repl-env f opts]
   (let [src (f->src f)]
     (cljs.repl/-evaluate
@@ -232,8 +237,11 @@ replique.cljs_env.repl.connect(\"" url "\");
                  File/separator "cljs_deps.js")))
     (cljs.repl/-evaluate
      repl-env f 1
-     (closure/src-file->goog-require
-      src {:wrap true :reload true :macros-ns (:macros-ns compiled)}))))
+     (replique.cljs/src-file->goog-require
+      src {:wrap true
+           :reload true
+           :reload-all replique.cljs/*reload-all*
+           :macros-ns (:macros-ns compiled)}))))
 
 (defn load-javascript
   "Accepts a REPL environment, a list of namespaces, and a URL for a
@@ -372,6 +380,7 @@ replique.cljs_env.repl.connect(\"" url "\");
                    :cache-analysis true
                    ;; Do not automatically install node deps. This must be done explicitly instead
                    :install-deps false}
+        repl-opts (cljs.repl/-repl-options repl-env)
         compiler-env (-> comp-opts
                          closure/add-implicit-options
                          cljs-env/default-compiler-env)]
@@ -389,14 +398,10 @@ replique.cljs_env.repl.connect(\"" url "\");
                 benv-src "replique/cljs_env/browser.cljs"
                 jfxenv-src "replique/cljs_env/javafx.cljs"
                 omniscient-src "replique/omniscient_runtime.cljc"
-                repl-compiled (repl-compile-cljs repl-src comp-opts false)
-                benv-compiled (repl-compile-cljs benv-src comp-opts false)
-                jfx-compiled (repl-compile-cljs jfxenv-src comp-opts false)
-                omniscient-compiled (repl-compile-cljs omniscient-src comp-opts false)]
-            (repl-cljs-on-disk repl-compiled (cljs.repl/-repl-options repl-env) comp-opts)
-            (repl-cljs-on-disk benv-compiled (cljs.repl/-repl-options repl-env) comp-opts)
-            (repl-cljs-on-disk jfx-compiled (cljs.repl/-repl-options repl-env) comp-opts)
-            (repl-cljs-on-disk omniscient-compiled (cljs.repl/-repl-options repl-env) comp-opts)
+                repl-compiled (repl-compile-cljs repl-src repl-opts  comp-opts false)
+                benv-compiled (repl-compile-cljs benv-src repl-opts comp-opts false)
+                jfx-compiled (repl-compile-cljs jfxenv-src repl-opts comp-opts false)
+                omniscient-compiled (repl-compile-cljs omniscient-src repl-opts comp-opts false)]
             (let [cljs-deps-path (str (cljs.util/output-directory comp-opts)
                                       File/separator "cljs_deps.js")]
               (when-not (.exists (File. cljs-deps-path))
@@ -567,13 +572,14 @@ replique.cljs_env.repl.connect(\"" url "\");
     (when result-executor (.shutdownNow ^ExecutorService result-executor))))
 
 (defprotocol ReplLoadFile
-  (-load-file [repl-env file-path]))
+  (-load-file
+    [repl-env file-path]
+    [repl-env file-path opts]))
 
 (defn compile-file [repl-env file-path opts]
   (cljs-env/with-compiler-env @compiler-env
-    (let [compiled (repl-compile-cljs file-path opts)]
-      (repl-cljs-on-disk
-       compiled (#'cljs.repl/env->opts repl-env) opts)
+    (let [repl-opts (cljs.repl/-repl-options repl-env)
+          compiled (repl-compile-cljs file-path repl-opts opts)]
       (->> (refresh-cljs-deps opts)
            (closure/output-deps-file
             (assoc opts :output-to
@@ -589,7 +595,10 @@ replique.cljs_env.repl.connect(\"" url "\");
 (extend-type BrowserEnv
   ReplLoadFile
   (-load-file [repl-env file-path]
-    (load-file repl-env file-path)))
+    (load-file repl-env file-path nil))
+  (-load-file [repl-env file-path opts]
+    (binding [replique.cljs/*reload-all* (boolean (contains? opts :reload-all))]
+      (load-file repl-env file-path))))
 
 (defn set-repl-verbose [b]
   (set! cljs.repl/*cljs-verbose* b))
@@ -662,3 +671,6 @@ replique.cljs_env.repl.connect(\"" url "\");
 
 ;; cljs files are loaded by appending a <script> tag to the page. Errors during a load-file
 ;; are handled by a global error handler, which prints the error
+
+;; (require 'xxx :reload-all) does not work in cljs. Thus :reload-all must be done through
+;; load-file
