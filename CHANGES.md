@@ -1,5 +1,6 @@
 # Version 0.0.9
 
+- Clojurescript constants can now be reloaded
 - Add support for reloading a clojurescript file an all its dependencies (like the :reload-all option of require in Clojure)
 
 # Version 0.0.8
