@@ -39,7 +39,12 @@
   (.write w (str o)))
 
 (defmethod print-method clojure.lang.Symbol [o, ^Writer w]
-  (.write w (str o)))
+  (let [o-str (str o)]
+    (if (and (not (identical? o-str "")) (identical? (.charAt o-str 0) \?))
+      (do
+        (.write w "\\")
+        (.write w o-str))
+      (.write w o-str))))
 
 (defmethod print-method clojure.lang.ISeq [o, ^Writer w]
   (print-sequential "(" pr-on " " ")" o w))
