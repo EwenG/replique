@@ -111,34 +111,24 @@
   
   )
 
-;; All clojure symbols cannot be read by the elisp reader
-(defn stringify-symbols [args]
-  (cond (symbol? args) (str args)
-        (map? args) (into {} (map stringify-symbols args))
-        (seq? args) (map stringify-symbols args)
-        (vector? args) (mapv stringify-symbols args)
-        :else args))
-
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :repliquedoc]
   [{:keys [context ns symbol] :as msg}]
   (tooling-msg/with-tooling-response msg
-    {:doc (-> (repliquedoc/handle-repliquedoc nil ns context symbol)
-              (update :arglists stringify-symbols))}))
+    {:doc (repliquedoc/handle-repliquedoc nil ns context symbol)}))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :repliquedoc]
   [{:keys [context ns symbol] :as msg}]
   (tooling-msg/with-tooling-response msg
-    {:doc (-> (repliquedoc/handle-repliquedoc
-               (->CljsCompilerEnv @@cljs-compiler-env)
-               ns context symbol)
-              (update :arglists stringify-symbols))}))
+    {:doc (repliquedoc/handle-repliquedoc
+           (->CljsCompilerEnv @@cljs-compiler-env)
+           ns context symbol)}))
 
 (comment
   (tooling-msg/tooling-msg-handle {:type :repliquedoc
                                    :repl-env :replique/clj
                                    :context "(__prefix__)"
                                    :ns "replique.tooling"
-                                   :symbol "stringify-symbols"})
+                                   :symbol "my-symbol"})
   )
 
 ;; not used but could be useful to dispatch on the reader conditional around the cursor
@@ -169,8 +159,7 @@ __prefix__)"))
           context (reverse context)
           m (if is-string?
               (r-meta/handle-meta-str sym-at-point)
-              (r-meta/handle-meta nil ns context sym-at-point))
-          m (update m :arglists stringify-symbols)]
+              (r-meta/handle-meta nil ns context sym-at-point))]
       (assoc msg :meta m))))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :meta]
@@ -182,8 +171,7 @@ __prefix__)"))
           context (reverse context)
           m (if is-string?
               (r-meta/handle-meta-str sym-at-point)
-              (r-meta/handle-meta comp-env ns context sym-at-point))
-          m (update m :arglists stringify-symbols)]
+              (r-meta/handle-meta comp-env ns context sym-at-point))]
       (assoc msg :meta m))))
 
 ;; not used but could be useful to dispatch on the reader conditional around the cursor
