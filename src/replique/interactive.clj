@@ -18,6 +18,8 @@
 (def ^:private cljs-set-repl-verbose (utils/dynaload 'replique.repl-cljs/set-repl-verbose))
 (def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
 (def ^:private cljs-munge (utils/dynaload 'cljs.compiler/munge))
+(def ^:private cljs-set-source-meta! (utils/dynaload 'replique.repl-cljs/set-source-meta!))
+
 #_(def ^:private cljs-install-node-deps!
   (utils/dynaload 'replique.repl-cljs/install-node-deps!))
 
@@ -45,6 +47,23 @@
   "Returns the port the REPL is listening on"
   server/server-port)
 
+(defn jar-url->path [url]
+  (let [url-str (str url)
+        path (when (.contains url-str "!/")
+               (last (.split url-str "!/")))]
+    path))
+
+(defn file-url->path [url]
+  (.getFile url))
+
+(defmulti url->path (fn [url] (.getProtocol url)))
+
+(defmethod url->path "file" [url]
+  (file-url->path url))
+
+(defmethod url->path "jar" [url]
+  (jar-url->path url))
+
 ;; At the moment, load file does not intern macros in the cljs-env, making dynamically loaded
 ;; macros unavailable to autocompletion/repliquedoc
 (defmacro load-file
@@ -63,17 +82,15 @@
   (if (utils/cljs-env? env)
     ;; (:repl-env &env) can be a browser/nashorn/whatever... env
     (@cljs-load-file (:repl-env env) url opts)
-    `(clojure.core/load-file ~(.getFile url))))
+    `(clojure.core/load-file ~(file-url->path url))))
 
 (defmethod load "jar" [protocol env url opts]
-  (let [url-str (str url)
-        path (when (.contains url-str "!/")
-               (last (.split url-str "!/")))
+  (let [path (jar-url->path url)
         file (when path (.getName (File. path)))]
-    (assert path (str "Cannot load url: " url-str))
+    (assert path (str "Cannot load url: " (str url)))
     (if (utils/cljs-env? env)
       (@cljs-load-file (:repl-env env) url opts)
-      `(Compiler/load (io/reader (URL. ~url-str)) ~path ~file))))
+      `(Compiler/load (io/reader (URL. ~(str url))) ~path ~file))))
 
 (defmacro load-url
   "Sequentially read and evaluate the set of forms contained at the URL. Works both for Clojure and Clojurescript"
@@ -188,6 +205,13 @@
                 (doseq [[m-s m-qualified-sym] (:rename-macros n)
                         :when (= m-qualified-sym var-sym)]
                   (env/ns-unmap comp-env n m-s)))))))))
+
+(defn set-source-meta! [url-str line column]
+  (let [url (try (URL. url-str) (catch Exception _ nil))
+        path (when url (url->path url))]
+    (if (isa? utils/*repl-env* :replique/cljs)
+      (@cljs-set-source-meta! (or path "NO_SOURCE_FILE") (or line 1) (or column 1))
+      (replique.repl/set-source-meta! (or path "NO_SOURCE_PATH") (or line 1) (or column 1)))))
 
 #_(defmacro install-node-deps! []
   (boolean (@cljs-install-node-deps!)))

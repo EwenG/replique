@@ -1,7 +1,6 @@
 (ns replique.repl-cljs
   (:refer-clojure :exclude [load-file])
-  (:require [replique.elisp-printer :as elisp]
-            [replique.utils :as utils]
+  (:require [replique.utils :as utils]
             [replique.tooling-msg :as tooling-msg]
             [replique.http :as http]
             [replique.server :refer [*session*] :as server]
@@ -21,14 +20,12 @@
             [clojure.tools.reader.reader-types :as readers]
             [replique.cljs]
             #_[replique.npm-deps :as npm-deps])
-  (:import [java.io File BufferedReader InputStreamReader]
+  (:import [java.io File]
            [java.nio.file Files Paths Path]
-           [java.nio.file.attribute FileAttribute]
            [java.util.concurrent Executors SynchronousQueue
             RejectedExecutionException ExecutorService]
            [clojure.lang IExceptionInfo]
            [java.util.regex Pattern]
-           [java.util.concurrent.locks ReentrantLock]
            [com.google.common.base Throwables]))
 
 (let [{cljs-major :major
@@ -498,10 +495,19 @@ replique.cljs_env.repl.connect(\"" url "\");
                                 :defs (get var-sym)))
         (f repl-env comp-env)))))
 
-;; wrap cljs.repl/eval-cljs in order to add the possibility to define post-eval hooks
+;; patch cljs.repl/eval-cljs in order to add the possibility to define post-eval hooks
+;; patch cljs.repl/eval-cljs to correctly set the file name
 (defn eval-cljs [repl-env env form opts]
   (let [comp-env @@compiler-env
-        eval-result (#'cljs.repl/eval-cljs repl-env env form opts)]
+        eval-result (cljs.repl/evaluate-form
+                     repl-env
+                     (assoc env :ns (ana/get-namespace ana/*cljs-ns*))
+                     (get (meta form) :file "NO_SOURCE_FILE")
+                     form
+                     ;; the pluggability of :wrap is needed for older JS runtimes like Rhino
+                     ;; where catching the error will swallow the original trace
+                     ((or (:wrap opts) wrap-fn) form)
+                     opts)]
     (call-post-eval-hooks repl-env comp-env @@compiler-env)
     eval-result))
 
@@ -554,7 +560,9 @@ replique.cljs_env.repl.connect(\"" url "\");
                     ;; cljs results are strings, so we must not print with prn
                     :print println
                     :caught cljs.repl/repl-caught
-                    :read (repl-read-with-exit :cljs/quit)})]
+                    :read (repl-read-with-exit :cljs/quit)
+                    :reader (memoize #(replique.cljs/source-logging-push-back-reader
+                                       *in* 1 "NO_SOURCE_FILE"))})]
     (swap! cljs-outs conj *out*)
     (when (not= :started state)
       (println (format "Waiting for browser to connect on port %d ..." (server/server-port))))
@@ -602,6 +610,10 @@ replique.cljs_env.repl.connect(\"" url "\");
 
 (defn set-repl-verbose [b]
   (set! cljs.repl/*cljs-verbose* b))
+
+(defn set-source-meta! [file line column]
+  (replique.cljs/reset-reader *in* file line column)
+  nil)
 
 #_(defn install-node-deps! []
   (replique.cljs/with-version

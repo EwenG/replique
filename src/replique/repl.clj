@@ -1,7 +1,8 @@
 (ns replique.repl
   (:require [replique.utils :as utils]
             [replique.tooling-msg :as tooling-msg]
-            [replique.server :as server]))
+            [replique.server :as server])
+  (:import [clojure.lang LineNumberingPushbackReader]))
 
 (def ^:private dispatch-request
   (utils/dynaload 'replique.repl-cljs/dispatch-request))
@@ -103,6 +104,10 @@
 
 (defmethod utils/repl-ns :replique/clj [repl-env]
   (ns-name *ns*))
+
+(defn set-source-meta! [file line column]
+  (set! *file* file)
+  (.setLineNumber ^LineNumberingPushbackReader *in* line))
 
 (defn options-with-repl-meta [{:keys [init caught print]
                                :as options-map}]
