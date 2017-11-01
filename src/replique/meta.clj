@@ -36,7 +36,7 @@
     (some (fn [[_ v]] (:file (meta comp-env v))) interns)))
 
 ;; The "jar:" protocol is not always added by the clojurescript compiler
-(defn url-with-protocol-prefix [url-str]
+(defn url-with-protocol-prefix [^String url-str]
   (cond
     (and (.contains url-str ".jar!") (not (.startsWith url-str "jar:")))
     (format "jar:%s" url-str)

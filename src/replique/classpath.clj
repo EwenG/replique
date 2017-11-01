@@ -2,8 +2,9 @@
   (:refer-clojure :exclude [add-classpath])
   (:require [replique.tooling-msg :as tooling-msg])
   (:import [clojure.lang DynamicClassLoader]
-           [java.net URL URLClassLoader]
-           [java.nio.file Paths]))
+           [java.net URL URI URLClassLoader]
+           [java.nio.file Paths Path]
+           [java.lang.reflect Method]))
 
 (defprotocol AddableClasspath
   (can-add? [cl])
@@ -20,7 +21,7 @@
       {:can-add? (fn [_] (boolean addURL))
        :add-classpath-url (fn [cl url]
                             (when addURL
-                              (.invoke addURL cl (into-array URL [url]))))}))
+                              (.invoke ^Method addURL cl (into-array URL [url]))))}))
 
   (extend DynamicClassLoader
     AddableClasspath
@@ -39,7 +40,7 @@
 (defn classloader-hierarchy
   ([] (classloader-hierarchy (.. Thread currentThread getContextClassLoader)))
   ([tip] (->> tip
-              (iterate #(.getParent %))
+              (iterate #(.getParent ^ClassLoader %))
               (take-while boolean))))
 
 (defn addable-classloader []
@@ -53,8 +54,8 @@
 (defn classpath->urls [classpath]
   (->> (clojure.string/split (clojure.string/trim classpath) #":")
        (map #(Paths/get % (make-array String 0)))
-       (map #(.toUri %))
-       (map #(.toURL %))))
+       (map #(.toUri ^Path %))
+       (map #(.toURL ^URI %))))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :classpath]
   [{:keys [classpath] :as msg}]

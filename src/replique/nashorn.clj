@@ -26,7 +26,7 @@
 
 (defn create-engine []
   (let [factories (.getEngineFactories (ScriptEngineManager.))
-        factory (get (zipmap (map #(.getEngineName %) factories) factories) "Oracle Nashorn")]
+        factory (get (zipmap (map #(.getEngineName ^ScriptEngineFactory %) factories) factories) "Oracle Nashorn")]
     (if-let [engine (.getScriptEngine ^ScriptEngineFactory factory)]
       (let [context (.getContext engine)]
         (.setWriter context *out*)
@@ -79,14 +79,16 @@
   (try
     {:status :success
      :value (if-let [r (eval-str @engine js)]
-              (if (and (instance? ScriptObjectMirror r) (.containsKey r "stack"))
+              (if (and (instance? ScriptObjectMirror r)
+                       (.containsKey ^ScriptObjectMirror r "stack"))
                 (let [cst (cljs.repl/-parse-stacktrace
-                           repl-env (.get r "stack") {} cljs.repl/*repl-opts*)]
+                           repl-env (.get ^ScriptObjectMirror r "stack")
+                           {} cljs.repl/*repl-opts*)]
                   (if (vector? cst)
                     (->> (replique.repl-cljs/mapped-stacktrace cst cljs.repl/*repl-opts*)
-                         (str (.toString r)))
-                    (.toString r)))
-                (.toString r))
+                         (str (.toString ^ScriptObjectMirror r)))
+                    (.toString ^ScriptObjectMirror r)))
+                (.toString ^ScriptObjectMirror r))
               "")}
     (catch ScriptException e
       (let [^Throwable root-cause (clojure.stacktrace/root-cause e)]

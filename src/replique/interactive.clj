@@ -54,9 +54,9 @@
     path))
 
 (defn file-url->path [url]
-  (.getFile url))
+  (.getFile ^URL url))
 
-(defmulti url->path (fn [url] (.getProtocol url)))
+(defmulti url->path (fn [url] (.getProtocol ^URL url)))
 
 (defmethod url->path "file" [url]
   (file-url->path url))
@@ -86,7 +86,7 @@
 
 (defmethod load "jar" [protocol env url opts]
   (let [path (jar-url->path url)
-        file (when path (.getName (File. path)))]
+        file (when path (.getName (File. ^String path)))]
     (assert path (str "Cannot load url: " (str url)))
     (if (utils/cljs-env? env)
       (@cljs-load-file (:repl-env env) url opts)

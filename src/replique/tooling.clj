@@ -267,16 +267,16 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
    (for [[s v] (env/ns-interns comp-env the-ns)
          :let [f (:file (env/meta comp-env v))]
          ;; exclude vars defined at the repl
-         :when (and f (or (.endsWith f (env/file-extension comp-env))
-                          (.endsWith f ".cljc")))]
+         :when (and f (or (.endsWith ^String f (env/file-extension comp-env))
+                          (.endsWith ^String f ".cljc")))]
      f)))
 
 (defn var-with-meta [comp-env [v-name v]]
   (let [metas (env/meta comp-env v)
         filtered-metas (select-keys metas [:line :column])
         f (r-meta/resource-str (:file metas))
-        f (when (and f (or (.endsWith f (env/file-extension comp-env))
-                           (.endsWith f ".cljc"))) f)
+        f (when (and f (or (.endsWith ^String f (env/file-extension comp-env))
+                           (.endsWith ^String f ".cljc"))) f)
         filtered-metas (if f
                          (assoc filtered-metas :file f)
                          filtered-metas)]
