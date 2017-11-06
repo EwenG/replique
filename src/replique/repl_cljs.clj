@@ -52,6 +52,11 @@
 (def ^:dynamic *line* nil)
 (def ^:dynamic *column* nil)
 
+;; Used to set the source metadata to forms evaluated from a source buffer
+(def ^:dynamic *file* nil)
+(def ^:dynamic *line* nil)
+(def ^:dynamic *column* nil)
+
 (def env {:context :expr :locals {}})
 
 (defn dispatcher [{:keys [method path content]} callback]
