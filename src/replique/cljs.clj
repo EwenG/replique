@@ -15,9 +15,7 @@
    [cljs.repl :refer [repl-caught repl-quit-prompt repl-read repl-prompt known-repl-opts
                       -repl-options read-source-map *cljs-verbose* *repl-opts*
                       default-special-fns -setup evaluate-form analyze-source err-out
-                      -tear-down]]
-
-   [clojure.tools.reader.impl.utils])
+                      -tear-down]])
   (:import [java.io FileWriter PrintWriter Closeable]))
 
 ;;Patch cljs.closure/output-main-file in order to:
@@ -783,83 +781,19 @@
       ns-infos)))
 
 
-;; Make the reader mutable to be able to reset :file :line and :column when evaluating
+;; Custom constructor to be able to set :file :line and :column when evaluating
 ;; code from a source file at the REPL
-
-(defprotocol MutableReader
-  (reset-reader [rdr new-file new-line new-column]))
-
-(defn source-log-frame []
-  (doto (clojure.tools.reader.impl.utils/make-var)
-     (alter-var-root (constantly {:buffer (StringBuilder.)
-                                  :offset 0}))))
-
-(defmacro ^:private update! [what f]
-  (list 'set! what (list f what)))
-
-(deftype SourceLoggingPushbackReader
-    [rdr
-     ^:unsynchronized-mutable ^long line ^:unsynchronized-mutable ^long column
-     ^:unsynchronized-mutable line-start? ^:unsynchronized-mutable prev
-     ^:unsynchronized-mutable ^long prev-column
-     ^:unsynchronized-mutable ^String file-name
-     ^:unsynchronized-mutable source-log-frames]
-  readers/Reader
-  (readers/read-char [reader]
-    (when-let [ch (readers/read-char rdr)]
-      (let [ch (#'readers/normalize-newline rdr ch)]
-        (set! prev line-start?)
-        (set! line-start? (clojure.tools.reader.impl.utils/newline? ch))
-        (when line-start?
-          (set! prev-column column)
-          (set! column 0)
-          (update! line inc))
-        (update! column inc)
-        (#'readers/log-source-char source-log-frames ch)
-        ch)))
-
-  (readers/peek-char [reader]
-    (readers/peek-char rdr))
-
-  readers/IPushbackReader
-  (readers/unread [reader ch]
-    (if line-start?
-      (do (update! line dec)
-          (set! column prev-column))
-      (update! column dec))
-    (set! line-start? prev)
-    (when ch
-      (#'readers/drop-last-logged-char source-log-frames))
-    (readers/unread rdr ch))
-
-  readers/IndexingReader
-  (readers/get-line-number [reader] (int line))
-  (readers/get-column-number [reader] (int column))
-  (readers/get-file-name [reader] file-name)
-
-  Closeable
-  (close [this]
-    (when (instance? Closeable rdr)
-      (.close ^Closeable rdr)))
-
-  MutableReader
-  (reset-reader [this new-file new-line new-column]
-    (set! file-name new-file)
-    (set! line (long new-line))
-    (set! column 0)
-    (set! line-start? true)
-    (set! prev nil)
-    (set! prev-column 0)
-    (set! source-log-frames (source-log-frame))))
 
 (defn ^Closeable source-logging-push-back-reader
   "Creates a SourceLoggingPushbackReader from a given string or PushbackReader"
-  [s-or-rdr buf-len file-name]
-  (SourceLoggingPushbackReader.
+  [s-or-rdr buf-len file-name line column]
+  (readers/->SourceLoggingPushbackReader
    (readers/to-pbr s-or-rdr buf-len)
-   1 1
+   line column
    true
    nil
    0
    file-name
-   (source-log-frame)))
+   (doto (clojure.tools.reader.impl.utils/make-var)
+     (alter-var-root (constantly {:buffer (StringBuilder.)
+                                  :offset 0})))))

@@ -18,7 +18,6 @@
 (def ^:private cljs-set-repl-verbose (utils/dynaload 'replique.repl-cljs/set-repl-verbose))
 (def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
 (def ^:private cljs-munge (utils/dynaload 'cljs.compiler/munge))
-(def ^:private cljs-set-source-meta! (utils/dynaload 'replique.repl-cljs/set-source-meta!))
 
 #_(def ^:private cljs-install-node-deps!
   (utils/dynaload 'replique.repl-cljs/install-node-deps!))
@@ -205,13 +204,6 @@
                 (doseq [[m-s m-qualified-sym] (:rename-macros n)
                         :when (= m-qualified-sym var-sym)]
                   (env/ns-unmap comp-env n m-s)))))))))
-
-(defn set-source-meta! [url-str line column]
-  (let [url (try (URL. url-str) (catch Exception _ nil))
-        path (when url (url->path url))]
-    (if (isa? utils/*repl-env* :replique/cljs)
-      (@cljs-set-source-meta! (or path "NO_SOURCE_FILE") (or line 1) (or column 1))
-      (replique.repl/set-source-meta! (or path "NO_SOURCE_PATH") (or line 1) (or column 1)))))
 
 #_(defmacro install-node-deps! []
   (boolean (@cljs-install-node-deps!)))

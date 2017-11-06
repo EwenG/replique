@@ -21,11 +21,18 @@
   (clojure.main/repl
    :init (fn [] (in-ns 'replique.repl))
    :prompt #()
-   :print (fn [result] (tooling-msg/tooling-prn result))))
+   :print (fn [result]
+            (binding [*print-length* nil
+                      *print-level* nil
+                      *print-meta* nil]
+              (tooling-msg/tooling-prn result)))))
 
 (defn print-repl-meta []
   (when (and (tooling-msg/tooling-available?) server/*session*)
-    (binding [*out* tooling-msg/tooling-out]
+    (binding [*out* tooling-msg/tooling-out
+              *print-length* nil
+              *print-level* nil
+              *print-meta* nil]
       (utils/with-lock tooling-msg/tooling-out-lock
         (tooling-msg/tooling-prn {:type :repl-meta
                                   :process-id tooling-msg/process-id
@@ -92,8 +99,11 @@
       :prompt #()
       :caught (fn [e] (tooling-msg/uncaught-exception (Thread/currentThread) e))
       :print (fn [result]
-               (utils/with-lock tooling-msg/tooling-out-lock
-                 (tooling-msg/tooling-prn result)))))))
+               (binding [*print-length* nil
+                         *print-level* nil
+                         *print-meta* nil]
+                 (utils/with-lock tooling-msg/tooling-out-lock
+                   (tooling-msg/tooling-prn result))))))))
 
 (comment
   (.start (Thread. (fn [] (throw (Exception. "f")))))
@@ -109,6 +119,24 @@
   (set! *file* file)
   (.setLineNumber ^LineNumberingPushbackReader *in* line))
 
+(def ^:dynamic *ignored-form* false)
+
+(defn repl-print [arg]
+  (if (= :replique/__ignore arg)
+    (set! *ignored-form* true)
+    (do
+      (set! *ignored-form* false)
+      (prn arg))))
+
+(defn repl-caught [t]
+  (set! *ignored-form* false)
+  (clojure.main/repl-caught t))
+
+(defn repl-need-prompt []
+  (not *ignored-form*))
+
+;; Wrap functions are called with var args because the clj repl and the cljs repl options
+;; do not have the same arity
 (defn options-with-repl-meta [{:keys [init caught print]
                                :as options-map}]
   (assert (and init print caught) "init print and caught are required")
@@ -118,10 +146,13 @@
          :caught (fn [& args] (apply caught args) (print-repl-meta))))
 
 (defn repl []
-  (apply clojure.main/repl (->> {:init (fn [] (in-ns 'user))
-                                 :print prn :caught clojure.main/repl-caught}
-                                options-with-repl-meta
-                                (apply concat))))
+  (binding [*ignored-form* false]
+    (apply clojure.main/repl (->> {:init (fn [] (in-ns 'user))
+                                   :print repl-print
+                                   :caught repl-caught
+                                   :need-prompt repl-need-prompt}
+                                  options-with-repl-meta
+                                  (apply concat)))))
 
 ;; Behavior of the socket REPL on repl closing
 ;; The read fn returns (end of stream), the parent REPL prints the result of the repl command.

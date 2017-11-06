@@ -88,7 +88,7 @@
                     (->> (replique.repl-cljs/mapped-stacktrace cst cljs.repl/*repl-opts*)
                          (str (.toString ^ScriptObjectMirror r)))
                     (.toString ^ScriptObjectMirror r)))
-                (.toString ^ScriptObjectMirror r))
+                (.toString r))
               "")}
     (catch ScriptException e
       (let [^Throwable root-cause (clojure.stacktrace/root-cause e)]
@@ -181,10 +181,16 @@
         repl-opts (replique.repl/options-with-repl-meta
                    {:compiler-env compiler-env
                     :init (fn [] (replique.repl-cljs/in-ns* repl-env 'cljs.user))
-                    :print println
-                    :caught cljs.repl/repl-caught})]
+                    :print replique.repl-cljs/repl-print
+                    :caught replique.repl-cljs/repl-caught
+                    :read (replique.repl-cljs/repl-read-with-exit :cljs/quit)
+                    :need-prompt replique.repl-cljs/repl-need-prompt})]
     (swap! replique.repl-cljs/cljs-outs conj *out*)
-    (binding [utils/*repl-env* :replique/nashorn]
+    (binding [utils/*repl-env* :replique/nashorn
+              replique.repl-cljs/*file* nil
+              replique.repl-cljs/*line* nil
+              replique.repl-cljs/*column* nil
+              replique.repl-cljs/*ignored-form* false]
       (apply
        (partial replique.cljs/repl repl-env)
        (->> (merge (:options @compiler-env) repl-opts {:eval replique.repl-cljs/eval-cljs})

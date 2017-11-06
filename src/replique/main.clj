@@ -6,6 +6,7 @@
     (if (and (<= major 1) (< minor 8))
       (print (format "Replique is compatible with clojure 1.8+, current version is: %s.%s.%s%s" major minor incremental (if qualifier (str "-" qualifier) "")))
       (do (require 'replique.interactive)
+          (require 'replique.source-meta)
           ((resolve 'replique.repl/start-repl-process) project-map opts)))))
 
 (comment
