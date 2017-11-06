@@ -1,10 +1,8 @@
 (ns replique.elisp-printer
-  "Print to a format that can be read by the elisp reader. Not everything is made printable, 
-  only the most common Clojure datastructures. This is because elisp reader is not extensible,
-  and thus cannot read everything."
-  (:refer-clojure :exclude [print-method pr prn])
+  "Print to a format that can be read by the elisp reader. Prints to a transit-like format."
+  (:refer-clojure :exclude [print-method pr prn print-simple])
   (:import [java.io Writer]
-           [java.util UUID]))
+           [clojure.core Eduction]))
 
 (defn- print-sequential [^String begin, print-one, ^String sep, ^String end, sequence, ^Writer w]
   (.write w begin)
@@ -17,17 +15,59 @@
   (.write w end))
 
 (declare pr-on)
+(declare pr)
 
 (defmulti print-method (fn [x writer]
                          (let [t (get (meta x) :type)]
                            (if (keyword? t) t (class x)))))
 
+(defmacro print-with-meta [o w & body]
+  `(let [m# (meta ~o)]
+     (if (and (pos? (count m#)) *print-meta*)
+       (do
+         (.write ~w "[\"~#with-meta\" [")
+         ~@body
+         (.write ~w " ")
+         (pr-on m# ~w)
+         (.write ~w "]]"))
+       (do ~@body))))
+
+(defn print-simple [o, ^Writer w]
+  (print-with-meta
+   o w
+   (.write w (str o))))
+
 (defmethod print-method :default [o, ^Writer w]
-  (throw (IllegalArgumentException.
-          (format "%s cannot be printed to elisp format" (clojure.core/pr-str o)))))
+  (if (instance? clojure.lang.IObj o)
+    (print-method (vary-meta o #(dissoc % :type)) w)
+    (print-simple o w)))
 
 (defmethod print-method nil [o, ^Writer w]
   (.write w "nil"))
+
+(defn- print-tagged-object* [o rep ^Writer w]
+  (.write w "[\"~#object\" [")
+  (let [c (class o)]
+    (if (.isArray c)
+      (print-method (.getName c) w)
+      (.write w (.getName c))))
+  (.write w " ")
+  (.write w (format "0x%x " (System/identityHashCode o)))
+  (print-method rep w)
+  (.write w "]]"))
+
+(defn- print-tagged-object [o rep ^Writer w]
+  (if (instance? clojure.lang.IMeta o)
+    (print-with-meta
+     o w
+     (print-tagged-object* o rep w))
+    (print-tagged-object* o rep w)))
+
+(defn- print-object [o, ^Writer w]
+  (print-tagged-object o (str o) w))
+
+(defmethod print-method Object [o, ^Writer w]
+  (print-object o w))
 
 (defmethod print-method clojure.lang.Keyword [o, ^Writer w]
   (.write w (str o)))
@@ -35,44 +75,70 @@
 (defmethod print-method Number [o, ^Writer w]
   (.write w (str o)))
 
+(defmethod print-method Double [o, ^Writer w]
+  (cond
+    (= Double/POSITIVE_INFINITY o) (.write w "\"~zInf\"")
+    (= Double/NEGATIVE_INFINITY o) (.write w "\"~z-Inf\"")
+    (.isNaN ^Double o) (.write w "\"~zNaN\"")
+    :else (.write w (str o))))
+
+(defmethod print-method Float [o, ^Writer w]
+  (cond
+    (= Float/POSITIVE_INFINITY o) (.write w "\"~zInf\"")
+    (= Float/NEGATIVE_INFINITY o) (.write w "\"~z-Inf\"")
+    (.isNaN ^Float o) (.write w "\"~zNaN\"")
+    :else (.write w (str o))))
+
 (defmethod print-method Boolean [o, ^Writer w]
-  (.write w (str o)))
+  (.write w "\"~?")
+  (if o
+    (.write w "t")
+    (.write w "f"))
+  (.write w "\""))
 
 (defmethod print-method clojure.lang.Symbol [o, ^Writer w]
-  (.write w (-> (str o)
-                (.replace "\\" "\\\\")
-                (.replace "?" "\\?")
-                (.replace "[" "\\[")
-                (.replace "]" "\\]")
-                (.replace "(" "\\(")
-                (.replace ")" "\\)")
-                (.replace "{" "\\{")
-                (.replace "}" "\\}")
-                (.replace "+" "\\+")
-                (.replace "-" "\\-")
-                (.replace "#" "\\#")
-                (.replace ";" "\\;"))))
+  (print-with-meta
+   o w
+   (.write w (-> (str o)
+                 (.replace "\\" "\\\\")
+                 (.replace "?" "\\?")
+                 (.replace "[" "\\[")
+                 (.replace "]" "\\]")
+                 (.replace "(" "\\(")
+                 (.replace ")" "\\)")
+                 (.replace "{" "\\{")
+                 (.replace "}" "\\}")
+                 (.replace "+" "\\+")
+                 (.replace "-" "\\-")
+                 (.replace "#" "\\#")
+                 (.replace ";" "\\;")))))
+
+(defmethod print-method clojure.lang.Var [o, ^Writer w]
+  (.write w "\"~v")
+  (.write w (str (.-ns o) "/" (.-sym o)))
+  (.write w "\""))
 
 (defmethod print-method clojure.lang.ISeq [o, ^Writer w]
   (print-sequential "(" pr-on " " ")" o w))
+
+(prefer-method print-method clojure.lang.ISeq clojure.lang.IPersistentCollection)
+(prefer-method print-method clojure.lang.ISeq java.util.Collection)
 
 (defmethod print-method String [^String s, ^Writer w]
   (.append w \")
   (dotimes [n (count s)]
     (let [c (.charAt s n)
-          e (char-escape-string c)]
+          e (if (and (= 0 n) (= \~ c))
+              "~~"
+              (char-escape-string c))]
       (if e (.write w e) (.append w c))))
   (.append w \")
   nil)
 
-(defmethod print-method Class [^Class c, ^Writer w]
-  (.write w (.getName c)))
-
-(defmethod print-method UUID [^UUID uuid, ^Writer w]
-  (print-method (str uuid) w))
-
 (defmethod print-method clojure.lang.IPersistentVector [v, ^Writer w]
-  (print-sequential "[" pr-on " " "]" v w))
+  (print-with-meta
+   v w
+   (print-sequential "[" pr-on " " "]" v w)))
 
 (defn- print-prefix-map [m print-one w]
   (print-sequential
@@ -87,54 +153,225 @@
   (print-prefix-map m print-one w))
 
 (defmethod print-method clojure.lang.IPersistentMap [m, ^Writer w]
-  (print-map m pr-on w))
+  (print-with-meta
+   m w
+   (print-map m pr-on w)))
+
+(prefer-method print-method clojure.lang.IPersistentCollection java.util.Collection)
+(prefer-method print-method clojure.lang.IPersistentCollection java.util.RandomAccess)
+(prefer-method print-method java.util.RandomAccess java.util.List)
+(prefer-method print-method clojure.lang.IPersistentCollection java.util.Map)
+
+(defmethod print-method java.util.List [c, ^Writer w]
+  (print-with-meta
+   c w
+   (print-sequential "(" pr-on " " ")" c w)))
+
+(defmethod print-method java.util.RandomAccess [v, ^Writer w]
+  (print-with-meta
+   v w
+   (print-sequential "[" pr-on " " "]" v w)))
+
+(defmethod print-method java.util.Map [m, ^Writer w]
+  (print-with-meta
+   m w
+   (print-map m pr-on w)))
+
+(defmethod print-method java.util.Set [s, ^Writer w]
+  (print-with-meta
+   s w
+   (.write w "[\"~#set\" ")
+   (print-sequential "[" pr-on " " "]" (seq s) w)
+   (.write w "]")))
+
+(defmethod print-method clojure.lang.IRecord [r, ^Writer w]
+  (print-with-meta
+   r w
+   (.write w "[\"~#")
+   (.write w (.getName (class r)))
+   (.write w "\" ")
+   (print-map r pr-on w)
+   (.write w "]")))
+
+(prefer-method print-method clojure.lang.IRecord java.util.Map)
+(prefer-method print-method clojure.lang.IRecord clojure.lang.IPersistentMap)
 
 (defmethod print-method clojure.lang.IPersistentSet [s, ^Writer w]
-  (print-sequential "(" pr-on " " ")" (seq s) w))
+  (print-with-meta
+   s w
+   (.write w "[\"~#set\" ")
+   (print-sequential "[" pr-on " " "]" (seq s) w)
+   (.write w "]")))
+
+(defmethod print-method Character [^Character c, ^Writer w]
+  (.write w "\"~c")
+  (.write w (str c))
+  (.write w "\""))
+
+(defmethod print-method Class [^Class c, ^Writer w]
+  (.write w (.getName c)))
+
+(defmethod print-method java.math.BigDecimal [b, ^Writer w]
+  (.write w "\"~f")
+  (.write w (str b))
+  (.write w "\""))
+
+(defn print-bigint [b, ^Writer w]
+  (.write w "\"~n")
+  (.write w (str b))
+  (.write w "\""))
+
+(defmethod print-method clojure.lang.BigInt [b, ^Writer w]
+  (print-bigint b w))
+
+(def ^:const MAX_INTEGER (dec (bit-shift-left 2 28)))
+(def ^:const MIN_INTEGER (- (bit-shift-left 2 28)))
+
+(defmethod print-method Integer [n, ^Writer w]
+  (if (or (> n MAX_INTEGER) (< n MIN_INTEGER))
+    (print-bigint n w)
+    (.write w (str n))))
+
+(comment
+  (print-bigint (java.math.BigInteger. "99999999999999999999999999999999999999999999999999999999999999999999") w)
+  )
+
+(defmethod print-method Long [n, ^Writer w]
+  (if (or (> n MAX_INTEGER) (< n MIN_INTEGER))
+    (print-bigint n w)
+    (.write w (str n))))
+
+(defmethod print-method java.util.regex.Pattern [p ^Writer w]
+  (.write w "\"~p")
+  (.write w (.pattern p))
+  (.write w "\""))
+
+(defn- deref-as-map [^clojure.lang.IDeref o]
+  (let [pending (and (instance? clojure.lang.IPending o)
+                     (not (.isRealized ^clojure.lang.IPending o)))
+        [ex val]
+        (when-not pending
+          (try [false (deref o)]
+               (catch Throwable e
+                 [true e])))]
+    {:status
+     (cond
+       (or ex
+           (and (instance? clojure.lang.Agent o)
+                (agent-error o)))
+       :failed
+
+       pending
+       :pending
+
+       :else
+       :ready)
+
+     :val val}))
+
+(defmethod print-method clojure.lang.IDeref [o ^Writer w]
+  (print-tagged-object o (deref-as-map o) w))
 
 (defmethod print-method StackTraceElement [^StackTraceElement o ^Writer w]
   (print-method [(symbol (.getClassName o)) (symbol (.getMethodName o)) (.getFileName o) (.getLineNumber o)] w))
 
+(defmethod print-method clojure.lang.TaggedLiteral [o ^Writer w]
+  (.write w "[\"~#taggedliteral\" [")
+  (print-method (:tag o) w)
+  (.write w " ")
+  (print-method (:form o) w)
+  (.write w "]]"))
+
 (defn- print-throwable [^Throwable o ^Writer w]
-  (.write w "#s(hash-table test equal data (\n :cause ")
+  (.write w "[\"~#error\" ")
+  (.write w "#s(hash-table test equal data (:cause ")
   (let [{:keys [cause data via trace]} (Throwable->map o)
-        print-via #(do (.write w "#s(hash-table test equal data (\n :type ")
+        print-via #(do (.write w "#s(hash-table test equal data (:type ")
                        (print-method (:type %) w)
-                       (.write w "\n   :message ")
+                       (.write w " :message ")
                        (print-method (:message %) w)
                        (when-let [data (:data %)]
-                         (.write w "\n   :data ")
-                         (print-method (clojure.core/pr-str data) w))
+                         (.write w " :data ")
+                         (print-method data w))
                        (when-let [at (:at %)]
-                         (.write w "\n   :at ")
+                         (.write w " :at ")
                          (print-method (:at %) w))
                        (.write w "))"))]
     (print-method cause w)
     (when data
-      (.write w "\n :data ")
-      (print-method (clojure.core/pr-str data) w))
+      (.write w " :data ")
+      (print-method data w))
     (when via
-      (.write w "\n :via\n [")
+      (.write w " :via [")
       (when-let [fv (first via)]
         (print-via fv)
         (doseq [v (rest via)]
-          (.write w "\n  ")
+          (.write w " ")
           (print-via v)))
       (.write w "]"))
     (when trace
-      (.write w "\n :trace\n [")
+      (.write w " :trace [")
       (when-let [ft (first trace)]
         (print-method ft w)
         (doseq [t (rest trace)]
-          (.write w "\n  ")
+          (.write w " ")
           (print-method t w)))
       (.write w "]")))
-  (.write w "))"))
+  (.write w "))]"))
 
-;; Throwable will print almost like Clojure, but directly as a map, without the tag reader.
-;; Also :data is returned as a string because we don't control what it contains.
 (defmethod print-method Throwable [^Throwable o ^Writer w]
   (print-throwable o w))
+
+(defmethod print-method java.util.UUID [uuid ^java.io.Writer w]
+  (.write w "\"~u")
+  (.write w (str uuid))
+  (.write w "\""))
+
+(defn- print-calendar
+  "Print a java.util.Calendar as RFC3339 timestamp, preserving timezone."
+  [^java.util.Calendar c, ^java.io.Writer w]
+  (let [calstr (format "%1$tFT%1$tT.%1$tL%1$tz" c)
+        offset-minutes (- (.length calstr) 2)]
+    ;; calstr is almost right, but is missing the colon in the offset
+    (.write w "\"~i")
+    (.write w calstr 0 offset-minutes)
+    (.write w ":")
+    (.write w calstr offset-minutes 2)
+    (.write w "\"")))
+
+(defmethod print-method java.util.Calendar
+  [^java.util.Calendar c, ^java.io.Writer w]
+  (print-calendar c w))
+
+(defn- print-date
+  "Print a java.util.Date as RFC3339 timestamp, always in UTC."
+  [^java.util.Date d, ^java.io.Writer w]
+  (let [^java.text.DateFormat utc-format (.get @#'clojure.instant/thread-local-utc-date-format)]
+    (.write w "\"~i")
+    (.write w (.format utc-format d))
+    (.write w "\"")))
+
+(defmethod print-method java.util.Date
+  [^java.util.Date d, ^java.io.Writer w]
+  (print-date d w))
+
+(defmethod print-method Eduction [c, ^Writer w]
+  (print-sequential "(" pr-on " " ")" c w))
+
+(defn- print-timestamp
+  "Print a java.sql.Timestamp as RFC3339 timestamp, always in UTC."
+  [^java.sql.Timestamp ts, ^java.io.Writer w]
+  (let [^java.text.DateFormat utc-format (.get @#'clojure.instant/thread-local-utc-timestamp-format)]
+    (.write w "\"#i")
+    (.write w (.format utc-format ts))
+    ;; add on nanos and offset
+    ;; RFC3339 says to use -00:00 when the timezone is unknown (+00:00 implies a known GMT)
+    (.write w (format ".%09d-00:00" (.getNanos ts)))
+    (.write w "\"")))
+
+(defmethod print-method java.sql.Timestamp
+  [^java.sql.Timestamp ts, ^java.io.Writer w]
+  (print-timestamp ts w))
 
 (defn pr-on [x w]
   (print-method x w)
@@ -156,3 +393,14 @@
   (newline)
   (when *flush-on-newline*
     (flush)))
+
+
+(comment
+  (keys (methods print-method))
+  (keys (methods clojure.core/print-method))
+
+  ;; core protocol CollReduce ReduceKV -- exclude Object
+  ;; find-protocol-impl
+
+  ;; handle print-level/print-length
+  )

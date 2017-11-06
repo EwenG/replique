@@ -32,7 +32,10 @@
 (defn uncaught-exception [thread ex]
   (if (or (nil? tooling-err) (nil? tooling-out-lock))
     (throw ex)
-    (binding [*out* tooling-err]
+    (binding [*out* tooling-err
+              *print-length* nil
+              *print-level* nil
+              *print-meta* nil]
       (utils/with-lock tooling-out-lock
         (tooling-prn {:type :error
                       :process-id process-id

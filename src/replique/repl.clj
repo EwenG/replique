@@ -21,11 +21,18 @@
   (clojure.main/repl
    :init (fn [] (in-ns 'replique.repl))
    :prompt #()
-   :print (fn [result] (tooling-msg/tooling-prn result))))
+   :print (fn [result]
+            (binding [*print-length* nil
+                      *print-level* nil
+                      *print-meta* nil]
+              (tooling-msg/tooling-prn result)))))
 
 (defn print-repl-meta []
   (when (and (tooling-msg/tooling-available?) server/*session*)
-    (binding [*out* tooling-msg/tooling-out]
+    (binding [*out* tooling-msg/tooling-out
+              *print-length* nil
+              *print-level* nil
+              *print-meta* nil]
       (utils/with-lock tooling-msg/tooling-out-lock
         (tooling-msg/tooling-prn {:type :repl-meta
                                   :process-id tooling-msg/process-id
@@ -92,8 +99,11 @@
       :prompt #()
       :caught (fn [e] (tooling-msg/uncaught-exception (Thread/currentThread) e))
       :print (fn [result]
-               (utils/with-lock tooling-msg/tooling-out-lock
-                 (tooling-msg/tooling-prn result)))))))
+               (binding [*print-length* nil
+                         *print-level* nil
+                         *print-meta* nil]
+                 (utils/with-lock tooling-msg/tooling-out-lock
+                   (tooling-msg/tooling-prn result))))))))
 
 (comment
   (.start (Thread. (fn [] (throw (Exception. "f")))))
