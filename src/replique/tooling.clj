@@ -128,7 +128,7 @@
                                    :repl-env :replique/clj
                                    :context "(__prefix__)"
                                    :ns "replique.tooling"
-                                   :symbol "my-symbol"})
+                                   :symbol "tooling-msg/tooling-msg-handle"})
   )
 
 ;; not used but could be useful to dispatch on the reader conditional around the cursor
