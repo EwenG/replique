@@ -162,6 +162,29 @@ replique.cljs_env.repl.connect(\"" url "\");
      ~@(for [v cljs-core-bindings]
          `(~'set! ~(symbol "cljs.core" (-> v meta :name str)) ~(deref v)))))
 
+(defn replique-compile-dependencies [source repl-opts opts]
+  (binding [ana/*reload-macros* replique.cljs/*reload-all*]
+    (let [opts (-> repl-opts
+                   (merge opts)
+                   ;; :force -> force compilation (require-compile? -> true)
+                   (assoc :force replique.cljs/*reload-all*
+                          ;; :interactive -> do not clear namespace analysis data
+                          ;; before reloading
+                          :mode :interactive))
+          sources (closure/add-dependency-sources #{source} opts)
+          dependencies-sources (filter #(not= (:ns %) (:ns source)) sources)
+          dependencies-sources (deps/dependency-order dependencies-sources)
+          compiled (closure/compile-sources dependencies-sources opts)
+          compiled (map #'closure/add-core-macros-if-cljs-js compiled)
+          compiled (conj compiled source)
+          all-sources (-> compiled
+                          (closure/add-js-sources opts)
+                          deps/dependency-order
+                          closure/add-goog-base)]
+      (doseq [source all-sources]
+        (closure/source-on-disk opts source))
+      all-sources)))
+
 (defn f->src [f]
   (cond (cljs.util/url? f) f
         (.exists (io/file f)) (io/file f)
@@ -180,18 +203,7 @@ replique.cljs_env.repl.connect(\"" url "\");
          target-path (.resolve output-path target-path)
          output-file (.toFile ^Path (.relativize output-path target-path))
          ns-info (ana/parse-ns src output-file opts)
-         sources (binding [ana/*reload-macros* replique.cljs/*reload-all*]
-                   ;; Compile dependencies. This must be done before compiling the requested file
-                   (closure/add-dependencies
-                    (-> repl-opts (merge opts)
-                        ;; :force -> force compilation (require-compile? -> true)
-                        (assoc :force replique.cljs/*reload-all*
-                               ;; :interactive -> do not clear namespace analysis data before
-                               ;;                 reloading
-                               :mode :interactive))
-                    ns-info))
-         _ (doseq [source sources]
-             (closure/source-on-disk opts source))
+         dependencies-sources (replique-compile-dependencies ns-info repl-opts opts)
          compiled (binding [ana/*reload-macros* (or reload-macros replique.cljs/*reload-all*)
                             ana/*analyze-deps* true]
                     (closure/compile
