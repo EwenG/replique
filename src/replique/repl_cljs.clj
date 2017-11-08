@@ -52,11 +52,6 @@
 (def ^:dynamic *line* nil)
 (def ^:dynamic *column* nil)
 
-;; Used to set the source metadata to forms evaluated from a source buffer
-(def ^:dynamic *file* nil)
-(def ^:dynamic *line* nil)
-(def ^:dynamic *column* nil)
-
 (def env {:context :expr :locals {}})
 
 (defn dispatcher [{:keys [method path content]} callback]
@@ -500,7 +495,7 @@ replique.cljs_env.repl.connect(\"" url "\");
   ;; Maybe we should print only in the currently active REPL instead of all REPLs
   (doseq [out @cljs-outs]
     (binding [*out* out]
-      (-> (:content content) read-string print)
+      (print (:content content))
       (.flush *out*)))
   {:status 200 :body "ignore__" :content-type "text/plain"})
 

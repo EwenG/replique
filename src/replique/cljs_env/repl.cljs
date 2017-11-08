@@ -55,7 +55,9 @@
   (garray/clear print-queue))
 
 (defn repl-print [data]
-  (.push print-queue (pr-str data))
+  (if (string? data)
+    (.push print-queue data)
+    (.push print-queue (pr-str data)))
   (flush-print-queue!))
 
 (defn get-ua-product []
