@@ -115,6 +115,7 @@
   (@cljs-set-repl-verbose b)
   b)
 
+;; :parallel-build does not seem to make much difference
 (def compiler-opts
   "Clojurescript compiler options that can be set at the REPL"
   #{:verbose :warnings :compiler-stats :language-in :language-out
