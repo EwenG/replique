@@ -157,17 +157,20 @@ replique.cljs_env.repl.connect(\"" url "\");
      ~@(for [v cljs-core-bindings]
          `(~'set! ~(symbol "cljs.core" (-> v meta :name str)) ~(deref v)))))
 
+(defn compile-dependency? [source ns-info]
+  (not= (:ns source) (:ns ns-info)))
+
 (defn replique-compile-dependencies [source repl-opts opts]
   (binding [ana/*reload-macros* replique.cljs/*reload-all*]
     (let [opts (-> repl-opts
                    (merge opts)
                    ;; :force -> force compilation (require-compile? -> true)
-                   (assoc :force replique.cljs/*reload-all*
-                          ;; :interactive -> do not clear namespace analysis data
+                   (assoc ;; :interactive -> do not clear namespace analysis data
                           ;; before reloading
                           :mode :interactive))
+          compile-dependency? (partial compile-dependency? source)
           sources (closure/add-dependency-sources #{source} opts)
-          dependencies-sources (filter #(not= (:ns %) (:ns source)) sources)
+          dependencies-sources (filter compile-dependency? sources)
           dependencies-sources (deps/dependency-order dependencies-sources)
           compiled (closure/compile-sources dependencies-sources opts)
           compiled (map #'closure/add-core-macros-if-cljs-js compiled)

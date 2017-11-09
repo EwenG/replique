@@ -780,6 +780,14 @@
           (assoc-in [:reload :require-macros] :reload))
       ns-infos)))
 
+;; patch cljs.util/changed? to only check for modified file when using :reload-all
+
+(defonce changed?-o @#'cljs.util/changed?)
+
+(defn changed? [a b]
+  (if *reload-all* (changed?-o a b) false))
+
+(alter-var-root #'cljs.util/changed? (constantly changed?))
 
 ;; Custom constructor to be able to set :file :line and :column when evaluating
 ;; code from a source file at the REPL
