@@ -307,4 +307,3 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
     (when the-ns
       {:vars (list-vars-with-meta comp-env the-ns)})))
 
-;; Watch out: all clojure symbols cannot be read by the elisp reader. For example symbols that start by a question mark "?" cannot be read. Thus they must be returned as string
