@@ -115,20 +115,17 @@
 
 (defn set-source-meta! [file line column]
   (set! *file* file)
-  (.setLineNumber ^LineNumberingPushbackReader *in* line))
+  (.setLineNumber ^LineNumberingPushbackReader *in* (dec line)))
 
 (def ^:dynamic *ignored-form* false)
 
-(defn repl-print [arg]
-  (if (= :replique/__ignore arg)
-    (set! *ignored-form* true)
-    (do
-      (set! *ignored-form* false)
-      (prn arg))))
-
-(defn repl-caught [t]
-  (set! *ignored-form* false)
-  (clojure.main/repl-caught t))
+(defn repl-read [request-prompt request-exit]
+  (let [input (clojure.main/repl-read request-prompt request-exit)]
+    (if (= input :replique/__ignore)
+      (do (set! *ignored-form* true)
+          request-prompt)
+      (do (set! *ignored-form* false)
+          input))))
 
 (defn repl-need-prompt []
   (not *ignored-form*))
@@ -147,8 +144,9 @@
   (binding [*file* "NO_SOURCE_PATH"
             *ignored-form* false]
     (apply clojure.main/repl (->> {:init (fn [] (in-ns 'user))
-                                   :print repl-print
-                                   :caught repl-caught
+                                   :print prn
+                                   :caught clojure.main/repl-caught
+                                   :read repl-read
                                    :need-prompt repl-need-prompt}
                                   options-with-repl-meta
                                   (apply concat)))))

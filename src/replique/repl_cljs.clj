@@ -518,20 +518,18 @@ replique.cljs_env.repl.connect(\"" url "\");
 ;; patch cljs.repl/eval-cljs in order to add the possibility to define post-eval hooks
 ;; patch cljs.repl/eval-cljs to correctly set the file name
 (defn eval-cljs [repl-env env form opts]
-  (if (= :replique/__ignore form)
-    :replique/__ignore
-    (let [comp-env @@compiler-env
-          eval-result (cljs.repl/evaluate-form
-                       repl-env
-                       (assoc env :ns (ana/get-namespace ana/*cljs-ns*))
-                       (get (meta form) :file "NO_SOURCE_FILE")
-                       form
-                       ;; the pluggability of :wrap is needed for older JS runtimes like Rhino
-                       ;; where catching the error will swallow the original trace
-                       ((or (:wrap opts) wrap-fn) form)
-                       opts)]
-      (call-post-eval-hooks repl-env comp-env @@compiler-env)
-      eval-result)))
+  (let [comp-env @@compiler-env
+        eval-result (cljs.repl/evaluate-form
+                     repl-env
+                     (assoc env :ns (ana/get-namespace ana/*cljs-ns*))
+                     (get (meta form) :file "NO_SOURCE_FILE")
+                     form
+                     ;; the pluggability of :wrap is needed for older JS runtimes like Rhino
+                     ;; where catching the error will swallow the original trace
+                     ((or (:wrap opts) wrap-fn) form)
+                     opts)]
+    (call-post-eval-hooks repl-env comp-env @@compiler-env)
+    eval-result))
 
 (defn eval-cljs-form
   ([repl-env form] (eval-cljs-form repl-env form nil))
@@ -549,6 +547,8 @@ replique.cljs_env.repl.connect(\"" url "\");
 (defmethod utils/repl-type :replique/cljs [repl-env]
   :cljs)
 
+(def ^:dynamic *ignored-form* false)
+
 ;; Customized REPL to allow exiting the REPL with :cljs/quit
 ;; Also always reset the reader even is :source-map-inline is false in order to set the metadata on
 ;; code evaluated from a buffer
@@ -565,22 +565,13 @@ replique.cljs_env.repl.connect(\"" url "\");
                ;; Transfer 1-char buffer to original *in*
                (readers/unread current-in (readers/read-char *in*))
                (cljs.repl/skip-if-eol current-in)
-               (if (= input exit-keyword)
-                 request-exit
-                 input))))))))
-
-(def ^:dynamic *ignored-form* false)
-
-(defn repl-print [arg]
-  (if (= :replique/__ignore arg)
-    (set! *ignored-form* true)
-    (do
-      (set! *ignored-form* false)
-      (println arg))))
-
-(defn repl-caught [e repl-env opts]
-  (set! *ignored-form* false)
-  (cljs.repl/repl-caught e repl-env opts))
+               (cond (= input exit-keyword)
+                     request-exit
+                     (= input :replique/__ignore)
+                     (do (set! *ignored-form* true)
+                         request-prompt)
+                     :else (do (set! *ignored-form* false)
+                               input)))))))))
 
 (defn repl-need-prompt []
   (not *ignored-form*))
@@ -595,8 +586,8 @@ replique.cljs_env.repl.connect(\"" url "\");
                     ;; would be lost on browser refresh
                     :init (fn [] (in-ns* repl-env 'cljs.user))
                     ;; cljs results are strings, so we must not print with prn
-                    :print repl-print
-                    :caught repl-caught
+                    :print println
+                    :caught cljs.repl/repl-caught
                     :read (repl-read-with-exit :cljs/quit)
                     :need-prompt repl-need-prompt
                     :reader #(replique.cljs/source-logging-push-back-reader

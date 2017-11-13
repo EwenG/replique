@@ -181,8 +181,8 @@
         repl-opts (replique.repl/options-with-repl-meta
                    {:compiler-env compiler-env
                     :init (fn [] (replique.repl-cljs/in-ns* repl-env 'cljs.user))
-                    :print replique.repl-cljs/repl-print
-                    :caught replique.repl-cljs/repl-caught
+                    :print println
+                    :caught cljs.repl/repl-caught
                     :read (replique.repl-cljs/repl-read-with-exit :cljs/quit)
                     :need-prompt replique.repl-cljs/repl-need-prompt})]
     (swap! replique.repl-cljs/cljs-outs conj *out*)
