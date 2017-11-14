@@ -1,5 +1,5 @@
 (ns replique.repl-cljs
-  (:refer-clojure :exclude [load-file *file*])
+  (:refer-clojure :exclude [load-file])
   (:require [replique.utils :as utils]
             [replique.tooling-msg :as tooling-msg]
             [replique.http :as http]
@@ -19,9 +19,11 @@
             [clojure.tools.reader :as reader]
             [clojure.tools.reader.reader-types :as readers]
             [replique.cljs]
-            #_[replique.npm-deps :as npm-deps])
+            #_[replique.npm-deps :as npm-deps]
+            [replique.source-meta])
   (:import [java.io File]
            [java.nio.file Files Paths Path]
+           [java.net URL]
            [java.util.concurrent Executors SynchronousQueue
             RejectedExecutionException ExecutorService]
            [clojure.lang IExceptionInfo]
@@ -46,11 +48,6 @@
 (def ^:dynamic *stopped-eval-executor?* false)
 (defonce cljs-core-bindings #{#'*assert* #'*print-length* #'*print-meta* #'*print-level*
                               #'*flush-on-newline* #'*print-readably* #'*print-dup*})
-
-;; Used to set the source metadata to forms evaluated from a source buffer
-(def ^:dynamic *file* nil)
-(def ^:dynamic *line* nil)
-(def ^:dynamic *column* nil)
 
 (def env {:context :expr :locals {}})
 
@@ -547,16 +544,17 @@ replique.cljs_env.repl.connect(\"" url "\");
 (defmethod utils/repl-type :replique/cljs [repl-env]
   :cljs)
 
-(def ^:dynamic *ignored-form* false)
-
 ;; Customized REPL to allow exiting the REPL with :cljs/quit
 ;; Also always reset the reader even is :source-map-inline is false in order to set the metadata on
 ;; code evaluated from a buffer
+;; Delay the creation of the new reader after the source meta has been set by the tooling REPL
 (defn repl-read-with-exit [exit-keyword]
   (fn repl-read
     ([request-prompt request-exit]
      (repl-read request-prompt request-exit cljs.repl/*repl-opts*))
     ([request-prompt request-exit opts]
+     ;; Wait for something to come in in order to delay the creation of the new reader
+     (.unread *in* (.read *in*))
      (let [current-in *in*]
        (binding [*in* ((:reader opts))]
          (or ({:line-start request-prompt :stream-end request-exit}
@@ -565,16 +563,9 @@ replique.cljs_env.repl.connect(\"" url "\");
                ;; Transfer 1-char buffer to original *in*
                (readers/unread current-in (readers/read-char *in*))
                (cljs.repl/skip-if-eol current-in)
-               (cond (= input exit-keyword)
-                     request-exit
-                     (= input :replique/__ignore)
-                     (do (set! *ignored-form* true)
-                         request-prompt)
-                     :else (do (set! *ignored-form* false)
-                               input)))))))))
-
-(defn repl-need-prompt []
-  (not *ignored-form*))
+               (if (= input exit-keyword)
+                 request-exit
+                 input))))))))
 
 (defn cljs-repl []
   (let [repl-env @repl-env
@@ -589,18 +580,15 @@ replique.cljs_env.repl.connect(\"" url "\");
                     :print println
                     :caught cljs.repl/repl-caught
                     :read (repl-read-with-exit :cljs/quit)
-                    :need-prompt repl-need-prompt
-                    :reader #(replique.cljs/source-logging-push-back-reader
-                              *in* 1 (or *file* "NO_SOURCE_FILE")
-                              (or *line* 1) (or *column* 1))})]
+                    :reader #(let [{:keys [url line column]} @replique.source-meta/source-meta
+                                   url (try (URL. url) (catch Exception _ nil))
+                                   path (when url (utils/url->path url))]
+                               (replique.cljs/source-logging-push-back-reader
+                                *in* 1 (or path "NO_SOURCE_FILE") (or line 1) (or column 1)))})]
     (swap! cljs-outs conj *out*)
     (when (not= :started state)
       (println (format "Waiting for browser to connect on port %d ..." (server/server-port))))
-    (binding [utils/*repl-env* :replique/browser
-              *file* nil
-              *line* nil
-              *column* nil
-              *ignored-form* false]
+    (binding [utils/*repl-env* :replique/browser]
       (apply
        (partial replique.cljs/repl repl-env)
        (->> (merge (:options @compiler-env) repl-opts {:eval eval-cljs})
@@ -644,11 +632,6 @@ replique.cljs_env.repl.connect(\"" url "\");
 
 (defn set-repl-verbose [b]
   (set! cljs.repl/*cljs-verbose* b))
-
-(defn set-source-meta! [file line column]
-  (set! *file* file)
-  (set! *line* line)
-  (set! *column* column))
 
 #_(defn install-node-deps! []
   (replique.cljs/with-version

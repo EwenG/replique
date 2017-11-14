@@ -183,14 +183,9 @@
                     :init (fn [] (replique.repl-cljs/in-ns* repl-env 'cljs.user))
                     :print println
                     :caught cljs.repl/repl-caught
-                    :read (replique.repl-cljs/repl-read-with-exit :cljs/quit)
-                    :need-prompt replique.repl-cljs/repl-need-prompt})]
+                    :read (replique.repl-cljs/repl-read-with-exit :cljs/quit)})]
     (swap! replique.repl-cljs/cljs-outs conj *out*)
-    (binding [utils/*repl-env* :replique/nashorn
-              replique.repl-cljs/*file* nil
-              replique.repl-cljs/*line* nil
-              replique.repl-cljs/*column* nil
-              replique.repl-cljs/*ignored-form* false]
+    (binding [utils/*repl-env* :replique/nashorn]
       (apply
        (partial replique.cljs/repl repl-env)
        (->> (merge (:options @compiler-env) repl-opts {:eval replique.repl-cljs/eval-cljs})

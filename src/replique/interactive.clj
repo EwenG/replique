@@ -46,23 +46,6 @@
   "Returns the port the REPL is listening on"
   server/server-port)
 
-(defn jar-url->path [url]
-  (let [url-str (str url)
-        path (when (.contains url-str "!/")
-               (last (.split url-str "!/")))]
-    path))
-
-(defn file-url->path [url]
-  (.getFile ^URL url))
-
-(defmulti url->path (fn [url] (.getProtocol ^URL url)))
-
-(defmethod url->path "file" [url]
-  (file-url->path url))
-
-(defmethod url->path "jar" [url]
-  (jar-url->path url))
-
 ;; At the moment, load file does not intern macros in the cljs-env, making dynamically loaded
 ;; macros unavailable to autocompletion/repliquedoc
 (defmacro load-file
@@ -81,10 +64,10 @@
   (if (utils/cljs-env? env)
     ;; (:repl-env &env) can be a browser/nashorn/whatever... env
     (@cljs-load-file (:repl-env env) url opts)
-    `(clojure.core/load-file ~(file-url->path url))))
+    `(clojure.core/load-file ~(utils/file-url->path url))))
 
 (defmethod load "jar" [protocol env url opts]
-  (let [path (jar-url->path url)
+  (let [path (utils/jar-url->path url)
         file (when path (.getName (File. ^String path)))]
     (assert path (str "Cannot load url: " (str url)))
     (if (utils/cljs-env? env)

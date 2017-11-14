@@ -1,8 +1,10 @@
 (ns replique.repl
   (:require [replique.utils :as utils]
             [replique.tooling-msg :as tooling-msg]
-            [replique.server :as server])
-  (:import [clojure.lang LineNumberingPushbackReader]))
+            [replique.server :as server]
+            [replique.source-meta])
+  (:import [clojure.lang LineNumberingPushbackReader]
+           [java.net URL]))
 
 (def ^:private dispatch-request
   (utils/dynaload 'replique.repl-cljs/dispatch-request))
@@ -113,22 +115,18 @@
 (defmethod utils/repl-ns :replique/clj [repl-env]
   (ns-name *ns*))
 
-(defn set-source-meta! [file line column]
-  (set! *file* file)
-  (.setLineNumber ^LineNumberingPushbackReader *in* (dec line)))
-
-(def ^:dynamic *ignored-form* false)
+(defn set-source-meta! []
+  (let [char (.read *in*)
+        _ (.unread *in* char)
+        {:keys [url line column]} @replique.source-meta/source-meta
+        url (try (URL. url) (catch Exception _ nil))
+        path (when url (utils/url->path url))]
+    (set! *file* (or path "NO_SOURCE_PATH"))
+    (.setLineNumber ^LineNumberingPushbackReader *in* (or line 1))))
 
 (defn repl-read [request-prompt request-exit]
-  (let [input (clojure.main/repl-read request-prompt request-exit)]
-    (if (= input :replique/__ignore)
-      (do (set! *ignored-form* true)
-          request-prompt)
-      (do (set! *ignored-form* false)
-          input))))
-
-(defn repl-need-prompt []
-  (not *ignored-form*))
+  (set-source-meta!)
+  (clojure.main/repl-read request-prompt request-exit))
 
 ;; Wrap functions are called with var args because the clj repl and the cljs repl options
 ;; do not have the same arity
@@ -141,13 +139,11 @@
          :caught (fn [& args] (apply caught args) (print-repl-meta))))
 
 (defn repl []
-  (binding [*file* "NO_SOURCE_PATH"
-            *ignored-form* false]
+  (binding [*file* "NO_SOURCE_PATH"]
     (apply clojure.main/repl (->> {:init (fn [] (in-ns 'user))
                                    :print prn
                                    :caught clojure.main/repl-caught
-                                   :read repl-read
-                                   :need-prompt repl-need-prompt}
+                                   :read repl-read}
                                   options-with-repl-meta
                                   (apply concat)))))
 

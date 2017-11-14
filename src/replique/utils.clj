@@ -1,6 +1,7 @@
 (ns replique.utils
   (:refer-clojure :exclude [delay])
-  (:import [java.util.concurrent.locks ReentrantLock]))
+  (:import [java.util.concurrent.locks ReentrantLock]
+           [java.net URL]))
 
 (defonce process-out nil)
 (defonce process-err nil)
@@ -72,4 +73,19 @@
        (finally
          (.unlock lockee#)))))
 
+(defn jar-url->path [url]
+  (let [url-str (str url)
+        path (when (.contains url-str "!/")
+               (last (.split url-str "!/")))]
+    path))
 
+(defn file-url->path [url]
+  (.getFile ^URL url))
+
+(defmulti url->path (fn [url] (.getProtocol ^URL url)))
+
+(defmethod url->path "file" [url]
+  (file-url->path url))
+
+(defmethod url->path "jar" [url]
+  (jar-url->path url))

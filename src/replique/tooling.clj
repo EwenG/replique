@@ -13,7 +13,8 @@
             [replique.compliment.sources.local-bindings
              :refer [bindings-from-context]]
             [replique.environment :as env :refer [->CljsCompilerEnv]]
-            [replique.compliment.context :as context]))
+            [replique.compliment.context :as context]
+            [replique.source-meta]))
 
 (def ^:private cljs-compiler-env
   (utils/dynaload 'replique.repl-cljs/compiler-env))
@@ -307,3 +308,8 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
     (when the-ns
       {:vars (list-vars-with-meta comp-env the-ns)})))
 
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :source-meta]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (reset! replique.source-meta/source-meta (select-keys msg [:url :line :column]))
+    {}))
