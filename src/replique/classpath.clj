@@ -57,6 +57,21 @@
        (map #(.toUri ^Path %))
        (map #(.toURL ^URI %))))
 
+(defn boot-class-paths []
+  (try
+    (let [paths (-> (java.lang.management.ManagementFactory/getRuntimeMXBean)
+                    (.getBootClassPath)
+                    clojure.string/trim
+                    (clojure.string/split #":"))]
+      (map #(Paths/get % (make-array String 0)) paths))
+    (catch Exception e nil)))
+
+(defn paths []
+  (->> (classloader-hierarchy)
+       reverse
+       (mapcat #(seq (.getURLs ^URLClassLoader %)))
+       (map #(Paths/get (.toURI %)))))
+
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :classpath]
   [{:keys [classpath] :as msg}]
   (tooling-msg/with-tooling-response msg
@@ -64,4 +79,3 @@
       (do (add-classpath cl (classpath->urls classpath))
           {})
       {:error "Could not find a suitable classloader to update the classpath"})))
-

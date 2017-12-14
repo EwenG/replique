@@ -237,6 +237,11 @@
   (file-extension [_] "clj")
   (default-ns [_] 'user))
 
+(defn source-file-extension [file-name]
+  (cond (.endsWith file-name "clj") "clj"
+        (.endsWith file-name "cljs") "cljs"
+        (.endsWith file-name "cljc") "cljc"))
+
 (defn namespaces-on-classpath
   "Returns the list of all Clojure namespaces obtained by classpath scanning."
   [comp-env]

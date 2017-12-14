@@ -1,16 +1,56 @@
 (ns replique.context
   (:require [replique.environment :as env :refer [->CljsCompilerEnv]]))
 
-(def categories->vars {:in-ns {'clojure.core/in-ns nil}
-                       :binding {'cljs.core/let 0
-                                 'clojure.core/let 0
-                                 'clojure.core/for 0}})
+(def binding-context->vars {:let-like ['clojure.core/let
+                                       'cljs.core/let
+                                       'clojure.core/if-let
+                                       'cljs.core/if-let
+                                       'clojure.core/when-let
+                                       'cljs.core/when-let
+                                       'clojure.core/if-some
+                                       'cljs.core/if-some
+                                       'clojure.core/when-some
+                                       'cljs.core/when-some
+                                       'clojure.core/loop
+                                       'cljs.core/loop
+                                       'clojure.core/with-open
+                                       'clojure.core/dotimes
+                                       'cljs.core/dotimes
+                                       'clojure.core/with-local-vars]
+                            :fn-like ['clojure.core/defn
+                                      'cljs.core/defn
+                                      'clojure.core/defn-
+                                      'cljs.core/defn-
+                                      'clojure.core/fn
+                                      'cljs.core/fn
+                                      'clojure.core/defmacro
+                                      'cljs.core/defmacro]
+                            :for-like ['clojure.core/for
+                                       'cljs.core/for
+                                       'clojure.core/doseq
+                                       'cljs.core/doseq]})
+
+(def ns-context->vars {:ns-like ['clojure.core/ns]})
+
+(def dependency-context->vars {:require-like ['clojure.core/require
+                                              'cljs.core/require]
+                               :use-like ['clojure.core/use
+                                          'cljs.core/use]
+                               :require-macros-like ['cljs.core/require-macros]
+                               :import-like ['clojure.core/import
+                                             'cljs.core/import]
+                               :refer-like ['clojure.core/refer]
+                               :refer-clojure-like ['clojure.core/refer-clojure
+                                                    'cljs.core/refer-clojure]
+                               :load-like ['clojure.core/load]})
 
 (defn categories->vars-namespaces-reducer [namespaces category vars]
-  (reduce #(conj %1 (-> %2 key namespace)) namespaces vars))
+  (reduce #(conj %1 (-> %2 namespace)) namespaces vars))
 
 (def categories-namespaces (reduce-kv categories->vars-namespaces-reducer
-                                            #{} categories->vars))
+                                      #{} (merge binding-context->vars
+                                                 ns-context->vars
+                                                 dependency-context->vars)))
 
 (defn reverse-aliases-reducer [reversed-aliases alias-sym ns]
   (let [ns-str (str (env/ns-name ns))]
@@ -18,42 +58,43 @@
       (assoc reversed-aliases ns-str alias-sym)
       reversed-aliases)))
 
-(defn compute-category->syms [comp-env the-ns category->syms aliases vars]
-  (if-let [[v v-data] (first vars)]
-    (let [v-name (name v)
-          v-sym (symbol v-name)
-          v-ns-str (namespace v)
-          resolved (env/ns-resolve comp-env the-ns v-sym)
-          referred? (= (-> (env/meta comp-env resolved) :ns str) v-ns-str)
-          category->syms (if referred?
-                           (assoc category->syms v-sym v-data)
-                           category->syms)
-          category->syms (if-let [alias-sym (get aliases v-ns-str)]
-                           (assoc category->syms (symbol (str alias-sym) v-name) v-data)
-                           category->syms)
-          fully-resolved (env/ns-resolve comp-env (symbol v-ns-str) v-sym)
-          category->syms (if fully-resolved
-                           (assoc category->syms v v-data)
-                           category->syms)]
-      (recur comp-env the-ns category->syms aliases (rest vars)))
-    category->syms))
+(defn sym->category-reducer [comp-env category aliases the-ns sym->category v]
+  (let [v-name (name v)
+        v-sym (symbol v-name)
+        v-ns-str (namespace v)
+        resolved (env/ns-resolve comp-env the-ns v-sym)
+        referred? (-> (env/meta comp-env resolved) :ns str (= v-ns-str))
+        fully-resolved? (env/ns-resolve comp-env the-ns v)
+        alias-sym (get aliases v-ns-str)]
+    (cond-> sym->category
+      referred? (assoc v-name category)
+      fully-resolved? (assoc (str v) category)
+      alias-sym (assoc (str alias-sym "/" v-name) category))))
+
+(defn compute-categories->syms [comp-env ns aliases category->vars]
+  (loop [categories (keys category->vars)
+         sym->category {}]
+    (if-let [category (first categories)]
+      (let [sym->category (reduce (partial sym->category-reducer comp-env
+                                           category aliases ns)
+                                  sym->category (get category->vars category))]
+        (recur (rest categories) sym->category))
+      sym->category)))
 
 ;; We assume (:require :rename) is not used
-(defn compute-categories->syms [comp-env ns contexts]
+(defn compute-context->categories->syms [comp-env ns]
   (let [ns (symbol ns)
         the-ns (env/find-ns comp-env ns)]
     (when the-ns
-      (let [aliases (reduce-kv reverse-aliases-reducer {}
-                               (env/ns-aliases comp-env the-ns))]
-        (loop [contexts (seq contexts)
-               categories->syms {}]
-          (if-let [category (first contexts)]
-            (let [vars (get categories->vars category)
-                  category->syms (compute-category->syms comp-env the-ns {} aliases vars)]
-              (recur (rest contexts) (assoc categories->syms category category->syms)))
-            categories->syms))))))
+      (let [aliases (reduce-kv reverse-aliases-reducer {} (env/ns-aliases comp-env the-ns))
+            binding-syms (compute-categories->syms comp-env ns aliases binding-context->vars)
+            ns-syms (compute-categories->syms comp-env ns aliases ns-context->vars)
+            dependency-syms (compute-categories->syms
+                             comp-env ns aliases dependency-context->vars)]
+        {:binding-context binding-syms
+         :dependency-context dependency-syms
+         :ns-context ns-syms}))))
 
-;; force additional entries for cljs special fns
-(defn compute-categories->syms-cljs [comp-env ns contexts]
-  (-> (compute-categories->syms comp-env ns contexts)
-      (update :in-ns merge {'in-ns nil 'clojure.core/in-ns nil})))
+(defn compute-context->categories->syms-cljs [comp-env ns]
+  (let [result (compute-context->categories->syms comp-env ns)]
+    (assoc-in result [:ns-context "ns"] :ns-like)))
