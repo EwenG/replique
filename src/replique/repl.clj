@@ -84,7 +84,6 @@
   ([print-format]
    (tooling-msg/set-print-format print-format)
    ;; Only load tooling stuff when it is necessary
-   (require '[replique.tooling])
    (utils/with-lock tooling-msg/tooling-out-lock
      (alter-var-root #'tooling-msg/tooling-out (constantly *out*)))
    (utils/with-lock tooling-msg/tooling-out-lock
@@ -93,17 +92,22 @@
     (reify Thread$UncaughtExceptionHandler
       (uncaughtException [_ thread ex]
         (tooling-msg/uncaught-exception thread ex))))
-   (let [init-fn (fn [] (in-ns 'replique.repl))]
-     (clojure.main/repl
-      :init init-fn
-      :prompt #()
-      :caught (fn [e] (tooling-msg/uncaught-exception (Thread/currentThread) e))
-      :print (fn [result]
-               (binding [*print-length* nil
-                         *print-level* nil
-                         *print-meta* nil]
-                 (utils/with-lock tooling-msg/tooling-out-lock
-                   (tooling-msg/tooling-prn result))))))))
+   (try
+     (require '[replique.tooling])
+     (let [init-fn (fn [] (in-ns 'replique.repl))]
+       (clojure.main/repl
+        :init init-fn
+        :prompt #()
+        :caught (fn [e] (tooling-msg/uncaught-exception (Thread/currentThread) e))
+        :print (fn [result]
+                 (binding [*print-length* nil
+                           *print-level* nil
+                           *print-meta* nil]
+                   (utils/with-lock tooling-msg/tooling-out-lock
+                     (tooling-msg/tooling-prn result))))))
+     (catch Exception ex
+       (.println System/err (with-out-str (print-stack-trace ex)))
+       (System/exit -1)))))
 
 (comment
   (.start (Thread. (fn [] (throw (Exception. "f")))))
