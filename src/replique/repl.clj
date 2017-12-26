@@ -2,7 +2,8 @@
   (:require [replique.utils :as utils]
             [replique.tooling-msg :as tooling-msg]
             [replique.server :as server]
-            [replique.source-meta])
+            [replique.source-meta]
+            [clojure.stacktrace :refer [print-stack-trace]])
   (:import [clojure.lang LineNumberingPushbackReader]
            [java.net URL]))
 
