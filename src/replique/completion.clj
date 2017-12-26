@@ -468,11 +468,13 @@
                  :match-index (+ 1 match-index)})))
 
 (defn candidates
-  [comp-env ns {:keys [in-string? in-ns-form? dependency-context] :as context} ^String prefix]
+  [comp-env ns {:keys [in-string? in-comment? in-ns-form? dependency-context] :as context}
+   ^String prefix]
   (let [ns (or (env/find-ns comp-env ns)
                (env/find-ns comp-env (env/default-ns comp-env)))]
-    (when (and (not in-string?) ns)
-      (let [keyword? (.startsWith prefix ":")
+    (when (and (not in-string?) (not in-comment?) ns)
+      (let [prefix (.replaceFirst prefix "^#_" "")
+            keyword? (.startsWith prefix ":")
             double-colon? (.startsWith prefix "::")
             prefix (.replaceFirst prefix "^::?" "")
             scope-split-index (.lastIndexOf prefix "/")
@@ -497,4 +499,3 @@
              (take max-candidates-number))))))
 
 ;; load-path -> completion for files
-;; no auto completion when in comments
