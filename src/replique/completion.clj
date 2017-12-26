@@ -5,7 +5,8 @@
             [clojure.string :as string])
   (:import [java.io File]
            [java.util Comparator]
-           [replique.environment CljsCompilerEnv]))
+           [replique.environment CljsCompilerEnv]
+           [java.lang.reflect Modifier Method Field]))
 
 (def ^:const max-candidates-number 200)
 
@@ -152,14 +153,13 @@
                                           (sort by-length-comparator)))
     @js-dependency-index-data))
 
-(defn locals-candidates [{:keys [locals in-string?]} prefix-tokens]
-  (when-not in-string?
-    (->> (for [[local-name _] locals
-               :let [match-index (matches? local-name prefix-tokens)]
-               :when match-index]
-           {:candidate local-name :type :local :match-index match-index})
-         (sort-by :candidate by-length-comparator)
-         (take max-candidates-number))))
+(defn locals-candidates [locals prefix-tokens]
+  (->> (for [[local-name _] locals
+             :let [match-index (matches? local-name prefix-tokens)]
+             :when match-index]
+         {:candidate local-name :type :local :match-index match-index})
+       (sort-by :candidate by-length-comparator)
+       (take max-candidates-number)))
 
 (defn all-ns-candidates* [all-ns-data prefix-tokens]
   (->> (for [ns-str all-ns-data
@@ -349,7 +349,7 @@
 
 (defn dependencies-candidates [comp-env ns prefix prefix-tokens
                                {{position :position :as dependency-context} :dependency-context
-                                in-ns-form? :in-ns-form?
+                                locals :locals in-ns-form? :in-ns-form?
                                 :as context}]
   (cond (= position :namespace)
         (concat
@@ -359,14 +359,14 @@
          ;; require is a macro in clojurescript
          (when-not (and in-ns-form?
                         (not (instance? CljsCompilerEnv comp-env)))
-           (locals-candidates context prefix-tokens)))
+           (locals-candidates locals prefix-tokens)))
         (= position :namespace-macros)
         (concat
          (classpath-namespaces-with-prefix nil (:prefix dependency-context) prefix-tokens)
          (all-ns-with-prefix nil (:prefix dependency-context) prefix-tokens)
          (when (and in-ns-form?
                     (not (instance? CljsCompilerEnv comp-env)))
-           (locals-candidates context prefix-tokens)))
+           (locals-candidates locals prefix-tokens)))
         (= position :var)
         (let [namespace (if (= :refer-clojure (:namespace dependency-context))
                           (name (env/core-namespace comp-env))
@@ -374,7 +374,7 @@
           (if (and in-ns-form? (nil? comp-env))
             (vars-from-namespace-candidates comp-env namespace prefix-tokens)
             (concat
-             (locals-candidates context prefix-tokens)
+             (locals-candidates locals prefix-tokens)
              (vars-from-namespace-candidates comp-env namespace prefix-tokens))))
         (= position :package-or-class)
         (concat (classpath-classes-for-import comp-env prefix-tokens)
@@ -467,8 +467,118 @@
                  :type :keyword
                  :match-index (+ 1 match-index)})))
 
+(defn resolve-class [ns class]
+  (let [maybe-class (try (ns-resolve ns class)
+                         (catch ClassNotFoundException ex nil))]
+    (when (class? maybe-class) maybe-class)))
+
+(defn static-methods-candidates [comp-env ns scope-name prefix prefix-tokens]
+  (when (nil? comp-env)
+    (when-let [^Class class (resolve-class ns (symbol scope-name))]
+      (for [^Method method (.getMethods class)
+            :when (Modifier/isStatic (.getModifiers method))
+            :let [match-index (matches? (.getName method) prefix-tokens)]
+            :when match-index]
+        {:candidate (str scope-name "/" (.getName method))
+         :type :static-method
+         :match-index (+ 1 (count scope-name) match-index)}))))
+
+(defn static-fields-candidates [comp-env ns scope-name prefix prefix-tokens]
+  (when (nil? comp-env)
+    (when-let [^Class class (resolve-class ns (symbol scope-name))]
+      (for [^Field field (.getFields class)
+            :when (Modifier/isStatic (.getModifiers field))
+            :let [match-index (matches? (.getName field) prefix-tokens)]
+            :when match-index]
+        {:candidate (str scope-name "/" (.getName field))
+         :type :static-field
+         :match-index (+ 1 (count scope-name) match-index)}))))
+
+(defn method-candidates [comp-env ns locals param param-meta prefix prefix-tokens]
+  (when (and (nil? comp-env) param)
+    (let [[_ _ local-meta :as local-param] (get locals param)
+          param-meta (or param-meta local-meta)]
+      (cond param-meta
+            (let [param-meta (try (read-string param-meta)
+                                  (catch Exception e nil))]
+              (cond (symbol? param-meta)
+                    (when-let [^Class class (resolve-class ns param-meta)]
+                      (for [^Method method (.getMethods class)
+                            :when (not (Modifier/isStatic (.getModifiers method)))
+                            :let [match-index (matches? (.getName method) prefix-tokens)]
+                            :when match-index]
+                        {:candidate (str "." (.getName method))
+                         :type :method
+                         :match-index (+ 1 match-index)}))
+                    (map? param-meta)
+                    (when-let [tag (get param-meta :tag)]
+                      (when-let [^Class class (resolve-class ns tag)]
+                        (for [^Method method (.getMethods class)
+                              :when (not (Modifier/isStatic (.getModifiers method)))
+                              :let [match-index (matches? (.getName method) prefix-tokens)]
+                              :when match-index]
+                          {:candidate (str "." (.getName method))
+                           :type :method
+                           :match-index (+ 1 match-index)})))))
+            (and (nil? local-param) param)
+            (let [param (try (read-string param)
+                             (catch Exception e nil))]
+              (when (symbol? param)
+                (when-let [value (try (binding [*ns* ns] (eval param))
+                                      (catch Exception e _))]
+                  (when-let [^Class class (type value)]
+                    (for [^Method method (.getMethods class)
+                          :when (not (Modifier/isStatic (.getModifiers method)))
+                          :let [match-index (matches? (.getName method) prefix-tokens)]
+                          :when match-index]
+                      {:candidate (str "." (.getName method))
+                       :type :method
+                       :match-index (+ 1 match-index)})))))))))
+
+(defn field-candidates [comp-env ns locals param param-meta prefix prefix-tokens]
+  (when (and (nil? comp-env) param)
+    (let [[_ _ local-meta :as local-param] (get locals param)
+          param-meta (or param-meta local-meta)]
+      (cond param-meta
+            (let [param-meta (try (read-string param-meta)
+                                  (catch Exception e nil))]
+              (cond (symbol? param-meta)
+                    (when-let [^Class class (resolve-class ns param-meta)]
+                      (for [^Field field (.getFields class)
+                            :when (not (Modifier/isStatic (.getModifiers field)))
+                            :let [match-index (matches? (.getName field) prefix-tokens)]
+                            :when match-index]
+                        {:candidate (str ".-" (.getName field))
+                         :type :field
+                         :match-index (+ 2 match-index)}))
+                    (map? param-meta)
+                    (when-let [tag (get param-meta :tag)]
+                      (when-let [^Class class (resolve-class ns tag)]
+                        (for [^Field field (.getFields class)
+                              :when (not (Modifier/isStatic (.getModifiers field)))
+                              :let [match-index (matches? (.getName field) prefix-tokens)]
+                              :when match-index]
+                          {:candidate (str ".-" (.getName field))
+                           :type :field
+                           :match-index (+ 2 match-index)})))))
+            (and (nil? local-param) param)
+            (let [param (try (read-string param)
+                             (catch Exception e nil))]
+              (when (symbol? param)
+                (when-let [value (try (binding [*ns* ns] (eval param))
+                                      (catch Exception e _))]
+                  (when-let [^Class class (type value)]
+                    (for [^Field field (.getFields class)
+                          :when (not (Modifier/isStatic (.getModifiers field)))
+                          :let [match-index (matches? (.getName field) prefix-tokens)]
+                          :when match-index]
+                      {:candidate (str ".-" (.getName field))
+                       :type :field
+                       :match-index (+ 2 match-index)})))))))))
+
 (defn candidates
-  [comp-env ns {:keys [in-string? in-comment? in-ns-form? dependency-context] :as context}
+  [comp-env ns {:keys [locals in-string? in-comment? in-ns-form? dependency-context]
+                :as context}
    ^String prefix]
   (let [ns (or (env/find-ns comp-env ns)
                (env/find-ns comp-env (env/default-ns comp-env)))]
@@ -476,7 +586,9 @@
       (let [prefix (.replaceFirst prefix "^#_" "")
             keyword? (.startsWith prefix ":")
             double-colon? (.startsWith prefix "::")
-            prefix (.replaceFirst prefix "^::?" "")
+            field-call? (.startsWith prefix ".-")
+            method-call? (and (not field-call?) (.startsWith prefix "."))
+            prefix (.replaceFirst prefix "(^::?)|(^\\.-?)" "")
             scope-split-index (.lastIndexOf prefix "/")
             scope-name (when (> scope-split-index -1) (subs prefix 0 scope-split-index))
             prefix (if (> scope-split-index -1) (subs prefix (inc scope-split-index)) prefix)
@@ -485,10 +597,23 @@
                              (dependencies-candidates comp-env ns prefix prefix-tokens context)
                              keyword? (keyword-candidates comp-env ns prefix-tokens
                                                           double-colon? scope-name)
-                             scope-name (scoped-candidates comp-env ns scope-name prefix-tokens)
+                             scope-name (concat
+                                         (scoped-candidates comp-env ns scope-name prefix-tokens)
+                                         (static-methods-candidates comp-env ns scope-name
+                                                                    prefix prefix-tokens)
+                                         (static-fields-candidates comp-env ns scope-name
+                                                                   prefix prefix-tokens))
+                             method-call? (method-candidates comp-env ns locals
+                                                             (:param context)
+                                                             (:param-meta context)
+                                                             prefix prefix-tokens)
+                             field-call? (field-candidates comp-env ns locals
+                                                           (:param context)
+                                                           (:param-meta context)
+                                                           prefix prefix-tokens)
                              :else
                              (concat
-                              (locals-candidates context prefix-tokens)
+                              (locals-candidates locals prefix-tokens)
                               (all-ns-candidates comp-env prefix-tokens)
                               (ns-aliases-candidates comp-env ns prefix-tokens)
                               (dependency-index-candidates comp-env prefix-tokens)
