@@ -2,7 +2,7 @@
   "Unify Clojure platforms (Clojure, Clojurescript, ...) environments"
   (:refer-clojure :exclude [ns-name find-ns ns-publics ns-map ns-aliases
                             ns-resolve all-ns ns-interns meta remove-ns
-                            ns-unmap])
+                            ns-unmap ns-imports])
   (:require [replique.utils :as utils]
             [replique.compliment.utils :refer [defmemoized classpath cache-last-result
                                                all-files-on-classpath]]
@@ -47,6 +47,7 @@
   (ns-interns [comp-env ns])
   (ns-map [comp-env ns])
   (ns-aliases [comp-env ns])
+  (ns-imports [comp-env ns])
   (ns-resolve [comp-env ns sym])
   (looks-like-var? [comp-env var])
   (meta [comp-env var])
@@ -144,6 +145,9 @@
     (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)]
       (merge (:requires ns)
              (:require-macros ns))))
+  (ns-imports [comp-env ns]
+    (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)]
+      (:imports ns)))
   (ns-resolve [comp-env ns sym]
     (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)
           sym-ns (safe-symbol (namespace sym))
@@ -192,6 +196,8 @@
     (clojure.core/ns-map ns))
   (ns-aliases [_ ns]
     (clojure.core/ns-aliases ns))
+  (ns-imports [_ ns]
+    (clojure.core/ns-imports ns))
   (ns-resolve [_ ns sym]
     (clojure.core/ns-resolve ns sym))
   (looks-like-var? [_ var]
@@ -225,22 +231,28 @@
 (defprotocol EnvDefaults
   (ns-var [comp-env])
   (file-extension [comp-env])
-  (default-ns [comp-env]))
+  (default-ns [comp-env])
+  (core-namespace [comp-env]))
 
 (extend-protocol EnvDefaults
   CljsCompilerEnv
   (ns-var [comp-env] (find-ns comp-env @(resolve 'cljs.analyzer/*cljs-ns*)))
   (file-extension [_] "cljs")
   (default-ns [_] 'cljs.user)
+  (core-namespace [_] 'cljs.core)
   nil
   (ns-var [_] *ns*)
   (file-extension [_] "clj")
-  (default-ns [_] 'user))
+  (default-ns [_] 'user)
+  (core-namespace [_] 'clojure.core))
 
-(defn source-file-extension [file-name]
+(defn source-file-extension [^String file-name]
   (cond (.endsWith file-name "clj") "clj"
         (.endsWith file-name "cljs") "cljs"
         (.endsWith file-name "cljc") "cljc"))
+
+(defn get-js-index [comp-env]
+  (->> comp-env get-wrapped (@cljs-get-js-index)))
 
 (defn namespaces-on-classpath
   "Returns the list of all Clojure namespaces obtained by classpath scanning."
@@ -253,7 +265,7 @@
                                   :let [[_ ^String nsname] (->
                                                             "[^\\w]?(.+)(\\.%s|\\.cljc)"
                                                             (format (file-extension comp-env))
-                                                            re-pattern 
+                                                            re-pattern
                                                             (re-matches file))]
                                   :when nsname]
                               (.. nsname (replace File/separator ".") (replace "_" "-")))))))
@@ -291,11 +303,7 @@
   (def comp-env (->CljsCompilerEnv @compiler-env))
 
   (file-extension comp-env)
-  (namespaces-on-classpath comp-env)
-  (filter #(.endsWith % "cljs") (all-files-on-classpath (classpath)))
   
-  (count (provides-from-js-dependency-index comp-env))
-
   (:cljs.analyzer/constant-table @@compiler-env)
   (:cljs.analyzer/constants (get (:cljs.analyzer/namespaces @@compiler-env) 'replique.compliment.ns-mappings-cljs-test))
 
