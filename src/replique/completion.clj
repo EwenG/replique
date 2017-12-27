@@ -576,13 +576,30 @@
                        :type :field
                        :match-index (+ 2 match-index)})))))))))
 
+(defn special-forms-candidates [comp-env ns fn-context-position prefix-tokens]
+  (when (= 0 fn-context-position)
+    (for [form (env/special-forms comp-env)
+          :let [match-index (matches? form prefix-tokens)]
+          :when match-index]
+      {:candidate form
+       :type :special-form
+       :match-index match-index})))
+
+(defn literal-candidates [prefix]
+  (for [^String literal ["true" "false" "nil"]
+        :when (.startsWith literal prefix)]
+    {:candidate literal
+     :type :special-form
+     :match-index (count prefix)}))
+
 (defn candidates
-  [comp-env ns {:keys [locals in-string? in-comment? in-ns-form? dependency-context]
+  [comp-env ns {:keys [locals in-string? in-comment? in-ns-form? at-binding-position?
+                       fn-context fn-context-position dependency-context]
                 :as context}
    ^String prefix]
   (let [ns (or (env/find-ns comp-env ns)
                (env/find-ns comp-env (env/default-ns comp-env)))]
-    (when (and (not in-string?) (not in-comment?) ns)
+    (when (and (not in-string?) (not in-comment?) (not at-binding-position?) ns)
       (let [prefix (.replaceFirst prefix "^#_" "")
             keyword? (.startsWith prefix ":")
             double-colon? (.startsWith prefix "::")
@@ -617,10 +634,14 @@
                               (all-ns-candidates comp-env prefix-tokens)
                               (ns-aliases-candidates comp-env ns prefix-tokens)
                               (dependency-index-candidates comp-env prefix-tokens)
-                              (mapping-candidates comp-env ns prefix-tokens)))]
+                              (mapping-candidates comp-env ns prefix-tokens)
+                              (special-forms-candidates comp-env ns fn-context-position
+                                                        prefix-tokens)
+                              (literal-candidates prefix)))]
         (->> candidates
              distinct
              (sort-by :candidate by-length-comparator)
              (take max-candidates-number))))))
 
 ;; load-path -> completion for files
+;; members -> cljs completion
