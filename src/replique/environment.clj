@@ -4,8 +4,6 @@
                             ns-resolve all-ns ns-interns meta remove-ns
                             ns-unmap ns-imports])
   (:require [replique.utils :as utils]
-            [replique.compliment.utils :refer [defmemoized classpath cache-last-result
-                                               all-files-on-classpath]]
             [clojure.set])
   (:import [java.io File]
            [java.lang.reflect Field]
@@ -253,25 +251,6 @@
 
 (defn get-js-index [comp-env]
   (->> comp-env get-wrapped (@cljs-get-js-index)))
-
-(defn namespaces-on-classpath
-  "Returns the list of all Clojure namespaces obtained by classpath scanning."
-  [comp-env]
-  (let [classpath (classpath)]
-    (cache-last-result ::namespaces-on-classpath classpath
-                       (set (for [^String file (all-files-on-classpath classpath)
-                                  :when (and (.endsWith file (file-extension comp-env))
-                                             (not (.startsWith file "META-INF")))
-                                  :let [[_ ^String nsname] (->
-                                                            "[^\\w]?(.+)(\\.%s|\\.cljc)"
-                                                            (format (file-extension comp-env))
-                                                            re-pattern
-                                                            (re-matches file))]
-                                  :when nsname]
-                              (.. nsname (replace File/separator ".") (replace "_" "-")))))))
-
-(defmemoized provides-from-js-dependency-index [comp-env]
-  (->> comp-env get-wrapped (@cljs-get-js-index) vals (mapcat :provides) set))
 
 (defprotocol Env
   (keywords [comp-env])
