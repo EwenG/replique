@@ -11,23 +11,14 @@
 (defonce tooling-prn prn)
 
 (defmacro with-tooling-response [msg & resp]
-  `(let [type# (:type ~msg)
-         repl-env# (:repl-env ~msg)]
-     (try (merge {:type type# :repl-env repl-env# :process-id ~process-id} (~'do ~@resp))
-          (catch Exception t#
-            {:process-id ~process-id
-             :type type#
-             :repl-env repl-env#
-             :error t#}))))
+  `(try (merge (~'do ~@resp) ~msg)
+        (catch Exception t# (assoc ~msg :error t#))))
 
 (defmulti tooling-msg-handle (fn [{:keys [repl-env type]}] [repl-env type]))
 
 (defmethod tooling-msg-handle :default
   [{:keys [process-id repl-env type] :as msg}]
-  {:process-id process-id
-   :type type
-   :repl-env repl-env
-   :error (format "Invalid tooling message type: %s for repl-env: %s" type repl-env)})
+  (assoc msg :error (format "Invalid tooling message type: %s for repl-env: %s" type repl-env)))
 
 (defn uncaught-exception [thread ex]
   (if (or (nil? tooling-err) (nil? tooling-out-lock))
