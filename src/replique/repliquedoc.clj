@@ -118,11 +118,6 @@
                     (when (looks-like-var? compiler-env resolved)
                       {:type :var :var resolved :comp-env compiler-env}))))))
 
-(comment
-  (let [ee ee]
-    (ee "e" 3))
-  )
-
 (defn method-with-class? [klass member]
   (when (and (instance? Method member)
          (or (not klass) (= klass (.getDeclaringClass ^Member member))))
