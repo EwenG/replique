@@ -1,5 +1,7 @@
 (ns replique.context
-  (:require [replique.environment :as env :refer [->CljsCompilerEnv]]))
+  (:require [replique.environment :as env :refer [->CljsCompilerEnv]])
+  (:import [java.lang.reflect Modifier Method]
+           [clojure.lang Keyword]))
 
 (def binding-context->vars {:let-like ['clojure.core/let
                                        'cljs.core/let
@@ -98,3 +100,36 @@
 (defn compute-context->categories->syms-cljs [comp-env ns]
   (let [result (compute-context->categories->syms comp-env ns)]
     (assoc-in result [:ns-context "ns"] :ns-like)))
+
+(defn try-get-object-class [comp-env ns object-str]
+  (let [object-str (try (read-string object-str)
+                        (catch Exception e nil))]
+    (cond (string? object-str) String
+          (keyword? object-str) Keyword
+          (symbol? object-str)
+          (let [resolved (try (env/ns-resolve comp-env ns object-str)
+                              (catch Exception e nil))
+                resolved-type-hint (when (var? resolved) (:tag (meta resolved)))
+                resolved-type-hint (when (and resolved-type-hint
+                                              (class? resolved-type-hint))
+                                     resolved-type-hint)
+                value (try (binding [*ns* ns] (eval object-str))
+                           (catch Exception e nil))]
+            (when-let [^Class class (or resolved-type-hint (type value))]
+              class)))))
+
+(defn resolve-class [ns class]
+  (let [maybe-class (try (ns-resolve ns class)
+                         (catch ClassNotFoundException ex nil))]
+    (when (class? maybe-class) maybe-class)))
+
+(defn try-get-meta-class [comp-env ns meta-str]
+  (when-let [meta (try (read-string meta-str)
+                       (catch Exception e nil))]
+    (cond (symbol? meta)
+          (when-let [^Class class (resolve-class ns meta)]
+            class)
+          (map? meta)
+          (when-let [tag (get meta :tag)]
+            (when-let [^Class class (resolve-class ns tag)]
+              class)))))
