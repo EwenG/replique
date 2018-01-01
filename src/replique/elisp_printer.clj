@@ -111,7 +111,8 @@
                  (.replace "+" "\\+")
                  (.replace "-" "\\-")
                  (.replace "#" "\\#")
-                 (.replace ";" "\\;")))))
+                 (.replace ";" "\\;")
+                 (.replace "." "\\.")))))
 
 (defmethod print-method clojure.lang.Var [o, ^Writer w]
   (.write w "\"~v")
