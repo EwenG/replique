@@ -4,16 +4,13 @@
             [replique.utils :as utils]
             [replique.server :as server]
             [replique.tooling-msg :as tooling-msg]
-            [replique.repliquedoc :as repliquedoc]
+            [replique.repliquedoc2 :as repliquedoc]
             [replique.omniscient :as omniscient]
             [replique.classpath :as classpath]
-            [replique.meta :as r-meta]
-            [replique.compliment.core :as compliment]
-            [replique.compliment.context :as context]
-            [replique.compliment.sources.local-bindings
-             :refer [bindings-from-context]]
+            [replique.meta2 :as r-meta]
             [replique.environment :as env :refer [->CljsCompilerEnv]]
-            [replique.compliment.context :as context]
+            [replique.context :as context2]
+            [replique.completion :as completion]
             [replique.source-meta]))
 
 (def ^:private cljs-compiler-env
@@ -22,12 +19,15 @@
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :completion]
   [{:keys [context ns prefix] :as msg}]
   (tooling-msg/with-tooling-response msg
-    (let [{:keys [context]} (context/cache-context nil (when ns (symbol ns)) context)
-          context (reverse context)]
-      {:candidates (compliment/completions
-                    prefix
-                    {:ns (when ns (symbol ns))
-                     :context context})})))
+    (when prefix
+      {:candidates (completion/candidates nil ns context prefix)})))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/cljs :completion]
+  [{:keys [context ns prefix] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (when prefix
+      {:candidates (completion/candidates (->CljsCompilerEnv @@cljs-compiler-env)
+                                          ns context prefix)})))
 
 (comment
   (tooling-msg/tooling-msg-handle {:type :completion
@@ -53,49 +53,14 @@
   (tooling-msg/tooling-msg-handle {:repl-env :replique/cljs :type :completion, :context nil, :ns "replique.compliment.ns-mappings-cljs-test", :prefix "gg", :process-id "/Users/egr/clojure/replique/"})
   )
 
-(defmethod tooling-msg/tooling-msg-handle [:replique/cljs :completion]
-  [{:keys [context ns prefix] :as msg}]
-  (tooling-msg/with-tooling-response msg
-    (let [{:keys [context]} (context/cache-context
-                             (->CljsCompilerEnv @@cljs-compiler-env)
-                             (when ns (symbol ns)) context)
-          context (reverse context)]
-      {:candidates (compliment/completions
-                    prefix
-                    {:ns (when ns (symbol ns)) :context context
-                     :comp-env (->CljsCompilerEnv @@cljs-compiler-env)
-                     :sources
-                     [:replique.compliment.sources.ns-mappings/ns-mappings
-                      :replique.compliment.sources.namespaces-and-classes/namespaces-and-classes
-                      :replique.compliment.sources.keywords/keywords
-                      :replique.compliment.sources.local-bindings/local-bindings
-                      :replique.compliment.sources.special-forms/literals
-                      :replique.compliment.sources.special-forms/special-forms]})})))
-
-;; not used but could be useful to dispatch on the reader conditional around the cursor
-#_(defmethod tooling-msg/tooling-msg-handle :cljc-completion
-  [{:keys [context ns prefix] :as msg}]
-  (tooling-msg/with-tooling-response msg
-    (let [{:keys [reader-conditionals context]} (context/cache-context
-                                                 (->CljsCompilerEnv @@cljs-compiler-env)
-                                                 (when ns (symbol ns)) context)
-          context (reverse context)]
-      (if (= #{:cljs} reader-conditionals)
-        {:candidates (compliment/completions
-                      prefix
-                      {:ns (when ns (symbol ns)) :context context
-                       :comp-env (->CljsCompilerEnv @@cljs-compiler-env)
-                       :sources
-                       [:replique.compliment.sources.ns-mappings/ns-mappings
-                        :replique.compliment.sources.namespaces-and-classes/namespaces-and-classes
-                        :replique.compliment.sources.keywords/keywords
-                        :replique.compliment.sources.local-bindings/local-bindings
-                        :replique.compliment.sources.special-forms/literals
-                        :replique.compliment.sources.special-forms/special-forms]})}
-        {:candidates (compliment/completions
-                      prefix
-                      {:ns (when ns (symbol ns))
-                       :context context})}))))
+(comment
+  
+  (tooling-msg/tooling-msg-handle {:type :completion
+                                   :repl-env :replique/clj
+                                   :context {:locals {"eeeeee" [2577 2578 nil]} :in-string? true}
+                                   :ns "replique.tooling"
+                                   :prefix "ee"})
+  )
 
 (comment
   (tooling-msg/tooling-msg-handle {:type :completion
@@ -113,82 +78,31 @@
   )
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :repliquedoc]
-  [{:keys [context ns symbol] :as msg}]
+  [{:keys [context ns] :as msg}]
   (tooling-msg/with-tooling-response msg
-    {:doc (repliquedoc/handle-repliquedoc nil ns context symbol)}))
+    {:doc (repliquedoc/handle-repliquedoc nil ns context)}))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :repliquedoc]
-  [{:keys [context ns symbol] :as msg}]
+  [{:keys [context ns] :as msg}]
   (tooling-msg/with-tooling-response msg
     {:doc (repliquedoc/handle-repliquedoc
            (->CljsCompilerEnv @@cljs-compiler-env)
-           ns context symbol)}))
-
-(comment
-  (tooling-msg/tooling-msg-handle {:type :repliquedoc
-                                   :repl-env :replique/clj
-                                   :context "(__prefix__)"
-                                   :ns "replique.tooling"
-                                   :symbol "tooling-msg/tooling-msg-handle"})
-  )
-
-;; not used but could be useful to dispatch on the reader conditional around the cursor
-#_(defmethod tooling-msg/tooling-msg-handle :repliquedoc-cljc
-  [{:keys [context ns symbol] :as msg}]
-  (tooling-msg/with-tooling-response msg
-    {:doc (repliquedoc/handle-repliquedoc-cljc
-           (->CljsCompilerEnv @@cljs-compiler-env)
-           ns context symbol)}))
-
-(comment
-
-  (context/cache-context "[(print __prefix__)]")
-
-  (context/cache-context "(.ff rr __prefix__)")
-
-  (bindings-from-context
-   (context/cache-context "(let [e nil]
-__prefix__)"))
-  
-  )
+           ns context)}))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :meta]
-  [{:keys [context ns is-string?] :as msg}]
+  [{:keys [context ns] :as msg}]
   (tooling-msg/with-tooling-response msg
-    (let [sym-at-point (:symbol msg)
-          {:keys [context]} (context/cache-context nil (when ns (symbol ns)) context)
-          context (reverse context)
-          m (if is-string?
-              (r-meta/handle-meta-str sym-at-point)
-              (r-meta/handle-meta nil ns context sym-at-point))]
-      (assoc msg :meta m))))
+    (let [prefix (:symbol msg)
+          m (r-meta/handle-meta nil ns context prefix)]
+      {:meta m})))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :meta]
   [{:keys [context ns is-string?] :as msg}]
   (tooling-msg/with-tooling-response msg
-    (let [sym-at-point (:symbol msg)
+    (let [prefix (:symbol msg)
           comp-env (->CljsCompilerEnv @@cljs-compiler-env)
-          {:keys [context]} (context/cache-context comp-env (when ns (symbol ns)) context)
-          context (reverse context)
-          m (if is-string?
-              (r-meta/handle-meta-str sym-at-point)
-              (r-meta/handle-meta comp-env ns context sym-at-point))]
-      (assoc msg :meta m))))
-
-;; not used but could be useful to dispatch on the reader conditional around the cursor
-#_(defmethod tooling-msg/tooling-msg-handle :meta-cljc
-  [{:keys [context ns is-string?] :as msg}]
-  (tooling-msg/with-tooling-response msg
-    (let [sym-at-point (:symbol msg)
-          comp-env (->CljsCompilerEnv @@cljs-compiler-env)
-          {:keys [reader-conditionals context]} (context/cache-context
-                                                 nil (when ns (symbol ns)) context)
-          context (reverse context)
-          comp-env (when (= #{:cljs} reader-conditionals) comp-env)
-          m (if is-string?
-              (r-meta/handle-meta-str sym-at-point)
-              (r-meta/handle-meta comp-env ns context sym-at-point))]
-      (assoc msg :meta m))))
+          m (r-meta/handle-meta comp-env ns context prefix)]
+      {:meta m})))
 
 (comment
   (tooling-msg/tooling-msg-handle {:type :meta
@@ -210,11 +124,10 @@ __prefix__)"))
   [msg]
   (tooling-msg/with-tooling-response msg
     (if-not (try (realized? @cljs-compiler-env) (catch Exception _ false))
-      (assoc msg :namespace '())
-      (->> (->CljsCompilerEnv @@cljs-compiler-env)
-           replique.environment/all-ns
-           (map str)
-           (assoc msg :namespaces)))))
+      {:namespaces '()}
+      {:namespaces (->> (->CljsCompilerEnv @@cljs-compiler-env)
+                        replique.environment/all-ns
+                        (map str))})))
 
 (defn output-main-js-file [output-to main-ns]
   (let [port (server/server-port)]
@@ -249,19 +162,7 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
   (tooling-msg/with-tooling-response msg
     (binding [*out* utils/process-out
               *err* utils/process-err]
-      (assoc msg :result (pr-str (eval (read-string {:read-cond :allow} form)))))))
-
-(comment
-  (defmethod tooling-msg/tooling-msg-handle :spec-completion
-    [{:keys [context prefix spec] :as msg}]
-    (tooling-msg/with-tooling-response msg
-      (let [{:keys [context]} (context/cache-context nil nil context)]
-        {:candidates nil})))
-
-  (defmethod tooling-msg/tooling-msg-handle :repliquedoc-spec
-    [{:keys [context ns symbol] :as msg}]
-    )
-  )
+      {:result (pr-str (eval (read-string {:read-cond :allow} form)))})))
 
 (defn ns-files [comp-env the-ns]
   (distinct
@@ -295,18 +196,44 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :list-vars]
   [{:keys [ns] :as msg}]
-  (let [ns (symbol ns)
-        the-ns (find-ns ns)]
-    (when the-ns
-      {:vars (list-vars-with-meta nil the-ns)})))
+  (tooling-msg/with-tooling-response msg
+    (let [ns (symbol ns)
+          the-ns (find-ns ns)]
+      (when the-ns
+        {:vars (list-vars-with-meta nil the-ns)}))))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :list-vars]
   [{:keys [ns] :as msg}]
-  (let [comp-env (->CljsCompilerEnv @@cljs-compiler-env)
-        ns (symbol ns)
-        the-ns (env/find-ns comp-env ns)]
-    (when the-ns
-      {:vars (list-vars-with-meta comp-env the-ns)})))
+  (tooling-msg/with-tooling-response msg
+    (let [comp-env (->CljsCompilerEnv @@cljs-compiler-env)
+          ns (symbol ns)
+          the-ns (env/find-ns comp-env ns)]
+      (when the-ns
+        {:vars (list-vars-with-meta comp-env the-ns)}))))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :context]
+  [{:keys [ns] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (when ns
+      (context2/compute-context->categories->syms nil ns))))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/cljs :context]
+  [{:keys [ns] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (when ns
+      (context2/compute-context->categories->syms-cljs
+       (->CljsCompilerEnv @@cljs-compiler-env) ns))))
+
+(comment
+  (tooling-msg/tooling-msg-handle {:repl-env :replique/clj
+                                   :type :context
+                                   :ns 'replique.tooling})
+
+  (tooling-msg/tooling-msg-handle {:repl-env :replique/cljs
+                                   :type :context
+                                   :ns 'cljs.user})
+  )
+
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :source-meta]
   [msg]
