@@ -1,6 +1,7 @@
 (ns replique.completion
   (:require [replique.environment :as env]
             [replique.classpath :as classpath]
+            [replique.context :as context]
             [replique.files :as files]
             [clojure.string :as string])
   (:import [java.io File]
@@ -15,6 +16,18 @@
 
 (defonce classpath-data (atom nil))
 (defonce all-ns-data (atom nil))
+
+(defprotocol IAllNsData
+  (get-all-ns-data [comp-env])
+  (set-all-ns-data [cop-env new-data]))
+
+(extend-protocol IAllNsData
+  nil
+  (get-all-ns-data [comp-env] (get @all-ns-data :clj))
+  (set-all-ns-data [cop-env new-data] (swap! all-ns-data assoc :clj new-data))
+  CljsCompilerEnv
+  (get-all-ns-data [comp-env] (get @all-ns-data :cljs))
+  (set-all-ns-data [cop-env new-data] (swap! all-ns-data assoc :cljs new-data)))
 
 ;; Split on dashes, dots or upper case letters
 (defn tokenize-prefix [prefix]
@@ -163,9 +176,9 @@
                               :namespaces-on-classpath namespaces-on-classpath}))))
 
 (defn compute-all-ns-data [comp-env all-ns*]
-  (reset! all-ns-data (->> all-ns*
-                           (map (comp name env/ns-name))
-                           (sort by-length-comparator))))
+  (set-all-ns-data comp-env (->> all-ns*
+                                 (map (comp name env/ns-name))
+                                 (sort by-length-comparator))))
 
 (compute-classpath-data)
 
@@ -197,10 +210,9 @@
 ;; remove-ns is used)
 (defn all-ns-candidates [comp-env prefix-tokens]
   (let [all-ns* (env/all-ns comp-env)]
-    (when (not= (count @all-ns-data) (count all-ns*))
+    (when (not= (count (get-all-ns-data comp-env)) (count all-ns*))
       (compute-all-ns-data comp-env all-ns*))
-    (->> (all-ns-candidates* @all-ns-data prefix-tokens)
-         (take max-candidates-number))))
+    (all-ns-candidates* (get-all-ns-data comp-env) prefix-tokens)))
 
 (defn classpath-namespaces-candidates [comp-env namespaces-on-classpath prefix-tokens]
   (->> (for [ns-str (get namespaces-on-classpath (env/file-extension comp-env))
@@ -252,13 +264,14 @@
 
 (defn all-ns-with-prefix [comp-env ns-prefix prefix-tokens]
   (let [all-ns* (env/all-ns comp-env)]
-    (when (not= (count @all-ns-data) (count all-ns*))
+    (when (not= (count (get-all-ns-data comp-env)) (count all-ns*))
       (compute-all-ns-data comp-env all-ns*))
     (if (= 0 (count ns-prefix))
-      (let [ns-candidates (all-ns-candidates* @all-ns-data prefix-tokens)
-            ns-candidates-no-suffix (all-ns-candidates-no-suffix @all-ns-data prefix-tokens)]
+      (let [ns-candidates (all-ns-candidates* (get-all-ns-data comp-env) prefix-tokens)
+            ns-candidates-no-suffix (all-ns-candidates-no-suffix
+                                     (get-all-ns-data comp-env) prefix-tokens)]
         (distinct (concat ns-candidates-no-suffix ns-candidates)))
-      (->> (for [^String ns-str @all-ns-data
+      (->> (for [^String ns-str (get-all-ns-data comp-env)
                  :when (.startsWith ns-str ns-prefix)
                  :let [ns-suffix (subs ns-str (count ns-prefix))
                        ns-suffix (if (.startsWith ns-suffix ".") (subs ns-suffix 1) ns-suffix)]
@@ -485,21 +498,34 @@
                   {:candidate (str "::" alias-str)
                    :type :keyword
                    :match-index (+ 2 match-index)}))
-        :else (for [kw (env/keywords comp-env)
-                    :let [match-index (matches? (str kw) prefix-tokens)]
-                    :when match-index]
-                {:candidate (str ":" kw)
-                 :type :keyword
-                 :match-index (+ 1 match-index)})))
+        scope-name (for [kw (env/keywords comp-env)
+                         :when (= (namespace kw) scope-name)
+                         :let [match-index (matches? (name kw) prefix-tokens)]
+                         :when match-index]
+                     {:candidate (str ":" kw)
+                      :type :keyword
+                      :match-index (+ 1 (inc (count scope-name)) match-index)})
+        :else (let [all-ns* (env/all-ns comp-env)]
+                (when (not= (count (get-all-ns-data comp-env)) (count all-ns*))
+                  (compute-all-ns-data comp-env all-ns*))
+                (for [kw (env/keywords comp-env)
+                      :let [match-index (matches? (str kw) prefix-tokens)]
+                      :when match-index]
+                  {:candidate (str ":" kw)
+                   :type :keyword
+                   :match-index (+ 1 match-index)}))))
 
-(defn resolve-class [ns class]
-  (let [maybe-class (try (ns-resolve ns class)
-                         (catch ClassNotFoundException ex nil))]
-    (when (class? maybe-class) maybe-class)))
+;; We assume that the number of namespaces only grows, this is often true, but not always (when
+;; remove-ns is used)
+(defn all-ns-candidates [comp-env prefix-tokens]
+  (let [all-ns* (env/all-ns comp-env)]
+    (when (not= (count (get-all-ns-data comp-env)) (count all-ns*))
+      (compute-all-ns-data comp-env all-ns*))
+    (all-ns-candidates* (get-all-ns-data comp-env) prefix-tokens)))
 
 (defn static-methods-candidates [comp-env ns scope-name prefix prefix-tokens]
   (when (nil? comp-env)
-    (when-let [^Class class (resolve-class ns (symbol scope-name))]
+    (when-let [^Class class (context/resolve-class ns (symbol scope-name))]
       (for [^Method method (.getMethods class)
             :when (Modifier/isStatic (.getModifiers method))
             :let [match-index (matches? (.getName method) prefix-tokens)]
@@ -510,7 +536,7 @@
 
 (defn static-fields-candidates [comp-env ns scope-name prefix prefix-tokens]
   (when (nil? comp-env)
-    (when-let [^Class class (resolve-class ns (symbol scope-name))]
+    (when-let [^Class class (context/resolve-class ns (symbol scope-name))]
       (for [^Field field (.getFields class)
             :when (Modifier/isStatic (.getModifiers field))
             :let [match-index (matches? (.getName field) prefix-tokens)]
@@ -524,94 +550,46 @@
     (let [[_ _ local-meta :as local-param] (get locals param)
           param-meta (or param-meta local-meta)]
       (cond param-meta
-            (let [param-meta (try (read-string param-meta)
-                                  (catch Exception e nil))]
-              (cond (symbol? param-meta)
-                    (when-let [^Class class (resolve-class ns param-meta)]
-                      (for [^Method method (.getMethods class)
-                            :when (not (Modifier/isStatic (.getModifiers method)))
-                            :let [match-index (matches? (.getName method) prefix-tokens)]
-                            :when match-index]
-                        {:candidate (str "." (.getName method))
-                         :type :method
-                         :match-index (+ 1 match-index)}))
-                    (map? param-meta)
-                    (when-let [tag (get param-meta :tag)]
-                      (when-let [^Class class (resolve-class ns tag)]
-                        (for [^Method method (.getMethods class)
-                              :when (not (Modifier/isStatic (.getModifiers method)))
-                              :let [match-index (matches? (.getName method) prefix-tokens)]
-                              :when match-index]
-                          {:candidate (str "." (.getName method))
-                           :type :method
-                           :match-index (+ 1 match-index)})))))
+            (when-let [^Class param-class (context/try-get-meta-class comp-env ns param-meta)]
+              (for [^Method method (.getMethods param-class)
+                    :when (not (Modifier/isStatic (.getModifiers method)))
+                    :let [match-index (matches? (.getName method) prefix-tokens)]
+                    :when match-index]
+                {:candidate (str "." (.getName method))
+                 :type :method
+                 :match-index (+ 1 match-index)}))
             (and (nil? local-param) param)
-            (let [param (try (read-string param)
-                             (catch Exception e nil))]
-              (when (symbol? param)
-                (let [resolved (try (env/ns-resolve comp-env ns param)
-                                    (catch Exception e _))
-                      resolved-type-hint (when (var? resolved) (:tag (meta resolved)))
-                      resolved-type-hint (when (and resolved-type-hint
-                                                    (class? resolved-type-hint))
-                                           resolved-type-hint)
-                      value (try (binding [*ns* ns] (eval param))
-                                 (catch Exception e _))]
-                  (when-let [^Class class (or resolved-type-hint (type value))]
-                    (for [^Method method (.getMethods class)
-                          :when (not (Modifier/isStatic (.getModifiers method)))
-                          :let [match-index (matches? (.getName method) prefix-tokens)]
-                          :when match-index]
-                      {:candidate (str "." (.getName method))
-                       :type :method
-                       :match-index (+ 1 match-index)})))))))))
+            (when-let [^Class param-class (context/try-get-object-class comp-env ns param)]
+              (for [^Method method (.getMethods param-class)
+                    :when (not (Modifier/isStatic (.getModifiers method)))
+                    :let [match-index (matches? (.getName method) prefix-tokens)]
+                    :when match-index]
+                {:candidate (str "." (.getName method))
+                 :type :method
+                 :match-index (+ 1 match-index)}))))))
 
 (defn field-candidates [comp-env ns locals param param-meta prefix prefix-tokens]
   (when (and (nil? comp-env) param)
     (let [[_ _ local-meta :as local-param] (get locals param)
           param-meta (or param-meta local-meta)]
       (cond param-meta
-            (let [param-meta (try (read-string param-meta)
-                                  (catch Exception e nil))]
-              (cond (symbol? param-meta)
-                    (when-let [^Class class (resolve-class ns param-meta)]
-                      (for [^Field field (.getFields class)
-                            :when (not (Modifier/isStatic (.getModifiers field)))
-                            :let [match-index (matches? (.getName field) prefix-tokens)]
-                            :when match-index]
-                        {:candidate (str ".-" (.getName field))
-                         :type :field
-                         :match-index (+ 2 match-index)}))
-                    (map? param-meta)
-                    (when-let [tag (get param-meta :tag)]
-                      (when-let [^Class class (resolve-class ns tag)]
-                        (for [^Field field (.getFields class)
-                              :when (not (Modifier/isStatic (.getModifiers field)))
-                              :let [match-index (matches? (.getName field) prefix-tokens)]
-                              :when match-index]
-                          {:candidate (str ".-" (.getName field))
-                           :type :field
-                           :match-index (+ 2 match-index)})))))
+            (when-let [^Class param-class (context/try-get-meta-class comp-env ns param-meta)]
+              (for [^Field field (.getFields param-class)
+                    :when (not (Modifier/isStatic (.getModifiers field)))
+                    :let [match-index (matches? (.getName field) prefix-tokens)]
+                    :when match-index]
+                {:candidate (str ".-" (.getName field))
+                 :type :field
+                 :match-index (+ 2 match-index)}))
             (and (nil? local-param) param)
-            (let [param (try (read-string param)
-                             (catch Exception e nil))]
-              (when (symbol? param)
-                (let [resolved (try (env/ns-resolve comp-env ns param)
-                                    (catch Exception e _))
-                      resolved-type-hint (when (var? resolved) (:tag (meta resolved)))
-                      resolved-type-hint (when (and resolved-type-hint
-                                                    (class? resolved-type-hint))
-                                           resolved-type-hint)
-                      value (try (binding [*ns* ns] (eval param))
-                                 (catch Exception e _))]
-                  (when-let [^Class class (or resolved-type-hint (type value))]
-                    (for [^Field field (.getFields class)
-                          :when (not (Modifier/isStatic (.getModifiers field)))
-                          :let [match-index (matches? (.getName field) prefix-tokens)]
-                          :when match-index]
-                      {:candidate (str ".-" (.getName field))
-                       :type :field
-                       :match-index (+ 2 match-index)})))))))))
+            (when-let [^Class param-class (context/try-get-object-class comp-env ns param)]
+              (for [^Field field (.getFields param-class)
+                    :when (not (Modifier/isStatic (.getModifiers field)))
+                    :let [match-index (matches? (.getName field) prefix-tokens)]
+                    :when match-index]
+                {:candidate (str ".-" (.getName field))
+                 :type :field
+                 :match-index (+ 2 match-index)}))))))
 
 (defn special-forms-candidates [comp-env ns fn-context-position prefix-tokens]
   (when (= 0 fn-context-position)
@@ -707,32 +685,32 @@
     FileVisitResult/TERMINATE))
 
 (defn load-candidates [comp-env ns {{position :position} :dependency-context} ^String prefix]
-  (->> (when (and (nil? comp-env) (= position :load-path))
-         (if (.startsWith prefix "/")
-           (let [path (subs prefix 1)
-                 path-tokens (tokenize-file-prefix path)]
-             (for [^String file-str (:file-resources @classpath-data)
-                   :when (or (.endsWith file-str "cljc")
-                             (.endsWith file-str (env/file-extension comp-env)))
-                   :let [file-str (cond (.endsWith file-str ".cljc")
-                                        (subs file-str 0 (- (count file-str) 5))
-                                        (.endsWith
-                                         file-str (str "." (env/file-extension comp-env)))
-                                        (subs
-                                         file-str
-                                         0 (- (count file-str)
-                                              (inc (count (env/file-extension comp-env))))))]
-                   :when file-str
-                   :let [match-index (matches-file? file-str path-tokens)]
-                   :when match-index]
-               {:candidate (str "/" file-str) :match-index (inc match-index)}))
-           (let [^String root-dir (#'clojure.core/root-directory (ns-name ns))
-                 root-dir (if (.startsWith root-dir "/") (subs root-dir 1) root-dir)
-                 root-dir (str root-dir "/")
-                 path (str root-dir prefix)
-                 path (if (.startsWith path "/") (subs path 1) path)
-                 path-tokens (tokenize-file-prefix prefix)]
-             (for [^String file-str (:file-resources @classpath-data)
+  (when (and (nil? comp-env) (= position :load-path))
+    (if (.startsWith prefix "/")
+      (let [path (subs prefix 1)
+            path-tokens (tokenize-file-prefix path)]
+        (for [^String file-str (:file-resources @classpath-data)
+              :when (or (.endsWith file-str "cljc")
+                        (.endsWith file-str (env/file-extension comp-env)))
+              :let [file-str (cond (.endsWith file-str ".cljc")
+                                   (subs file-str 0 (- (count file-str) 5))
+                                   (.endsWith
+                                    file-str (str "." (env/file-extension comp-env)))
+                                   (subs
+                                    file-str
+                                    0 (- (count file-str)
+                                         (inc (count (env/file-extension comp-env))))))]
+              :when file-str
+              :let [match-index (matches-file? file-str path-tokens)]
+              :when match-index]
+          {:candidate (str "/" file-str) :match-index (inc match-index)}))
+      (let [^String root-dir (#'clojure.core/root-directory (ns-name ns))
+            root-dir (if (.startsWith root-dir "/") (subs root-dir 1) root-dir)
+            root-dir (str root-dir "/")
+            path (str root-dir prefix)
+            path (if (.startsWith path "/") (subs path 1) path)
+            path-tokens (tokenize-file-prefix prefix)]
+        (->> (for [^String file-str (:file-resources @classpath-data)
                    :when (and (.startsWith file-str root-dir)
                               (or (.endsWith file-str "cljc")
                                   (.endsWith file-str (env/file-extension comp-env))))
@@ -748,20 +726,43 @@
                    :when file-str
                    :let [match-index (matches-file? file-str path-tokens)]
                    :when match-index]
-               {:candidate file-str :match-index match-index}))))
-       (sort-by :candidate by-length-comparator)
-       (take max-candidates-number)))
+               {:candidate file-str :match-index match-index})
+             distinct
+             (sort-by :candidate by-length-comparator)
+             (take max-candidates-number))))))
+
+(defn resources-candidates [comp-env ns context ^String prefix]
+  (when (nil? comp-env)
+    (when-let [^String fn-context (:fn-context context)]
+      (let [fn-context-position (:fn-context-position context)
+            fn-context-resolved (ns-resolve ns (symbol fn-context))
+            prefix-tokens (tokenize-file-prefix prefix)]
+        (when (and (= fn-context-resolved #'clojure.java.io/resource)
+                   (= 1 fn-context-position))
+          (->> (for [^String file-str (:file-resources @classpath-data)
+                     :when (not (or (.endsWith file-str ".cljc")
+                                    (.endsWith file-str ".clj")
+                                    (.endsWith file-str ".cljs")
+                                    (.endsWith file-str ".jar")
+                                    (.endsWith file-str ".class")))
+                     :let [match-index (matches-file? file-str prefix-tokens)]
+                     :when match-index]
+                 {:candidate file-str :match-index match-index})
+               distinct
+               (sort-by :candidate by-length-comparator)
+               (take max-candidates-number)))))))
 
 (defn in-string-candidates [comp-env ns context prefix]
   (concat (file-candidates comp-env ns context prefix)
-          (load-candidates comp-env ns context prefix)))
+          (load-candidates comp-env ns context prefix)
+          (resources-candidates comp-env ns context prefix)))
 
 (defn candidates
   [comp-env ns {:keys [locals in-string? in-comment? in-ns-form? at-binding-position?
                        fn-context fn-context-position dependency-context]
                 :as context}
    ^String prefix]
-  (let [ns (or (env/find-ns comp-env ns)
+  (let [ns (or (and ns (env/find-ns comp-env (symbol ns)))
                (env/find-ns comp-env (env/default-ns comp-env)))]
     (if in-string?
       (in-string-candidates comp-env ns context prefix)
@@ -787,12 +788,12 @@
                                            (static-fields-candidates comp-env ns scope-name
                                                                      prefix prefix-tokens))
                                method-call? (method-candidates comp-env ns locals
-                                                               (:param context)
-                                                               (:param-meta context)
+                                                               (:fn-param context)
+                                                               (:fn-param-meta context)
                                                                prefix prefix-tokens)
                                field-call? (field-candidates comp-env ns locals
-                                                             (:param context)
-                                                             (:param-meta context)
+                                                             (:fn-param context)
+                                                             (:fn-param-meta context)
                                                              prefix prefix-tokens)
                                :else
                                (concat
@@ -809,8 +810,8 @@
                (sort-by :candidate by-length-comparator)
                (take max-candidates-number)))))))
 
-;; load-path -> completion for files
 ;; members -> cljs completion
 
 ;; No auto completion for classes other than in a dependency context since all classes are not
 ;; enumerable (deftypes, defrecord generated classesx)
+
