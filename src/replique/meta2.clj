@@ -63,7 +63,8 @@
                 ;; example: clojure.main$repl
                 resolved-munged (when (and (nil? resolved) (nil? resolved-ns))
                                   (ns-resolve-munged comp-env ns prefix-sym))
-                m (env/meta comp-env (or resolved resolved-ns resolved-munged))]
+                m (-> (env/meta comp-env (or resolved resolved-ns resolved-munged))
+                      (assoc :ns (str ns)))]
             (cond resolved (let [protocol (get m :protocol)
                                  m (if protocol
                                      (env/meta comp-env protocol)
