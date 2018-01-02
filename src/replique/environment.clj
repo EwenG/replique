@@ -158,23 +158,27 @@
   (looks-like-var? [_ var]
     (map? var))
   (meta [comp-env var]
-    (when (map? var)
-      (let [;; Resolve the namespace
-            qualified-name (:name var)
-            ;; Arglists might have a spurious (quote ...) wrapping form
-            arglists (:arglists var)
-            arglists (if (= 'quote (first arglists)) (second arglists) arglists)
-            var (if arglists (assoc var :arglists arglists) var)]
-        (cond (nil? qualified-name)
-              var
-              (namespace qualified-name)
-              (let [ns-sym (symbol (namespace qualified-name))
-                    var-sym (symbol (name qualified-name))
-                    ns (find-ns comp-env ns-sym)]
-                (assoc var
-                       :ns ns
-                       :name var-sym))
-              :else (assoc var :name qualified-name)))))
+    (if (instance? CljsNamespace var)
+      ;; cljs namespace do not appear to have metadata other than :doc at the time
+      ;; of writing this
+      (select-keys var [:doc])
+      (when (map? var)
+        (let [;; Resolve the namespace
+              qualified-name (:name var)
+              ;; Arglists might have a spurious (quote ...) wrapping form
+              arglists (:arglists var)
+              arglists (if (= 'quote (first arglists)) (second arglists) arglists)
+              var (if arglists (assoc var :arglists arglists) var)]
+          (cond (nil? qualified-name)
+                var
+                (namespace qualified-name)
+                (let [ns-sym (symbol (namespace qualified-name))
+                      var-sym (symbol (name qualified-name))
+                      ns (find-ns comp-env ns-sym)]
+                  (assoc var
+                         :ns ns
+                         :name var-sym))
+                :else (assoc var :name qualified-name))))))
   (remove-ns [comp-env ns-sym] (@cljs-remove-ns ns-sym))
   (ns-unmap [comp-env ns sym]
     (let [ns-sym (if (symbol? ns) ns (ns-name ns))]
