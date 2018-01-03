@@ -3,79 +3,44 @@
   (:require [replique.tooling-msg :as tooling-msg])
   (:import [clojure.lang DynamicClassLoader]
            [java.net URL URI URLClassLoader]
+           [java.io File]
            [java.nio.file Paths Path]
            [java.lang.reflect Method]))
 
-(defprotocol AddableClasspath
-  (can-add? [cl])
-  (add-classpath-url [cl url]))
+(defn dynamic-classloader? [cl]
+  (instance? DynamicClassLoader cl))
 
-(when-not (extends? AddableClasspath URLClassLoader)
-  (let [addURL (try
-                 (-> URLClassLoader
-                     (.getDeclaredMethod "addURL" (into-array Class [URL]))
-                     (doto (.setAccessible true)))
-                 (catch Exception _))]
-    (extend URLClassLoader
-      AddableClasspath
-      {:can-add? (fn [_] (boolean addURL))
-       :add-classpath-url (fn [cl url]
-                            (when addURL
-                              (.invoke ^Method addURL cl (into-array URL [url]))))}))
+(defn root-dynamic-classloader []
+  (let [context-classloader (.getContextClassLoader (Thread/currentThread))]
+    (->> context-classloader
+         (iterate #(.getParent ^ClassLoader %))
+         (cons context-classloader)
+         (take-while dynamic-classloader?)
+         last)))
 
-  (extend DynamicClassLoader
-    AddableClasspath
-    {:can-add? (fn [_] (boolean true))
-     :add-classpath-url (fn [^DynamicClassLoader cl url]
-                          (.addURL cl url))})
-
-  ;; on < java 9, the boot classloader is a URLClassLoader, but
-  ;; modifying it can have dire consequences
-  (when (try (resolve 'sun.misc.Launcher$ExtClassLoader)
-             (catch Exception _))
-    (extend sun.misc.Launcher$ExtClassLoader
-      AddableClasspath
-      {:can-add? (constantly false)})))
-
-(defn classloader-hierarchy
-  ([] (classloader-hierarchy (.. Thread currentThread getContextClassLoader)))
-  ([tip] (->> tip
-              (iterate #(.getParent ^ClassLoader %))
-              (take-while boolean))))
-
-(defn addable-classloader []
-  (let [classloaders (classloader-hierarchy)]
-    (last (filter can-add? classloaders))))
-
-(defn add-classpath [cl urls]
+(defn add-classpath [^DynamicClassLoader cl urls]
   (doseq [url urls]
-    (add-classpath-url cl url)))
+    (.addURL cl url)))
 
-(defn classpath->urls [classpath]
-  (->> (clojure.string/split (clojure.string/trim classpath) #":")
-       (map #(Paths/get % (make-array String 0)))
+(defn classpath->paths [classpath]
+  (when classpath
+    (for [path (-> classpath
+                   clojure.string/trim
+                   (.split File/pathSeparator))]
+      (Paths/get path (make-array String 0)))))
+
+(defn paths->urls [paths]
+  (->> paths
        (map #(.toUri ^Path %))
        (map #(.toURL ^URI %))))
 
-(defn boot-class-paths []
-  (try
-    (let [paths (-> (java.lang.management.ManagementFactory/getRuntimeMXBean)
-                    (.getBootClassPath)
-                    clojure.string/trim
-                    (clojure.string/split #":"))]
-      (map #(Paths/get % (make-array String 0)) paths))
-    (catch Exception e nil)))
-
 (defn paths []
-  (->> (classloader-hierarchy)
-       reverse
-       (mapcat #(seq (.getURLs ^URLClassLoader %)))
-       (map #(Paths/get (.toURI %)))))
+  (concat (classpath->paths (System/getProperty "java.class.path"))
+          ;; nil under jdk9
+          (classpath->paths (System/getProperty "sun.boot.class.path"))))
+
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :classpath]
   [{:keys [classpath] :as msg}]
   (tooling-msg/with-tooling-response msg
-    (if-let [cl (addable-classloader)]
-      (do (add-classpath cl (classpath->urls classpath))
-          {})
-      {:error "Could not find a suitable classloader to update the classpath"})))
+    (add-classpath (root-dynamic-classloader) (paths->urls (classpath->paths classpath)))))

@@ -110,53 +110,32 @@
 (def ^:dynamic *file-resources* nil)
 (def ^{:dynamic true :tag 'java.util.Map} *namespaces-on-classpath* nil)
 
+(defn handle-classpath-file* [path-str]
+  (when (class-file? path-str)
+    (let [class-name (class-file->class-name path-str)]
+      (set! *classes-on-classpath* (conj! *classes-on-classpath* class-name))))
+  (when-let [source-file-extension (env/source-file-extension path-str)]
+    (when-let [namespace (file-name->namespace source-file-extension path-str)]
+      (let [namespaces-on-classpath (get *namespaces-on-classpath*
+                                         source-file-extension
+                                         (transient []))]
+        (.put *namespaces-on-classpath* source-file-extension
+              (conj! namespaces-on-classpath namespace)))))
+  (set! *file-resources* (conj! *file-resources* path-str)))
+
 (defn handle-classpath-file [path attrs]
   (let [path-str (str path)]
-    (when (class-file? path-str)
-      (let [class-name (class-file->class-name path-str)]
-        (set! *classes-on-classpath* (conj! *classes-on-classpath* class-name))))
-    (when-let [source-file-extension (env/source-file-extension path-str)]
-      (when-let [namespace (file-name->namespace source-file-extension path-str)]
-        (let [namespaces-on-classpath (get *namespaces-on-classpath*
-                                           source-file-extension
-                                           (transient []))]
-          (.put *namespaces-on-classpath* source-file-extension
-                (conj! namespaces-on-classpath namespace)))))
-    (set! *file-resources* (conj! *file-resources* path-str))))
+    (handle-classpath-file* path-str)))
 
 (defn handle-classpath-jar [jar-entry]
   (let [path-str (.getName ^java.util.jar.JarEntry jar-entry)]
-    (when (class-file? path-str)
-      (let [class-name (class-file->class-name path-str)]
-        (set! *classes-on-classpath* (conj! *classes-on-classpath* class-name))))
-    (when-let [source-file-extension (env/source-file-extension path-str)]
-      (when-let [namespace (file-name->namespace source-file-extension path-str)]
-        (let [namespaces-on-classpath (get *namespaces-on-classpath*
-                                           source-file-extension
-                                           (transient []))]
-          (.put *namespaces-on-classpath* source-file-extension
-                (conj! namespaces-on-classpath namespace)))))))
-
-(defn handle-classpath-file-boot [path attrs]
-  (let [path-str (str path)]
-    (when (class-file? path-str)
-      (let [class-name (class-file->class-name path-str)]
-        (set! *classes-on-classpath* (conj! *classes-on-classpath* class-name))))))
-
-(defn handle-classpath-jar-boot [^java.util.jar.JarEntry jar-entry]
-  (let [path-str (.getName jar-entry)]
-    (when (class-file? path-str)
-      (let [class-name (class-file->class-name path-str)]
-        (set! *classes-on-classpath* (conj! *classes-on-classpath* class-name))))))
+    (handle-classpath-file* path-str)))
 
 (defn compute-classpath-data []
   (binding [*classes-on-classpath* (transient [])
             *file-resources* (transient [])
             *namespaces-on-classpath* (java.util.HashMap.)]
-    (files/visit-files (classpath/paths)
-                       handle-classpath-file handle-classpath-jar)
-    (files/visit-files (classpath/boot-class-paths)
-                       handle-classpath-file-boot handle-classpath-jar-boot)
+    (files/visit-files (classpath/paths) handle-classpath-file handle-classpath-jar)
     (let [cljc-namespaces (.remove *namespaces-on-classpath* "cljc")
           cljc-namespaces (when cljc-namespaces (persistent! cljc-namespaces))]
       (doseq [k (keys *namespaces-on-classpath*)]
