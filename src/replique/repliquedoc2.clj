@@ -69,10 +69,8 @@
                 (format-overloaded-method class method fn-context-position)
                 (format-method class method fn-context-position)))))))))
 
-(def special-forms #{"def" "if" "do" "quote" "recur" "throw" "try" "catch" "new" "set!"})
-(def special-forms-clj (clojure.set/union
-                        special-forms
-                        #{"var" "monitor-enter" "monitor-exit"}))
+(def special-forms #{"def" "if" "do" "quote" "recur" "throw" "try" "catch" "new" "set!"
+                     "var" "monitor-enter" "monitor-exit"})
 
 (def special-forms-arglists
   {"def" '([symbol doc-string? init?])
@@ -91,9 +89,8 @@
 
 (defn function-call [comp-env ns locals fn-context fn-context-position]
   (when-not (contains? locals fn-context)
-    ;; TODO cljs special forms
-    (if-let [clj-special-form (get special-forms-clj fn-context)]
-      {:name clj-special-form
+    (if-let [special-form (get (env/special-forms comp-env) fn-context)]
+      {:name special-form
        :arglists (get special-forms-arglists fn-context)
        :index fn-context-position}
       (when-let [resolved (safe-ns-resolve comp-env ns (symbol fn-context))]
