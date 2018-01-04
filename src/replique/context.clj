@@ -30,7 +30,9 @@
                             :for-like ['clojure.core/for
                                        'cljs.core/for
                                        'clojure.core/doseq
-                                       'cljs.core/doseq]})
+                                       'cljs.core/doseq]
+                            :letfn-like ['clojure.core/letfn
+                                         'cljs.core/letfn]})
 
 (def ns-context->vars {:ns-like ['clojure.core/ns]})
 
