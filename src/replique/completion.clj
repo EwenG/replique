@@ -150,16 +150,16 @@
           file-resources (->> (persistent! *file-resources*)
                               (sort by-length-comparator))
           namespaces-on-classpath *namespaces-on-classpath*]
-      (reset! classpath-data {:classes-on-classpath classes-on-classpath
-                              :file-resources file-resources
-                              :namespaces-on-classpath namespaces-on-classpath}))))
+      {:classes-on-classpath classes-on-classpath
+       :file-resources file-resources
+       :namespaces-on-classpath namespaces-on-classpath})))
 
 (defn compute-all-ns-data [comp-env all-ns*]
   (set-all-ns-data comp-env (->> all-ns*
                                  (map (comp name env/ns-name))
                                  (sort by-length-comparator))))
 
-(compute-classpath-data)
+(reset! classpath-data (compute-classpath-data))
 
 (defonce js-dependency-index-data (atom nil))
 
@@ -791,6 +791,4 @@
 
 ;; members -> cljs completion
 
-;; No auto completion for classes other than in a dependency context since all classes are not
-;; enumerable (deftypes, defrecord generated classesx)
-
+;; Not all classes are enumerable (deftypes, defrecord generated classes)
