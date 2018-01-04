@@ -164,6 +164,13 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
               *err* utils/process-err]
       {:result (pr-str (eval (read-string {:read-cond :allow} form)))})))
 
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :classpath]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (let [res (classpath/update-classpath (:classpath msg))]
+      (reset! completion/classpath-data (completion/compute-classpath-data))
+      res)))
+
 (defn ns-files [comp-env the-ns]
   (distinct
    (for [[s v] (env/ns-interns comp-env the-ns)

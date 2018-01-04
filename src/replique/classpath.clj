@@ -1,6 +1,5 @@
 (ns replique.classpath
   (:refer-clojure :exclude [add-classpath])
-  (:require [replique.tooling-msg :as tooling-msg])
   (:import [clojure.lang DynamicClassLoader]
            [java.net URL URI URLClassLoader]
            [java.io File]
@@ -39,8 +38,6 @@
           ;; nil under jdk9
           (classpath->paths (System/getProperty "sun.boot.class.path"))))
 
+(defn update-classpath [classpath]
+  (add-classpath (root-dynamic-classloader) (paths->urls (classpath->paths classpath))))
 
-(defmethod tooling-msg/tooling-msg-handle [:replique/clj :classpath]
-  [{:keys [classpath] :as msg}]
-  (tooling-msg/with-tooling-response msg
-    (add-classpath (root-dynamic-classloader) (paths->urls (classpath->paths classpath)))))
