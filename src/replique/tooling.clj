@@ -4,12 +4,12 @@
             [replique.utils :as utils]
             [replique.server :as server]
             [replique.tooling-msg :as tooling-msg]
-            [replique.repliquedoc2 :as repliquedoc]
+            [replique.repliquedoc :as repliquedoc]
             [replique.omniscient :as omniscient]
             [replique.classpath :as classpath]
-            [replique.meta2 :as r-meta]
+            [replique.meta :as r-meta]
             [replique.environment :as env :refer [->CljsCompilerEnv]]
-            [replique.context :as context2]
+            [replique.context :as context]
             [replique.completion :as completion]
             [replique.source-meta]))
 
@@ -222,13 +222,13 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
   [{:keys [ns] :as msg}]
   (tooling-msg/with-tooling-response msg
     (when ns
-      (context2/compute-context->categories->syms nil ns))))
+      (context/compute-context->categories->syms nil ns))))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :context]
   [{:keys [ns] :as msg}]
   (tooling-msg/with-tooling-response msg
     (when ns
-      (context2/compute-context->categories->syms-cljs
+      (context/compute-context->categories->syms-cljs
        (->CljsCompilerEnv @@cljs-compiler-env) ns))))
 
 (comment

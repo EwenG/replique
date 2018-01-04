@@ -1,39 +1,21 @@
 (ns replique.meta
-  (:refer-clojure :exclude [find-ns meta ns-resolve ns-interns])
-  (:require
-   [clojure.java.io :as io]
-   [clojure.string :as string]
-   [clojure.repl :refer [demunge]]
-   [replique.compliment.core :as compliment]
-   [replique.compliment.context :as context]
-   [replique.compliment.sources.local-bindings :refer [bindings-from-context]]
-   [replique.environment :refer [find-ns meta ns-resolve ns-interns looks-like-var?]]))
-
-;; Whitelist meta to be returned because everything is not elisp printable
-(def meta-keys #{:file :arglists :doc :added :static :line :column :name :tag})
+  (:require [clojure.java.io :as io]
+            [replique.environment :as env]
+            [clojure.string :as string]
+            [clojure.repl]))
 
 (defn safe-ns-resolve [comp-env ns sym]
-  (try (let [resolved (ns-resolve comp-env ns sym)]
-         ;; exclude classes since they don't have meta
-         (when (looks-like-var? comp-env resolved) resolved))
-       (catch Exception _ nil)))
+  (try (env/ns-resolve comp-env ns sym)
+       (catch ClassNotFoundException e nil)))
 
-(defn safe-ns-resolve-munged [comp-env ns sym]
+(defn ns-resolve-munged [comp-env ns sym]
   (let [splitted (string/split (str sym) #"\$")]
     (when (> (count splitted) 1)
       (->> (subvec splitted 0 2)
            (string/join "/")
-           demunge
+           clojure.repl/demunge
            symbol
            (safe-ns-resolve comp-env ns)))))
-
-(defn safe-find-ns [comp-env sym]
-  (try (find-ns comp-env sym)
-       (catch Exception _ nil)))
-
-(defn ns-file [comp-env the-ns]
-  (let [interns (ns-interns comp-env the-ns)]
-    (some (fn [[_ v]] (:file (meta comp-env v))) interns)))
 
 ;; The "jar:" protocol is not always added by the clojurescript compiler
 (defn url-with-protocol-prefix [^String url-str]
@@ -43,6 +25,10 @@
     (and (.contains url-str ".zip!") (not (.startsWith url-str "zip:")))
     (format "zip:%s" url-str)
     :else url-str))
+
+(defn ns-file [comp-env the-ns]
+  (let [interns (env/ns-interns comp-env the-ns)]
+    (some (fn [[_ v]] (:file (env/meta comp-env v))) interns)))
 
 (defn resource-str [^String f]
   (when f
@@ -57,33 +43,34 @@
                 (str res))))
           (catch Exception _ nil))))))
 
-(defn handle-meta [comp-env ns context sym-at-point]
-  (let [ns (compliment/ensure-ns comp-env (when ns (symbol ns)))
-        sym-at-point (and sym-at-point (symbol sym-at-point))
-        bindings (set (bindings-from-context context))]
-    (when (and
-           ;; Exclude keywords, ...
-           (symbol? sym-at-point)
-           ;; If sym-at-point is a binding symbol or a local, there is no meta
-           (not (some #{"__prefix__" (str sym-at-point)} bindings)))
-      (let [resolved-sym (safe-ns-resolve comp-env ns sym-at-point)
-            resolved-ns (when (nil? resolved-sym) (safe-find-ns comp-env sym-at-point))
-            ;; example: clojure.main$repl
-            resolved-sym-munged (safe-ns-resolve-munged comp-env ns sym-at-point)
-            m (-> (meta comp-env (or resolved-sym resolved-ns resolved-sym-munged))
-                  (select-keys meta-keys)
-                  (assoc :ns (str ns)))]
-        (cond resolved-sym (update m :file resource-str)
-              resolved-sym-munged (update m :file resource-str)
-              resolved-ns (->> (ns-file comp-env resolved-ns)
-                               resource-str
-                               (assoc m :file))
-              :else nil)))))
-
 (defn handle-meta-str [sym-at-point]
   (when-let [f (resource-str sym-at-point)]
     {:file f}))
 
-(comment
-  (binding-symbol? '(let [[e __prefix__] f] nil) 1)
-  )
+(defn handle-meta [comp-env ns {:keys [in-comment? in-string? locals] :as context} ^String prefix]
+  (let [ns (or (and ns (env/find-ns comp-env (symbol ns)))
+               (env/find-ns comp-env (env/default-ns comp-env)))]
+    (when (and prefix (not in-comment?))
+      (if in-string?
+        (handle-meta-str prefix)
+        (when (and (not (.startsWith prefix ":"))
+                   (not (contains? locals prefix)))
+          (let [prefix (.replaceFirst prefix "^#_" "")
+                prefix-sym (symbol prefix)
+                resolved (safe-ns-resolve comp-env ns prefix-sym)
+                resolved (when (and resolved (not (class? resolved))) resolved)
+                resolved-ns (when (nil? resolved) (env/find-ns comp-env prefix-sym))
+                ;; example: clojure.main$repl
+                resolved-munged (when (and (nil? resolved) (nil? resolved-ns))
+                                  (ns-resolve-munged comp-env ns prefix-sym))
+                m (-> (env/meta comp-env (or resolved resolved-ns resolved-munged))
+                      (assoc :ns (str ns)))]
+            (cond resolved (let [protocol (get m :protocol)
+                                 m (if protocol
+                                     (env/meta comp-env protocol)
+                                     m)]
+                             (update m :file resource-str))
+                  resolved-munged (update m :file resource-str)
+                  resolved-ns (->> (ns-file comp-env resolved-ns)
+                                   resource-str
+                                   (assoc m :file)))))))))
