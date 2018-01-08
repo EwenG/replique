@@ -23,10 +23,10 @@
 
 (extend-protocol IAllNsData
   nil
-  (get-all-ns-data [comp-env] (get @all-ns-data :clj))
+  (get-all-ns-data [comp-env] (:clj @all-ns-data))
   (set-all-ns-data [cop-env new-data] (swap! all-ns-data assoc :clj new-data))
   CljsCompilerEnv
-  (get-all-ns-data [comp-env] (get @all-ns-data :cljs))
+  (get-all-ns-data [comp-env] (:cljs @all-ns-data))
   (set-all-ns-data [cop-env new-data] (swap! all-ns-data assoc :cljs new-data)))
 
 ;; Split on dashes, dots or upper case letters
@@ -343,7 +343,7 @@
   (->> (for [dependency-type ["require" "require-macros" "use" "import" "refer-clojure" "load"]
              :let [dependency-type (str dependency-type)]
              :when (.startsWith dependency-type prefix)]
-         {:candidate dependency-type :match-index (count prefix) :type :keywoprd})
+         {:candidate (str ":" dependency-type) :match-index (count prefix) :type :keywoprd})
        (sort-by :candidate by-length-comparator)))
 
 (defn libspec-option-candidates [prefix]
