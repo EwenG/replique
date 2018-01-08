@@ -4,6 +4,9 @@
   (:import [java.io Writer]
            [clojure.core Eduction]))
 
+(defn escape-symbol [symbol-str]
+  (.replaceAll symbol-str "(?=[\\\\?\\[\\]\\(\\)\\{\\}\\+\\-#;\\.])"  "\\\\"))
+
 (defn- print-sequential [^String begin, print-one, ^String sep, ^String end, sequence, ^Writer w]
   (.write w begin)
   (when-let [xs (seq sequence)]
@@ -99,20 +102,7 @@
 (defmethod print-method clojure.lang.Symbol [o, ^Writer w]
   (print-with-meta
    o w
-   (.write w (-> (str o)
-                 (.replace "\\" "\\\\")
-                 (.replace "?" "\\?")
-                 (.replace "[" "\\[")
-                 (.replace "]" "\\]")
-                 (.replace "(" "\\(")
-                 (.replace ")" "\\)")
-                 (.replace "{" "\\{")
-                 (.replace "}" "\\}")
-                 (.replace "+" "\\+")
-                 (.replace "-" "\\-")
-                 (.replace "#" "\\#")
-                 (.replace ";" "\\;")
-                 (.replace "." "\\.")))))
+   (.write w (escape-symbol (str o)))))
 
 (defmethod print-method clojure.lang.Var [o, ^Writer w]
   (.write w "\"~v")
