@@ -219,17 +219,17 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
         {:vars (list-vars-with-meta comp-env the-ns)}))))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :context]
-  [{:keys [ns] :as msg}]
+  [{:keys [ns repl-env] :as msg}]
   (tooling-msg/with-tooling-response msg
     (when ns
-      (context/compute-context->categories->syms nil ns))))
+      (context/compute-context->categories->syms nil repl-env ns))))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :context]
-  [{:keys [ns] :as msg}]
+  [{:keys [ns repl-env] :as msg}]
   (tooling-msg/with-tooling-response msg
     (when ns
       (context/compute-context->categories->syms-cljs
-       (->CljsCompilerEnv @@cljs-compiler-env) ns))))
+       (->CljsCompilerEnv @@cljs-compiler-env) repl-env ns))))
 
 (comment
   (tooling-msg/tooling-msg-handle {:repl-env :replique/clj

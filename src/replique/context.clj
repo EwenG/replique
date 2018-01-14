@@ -1,5 +1,6 @@
 (ns replique.context
-  (:require [replique.environment :as env :refer [->CljsCompilerEnv]])
+  (:require [replique.environment :as env :refer [->CljsCompilerEnv]]
+            [replique.utils :as utils])
   (:import [java.lang.reflect Modifier Method]
            [clojure.lang Keyword]))
 
@@ -86,7 +87,7 @@
       sym->category)))
 
 ;; We assume (:require :rename) is not used
-(defn compute-context->categories->syms [comp-env ns]
+(defn compute-context->categories->syms [comp-env repl-env ns]
   (let [ns (symbol ns)
         the-ns (env/find-ns comp-env ns)]
     (when the-ns
@@ -97,10 +98,11 @@
                              comp-env ns aliases dependency-context->vars)]
         {:binding-context binding-syms
          :dependency-context dependency-syms
-         :ns-context ns-syms}))))
+         :ns-context ns-syms
+         :repl-type (utils/repl-type repl-env)}))))
 
-(defn compute-context->categories->syms-cljs [comp-env ns]
-  (let [result (compute-context->categories->syms comp-env ns)]
+(defn compute-context->categories->syms-cljs [comp-env repl-env ns]
+  (let [result (compute-context->categories->syms comp-env repl-env ns)]
     (assoc-in result [:ns-context "ns"] :ns-like)))
 
 (defn try-get-object-class [comp-env ns object-str]
