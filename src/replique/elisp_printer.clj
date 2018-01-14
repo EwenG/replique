@@ -105,9 +105,11 @@
    (.write w (escape-symbol (str o)))))
 
 (defmethod print-method clojure.lang.Var [o, ^Writer w]
-  (.write w "\"~v")
-  (.write w (str (.-ns o) "/" (.-sym o)))
-  (.write w "\""))
+  (print-with-meta
+   o w
+   (.write w "\"~v")
+   (.write w (str (.-ns o) "/" (.-sym o)))
+   (.write w "\"")))
 
 (defmethod print-method clojure.lang.ISeq [o, ^Writer w]
   (print-sequential "(" pr-on " " ")" o w))
