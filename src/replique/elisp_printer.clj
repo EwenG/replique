@@ -397,3 +397,9 @@
 
   ;; handle print-level/print-length
   )
+
+;; zero copy (for things serialized from cljs)
+(deftype ElispString [s])
+
+(defmethod print-method ElispString [^String s ^java.io.Writer w]
+  (.write w (.-s s)))
