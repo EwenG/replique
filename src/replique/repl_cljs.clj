@@ -21,11 +21,11 @@
             [replique.cljs]
             #_[replique.npm-deps :as npm-deps]
             [replique.source-meta])
-  (:import [java.io File]
+  (:import [java.io File PushbackReader]
            [java.nio.file Files Paths Path]
            [java.net URL]
-           [java.util.concurrent Executors SynchronousQueue
-            RejectedExecutionException ExecutorService]
+           [java.util.concurrent Executors SynchronousQueue TimeUnit
+            RejectedExecutionException ExecutorService TimeoutException CancellationException]
            [clojure.lang IExceptionInfo]
            [java.util.regex Pattern]
            [com.google.common.base Throwables]))
@@ -136,18 +136,24 @@ replique.cljs_env.repl.connect(\"" url "\");
         (http/make-404 path)))
     (http/make-404 path)))
 
-(defn make-eval-task [js]
-  (reify Callable
-    (call [this]
-      (if *stopped-eval-executor?*
-        {:status :error :value "Connection broken"}
-        (let[{:keys [js-queue result-queue]} @server/cljs-server]
-          (try
-            (.put ^SynchronousQueue js-queue js)
-            (.take ^SynchronousQueue result-queue)
-            ;; If the repl-env is shutdown
-            (catch InterruptedException e
-              {:status :error :value "Connection broken"})))))))
+(defprotocol ISubmitted
+  (is-submitted? [this]))
+
+(deftype EvalTask [js ^:unsynchronized-mutable submitted?]
+  Callable
+  (call [this]
+    (if *stopped-eval-executor?*
+      {:status :error :value "Connection broken"}
+      (let[{:keys [js-queue result-queue]} @server/cljs-server]
+        (try
+          (.put ^SynchronousQueue js-queue js)
+          (set! submitted? true)
+          (.take ^SynchronousQueue result-queue)
+          ;; If the repl-env is shutdown
+          (catch InterruptedException e
+            {:status :error :value "Connection broken"})))))
+  ISubmitted
+  (is-submitted? [this] submitted?))
 
 (defn init-core-bindings []
   `(do
@@ -290,20 +296,35 @@ replique.cljs_env.repl.connect(\"" url "\");
          :value (Throwables/getStackTraceAsString e)}))
     ret))
 
-(defn evaluate-form [repl-env js]
+(defn evaluate-form [repl-env js & {:keys [timeout-before-submitted]}]
   (let [port (server/server-port)
         {:keys [state eval-executor]} @server/cljs-server]
     (cond
       (= :stopped state)
       {:status :error
        :value (format "Waiting for browser to connect on port %d ..." port)}
-      :else (try (->> (.submit ^ExecutorService eval-executor
-                               ^Callable (make-eval-task js))
-                      (.get)
-                      (handle-stacktrace repl-env))
+      :else (try (let [eval-task (->EvalTask js false)
+                       eval-future (.submit ^ExecutorService eval-executor
+                                            ^Callable eval-task)
+                       result (if timeout-before-submitted
+                                ;; Timeout before the task gets submitted, useful to implement
+                                ;; timeout on things like autocompletion requests
+                                (try
+                                  (.get eval-future timeout-before-submitted TimeUnit/MILLISECONDS)
+                                  (catch TimeoutException e
+                                    (when-not (is-submitted? eval-task)
+                                      ;; eval tasks must ony be interrupted on
+                                      ;; deconnection/reconnection
+                                      (.cancel eval-future false))
+                                    (.get eval-future)))
+                                (.get eval-future))]
+                   (handle-stacktrace repl-env result))
                  (catch RejectedExecutionException e
                    {:status :error
-                    :value "Connection broken"})))))
+                    :value "Connection broken"})
+                 (catch CancellationException e
+                   {:status :error
+                    :value "Cancelled"})))))
 
 ;; Defrecord instead of deftype because cljs.repl uses the repl-env as a hashmap. Why ??? 
 (defrecord BrowserEnv [repl-opts]
@@ -411,11 +432,9 @@ replique.cljs_env.repl.connect(\"" url "\");
           (let [repl-src "replique/cljs_env/repl.cljs"
                 benv-src "replique/cljs_env/browser.cljs"
                 jfxenv-src "replique/cljs_env/javafx.cljs"
-                omniscient-src "replique/omniscient_runtime.cljc"
                 repl-compiled (repl-compile-cljs repl-src repl-opts  comp-opts false)
                 benv-compiled (repl-compile-cljs benv-src repl-opts comp-opts false)
-                jfx-compiled (repl-compile-cljs jfxenv-src repl-opts comp-opts false)
-                omniscient-compiled (repl-compile-cljs omniscient-src repl-opts comp-opts false)]
+                jfx-compiled (repl-compile-cljs jfxenv-src repl-opts comp-opts false)]
             (let [cljs-deps-path (str (cljs.util/output-directory comp-opts)
                                       File/separator "cljs_deps.js")]
               (when-not (.exists (File. cljs-deps-path))
@@ -538,6 +557,19 @@ replique.cljs_env.repl.connect(\"" url "\");
      (cljs-env/with-compiler-env @compiler-env
        (eval-cljs repl-env env form cljs.repl/*repl-opts*)))))
 
+(comment
+  (evaluate-form @repl-env "alert(\"e\");" :timeout-before-submitted 1000)
+  )
+
+(defn tooling-form->js [ns form]
+  (binding [ana/*analyze-deps* false]
+    (cljs-env/with-compiler-env @compiler-env
+      (let [ast (ana/analyze (assoc env
+                                    :ns ns
+                                    :def-emits-var true)
+                             form nil nil)]
+        (comp/emit-str ast)))))
+
 (defmethod utils/repl-ns :replique/cljs [repl-env]
   ana/*cljs-ns*)
 
@@ -554,7 +586,7 @@ replique.cljs_env.repl.connect(\"" url "\");
      (repl-read request-prompt request-exit cljs.repl/*repl-opts*))
     ([request-prompt request-exit opts]
      ;; Wait for something to come in in order to delay the creation of the new reader
-     (.unread *in* (.read *in*))
+     (.unread ^PushbackReader *in* (.read ^PushbackReader *in*))
      (let [current-in *in*]
        (binding [*in* ((:reader opts))]
          (or ({:line-start request-prompt :stream-end request-exit}

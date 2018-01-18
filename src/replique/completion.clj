@@ -2,15 +2,23 @@
   (:require [replique.environment :as env]
             [replique.classpath :as classpath]
             [replique.context :as context]
+            [replique.utils :as utils]
             [replique.files :as files]
+            [replique.elisp-printer :as elisp]
             [clojure.string :as string])
   (:import [java.io File]
            [java.nio.file.attribute BasicFileAttributes]
            [java.nio.file Paths Path]
            [java.util Comparator]
            [replique.environment CljsCompilerEnv]
+           [replique.elisp_printer ElispString]
            [java.lang.reflect Modifier Method Field]
            [java.nio.file FileVisitResult]))
+
+(def ^:private cljs-evaluate-form (utils/dynaload 'replique.repl-cljs/evaluate-form))
+(def ^:private cljs-repl-env (utils/dynaload 'replique.repl-cljs/repl-env))
+(def ^:private cljs-munged (utils/dynaload 'cljs.compiler/munge))
+(def ^:private cljs-tooling-form->js (utils/dynaload 'replique.repl-cljs/tooling-form->js))
 
 (def ^:const max-candidates-number 200)
 
@@ -301,8 +309,11 @@
                                         comp-env prefix-tokens)]
       (distinct (concat classes-candidates-no-suffix classes-candidates)))))
 
+(defn package-unmunge [package]
+  (.replace (str package) \_ \-))
+
 (defn generated-classes [comp-env ns package]
-  (when-let [the-ns (env/find-ns comp-env (symbol package))]
+  (when-let [the-ns (env/find-ns comp-env (-> package package-unmunge symbol))]
     (for [[sym var] (env/ns-map comp-env the-ns)
           :when (if (instance? CljsCompilerEnv comp-env)
                   (:type var)
@@ -409,9 +420,8 @@
         (= position :flag)
         (flag-candidates prefix)))
 
-(defn scoped-candidates [comp-env ns scope-name prefix-tokens]
-  (let [scope (env/resolve-namespace comp-env (symbol scope-name) ns)
-        var-candidates (when scope (env/ns-publics comp-env scope))]
+(defn scoped-candidates* [comp-env ns scope scope-name prefix-tokens]
+  (let [var-candidates (when scope (env/ns-publics comp-env scope))]
     (for [[var-sym var] var-candidates
           :let [var-name (name var-sym)
                 {:keys [arglists macro] :as var-meta} (env/meta comp-env var)
@@ -423,6 +433,40 @@
                    :else :var)
        :ns (str (or (:ns var-meta) ns))
        :match-index (+ 1 (count scope-name) match-index)})))
+
+(defn scoped-candidates [comp-env ns scope-name prefix-tokens]
+  (let [scope (env/resolve-namespace comp-env (symbol scope-name) ns)]
+    (scoped-candidates* comp-env ns scope scope-name prefix-tokens)))
+
+(defn cljs-scoped-candidates [comp-env ns scope-name prefix prefix-tokens]
+  (let [scope (env/resolve-namespace comp-env (symbol scope-name) ns)
+        scoped-candidates (scoped-candidates* comp-env ns scope scope-name prefix-tokens)]
+    (if (first scoped-candidates)
+      scoped-candidates
+      (when (or scope (= "js" scope-name))
+        (let [split-index (.lastIndexOf ^String prefix ".")
+              js-scope-name (cond (and (> split-index -1) (not= scope-name "js"))
+                                  (str (name scope) "." (subs prefix 0 split-index))
+                                  (and (> split-index -1) (= scope-name "js"))
+                                  (subs prefix 0 split-index)
+                                  (= scope-name "js")
+                                  ""
+                                  :else (name scope))
+              js-prefix (if (> split-index -1)
+                          (subs prefix (inc split-index))
+                          prefix)
+              js-scope-name (@cljs-munged js-scope-name)
+              js-prefix (@cljs-munged js-prefix)
+              original-scope-name (str scope-name "/" (when (> split-index -1)
+                                                        (subs prefix 0 (inc split-index))))]
+          (let [{:keys [status value]}
+                (@cljs-evaluate-form
+                 @@cljs-repl-env
+                 (format "replique.cljs_env.completion.js_scoped_candidates(%s, %s, %s, true);"
+                         (pr-str original-scope-name) (pr-str js-scope-name) (pr-str js-prefix))
+                 :timeout-before-submitted 100)]
+            (when (= :success status)
+              (elisp/->ElispString value))))))))
 
 (defn mapping-candidates [comp-env ns prefix-tokens]
   (->> (let [var-candidates (env/ns-map comp-env ns)]
@@ -502,7 +546,7 @@
       (compute-all-ns-data comp-env all-ns*))
     (all-ns-candidates* (get-all-ns-data comp-env) prefix-tokens)))
 
-(defn static-methods-candidates [comp-env ns scope-name prefix prefix-tokens]
+(defn static-methods-candidates [comp-env ns scope-name prefix-tokens]
   (when (nil? comp-env)
     (when-let [^Class class (context/resolve-class ns (symbol scope-name))]
       (for [^Method method (.getMethods class)
@@ -513,7 +557,7 @@
          :type :static-method
          :match-index (+ 1 (count scope-name) match-index)}))))
 
-(defn static-fields-candidates [comp-env ns scope-name prefix prefix-tokens]
+(defn static-fields-candidates [comp-env ns scope-name prefix-tokens]
   (when (nil? comp-env)
     (when-let [^Class class (context/resolve-class ns (symbol scope-name))]
       (for [^Field field (.getFields class)
@@ -524,8 +568,8 @@
          :type :static-field
          :match-index (+ 1 (count scope-name) match-index)}))))
 
-(defn method-candidates [comp-env ns locals param param-meta prefix prefix-tokens]
-  (when (and (nil? comp-env) param)
+(defn method-candidates [comp-env ns locals param param-meta prefix-tokens]
+  (when param
     (let [[_ _ local-meta :as local-param] (get locals param)
           param-meta (or param-meta local-meta)]
       (cond param-meta
@@ -547,7 +591,7 @@
                  :type :method
                  :match-index (+ 1 match-index)}))))))
 
-(defn field-candidates [comp-env ns locals param param-meta prefix prefix-tokens]
+(defn field-candidates [comp-env ns locals param param-meta prefix-tokens]
   (when (and (nil? comp-env) param)
     (let [[_ _ local-meta :as local-param] (get locals param)
           param-meta (or param-meta local-meta)]
@@ -569,6 +613,25 @@
                 {:candidate (str ".-" (.getName field))
                  :type :field
                  :match-index (+ 2 match-index)}))))))
+
+(defn cljs-field-candidates [comp-env ns locals param prefix method?]
+  (when param
+    (let [local-param (get locals param)]
+      (when (nil? local-param)
+        (let [object (try (read-string param)
+                          (catch Exception e nil))]
+          (when (or (string? object)
+                    (symbol? object))
+            (let [js-prefix (@cljs-munged prefix)
+                  js-param (@cljs-tooling-form->js ns object)
+                  {:keys [status value]}
+                  (@cljs-evaluate-form
+                   @@cljs-repl-env
+                   (format "replique.cljs_env.completion.js_fields_candidates(%s, %s, %s);"
+                           (pr-str js-prefix) (pr-str js-param) (str method?))
+                   :timeout-before-submitted 100)]
+              (when (= :success status)
+                (elisp/->ElispString value)))))))))
 
 (defn special-forms-candidates [comp-env ns fn-context-position prefix-tokens]
   (when (= 0 fn-context-position)
@@ -736,6 +799,35 @@
           (load-candidates comp-env ns context prefix)
           (resources-candidates comp-env ns context prefix)))
 
+(defn parse-js-dot-access [comp-env ns ^String prefix]
+  (when (instance? CljsCompilerEnv comp-env)
+    (let [split-index (.indexOf prefix ".")]
+      (when (> split-index -1)
+        (let [scope-name (subs prefix 0 split-index)
+              scope (get (:imports ns) (symbol scope-name))
+              original-scope-name (subs prefix 0 (inc (.lastIndexOf prefix ".")))]
+          (when scope
+            [original-scope-name (str scope) (subs prefix (inc split-index))]))))))
+
+(defn js-dot-candidates [comp-env ns [original-scope-name scope-name ^String prefix]]
+  (let [split-index (.lastIndexOf prefix ".")
+        js-scope-name (if (> split-index -1)
+                        (str scope-name "." (subs prefix 0 split-index))
+                        scope-name)
+        js-prefix (if (> split-index -1)
+                    (subs prefix (inc split-index))
+                    prefix)
+        js-scope-name (@cljs-munged js-scope-name)
+        js-prefix (@cljs-munged js-prefix)]
+    (let [{:keys [status value]}
+          (@cljs-evaluate-form
+           @@cljs-repl-env
+           (format "replique.cljs_env.completion.js_scoped_candidates(%s, %s, %s, false);"
+                   (pr-str original-scope-name) (pr-str js-scope-name) (pr-str js-prefix))
+           :timeout-before-submitted 100)]
+      (when (= :success status)
+        (elisp/->ElispString value)))))
+
 (defn candidates
   [comp-env ns {:keys [locals in-string? in-comment? in-ns-form? at-binding-position?
                        fn-context fn-context-position dependency-context]
@@ -754,26 +846,51 @@
               prefix (.replaceFirst prefix "(^::?)|(^\\.-?)" "")
               scope-split-index (.lastIndexOf prefix "/")
               scope-name (when (> scope-split-index -1) (subs prefix 0 scope-split-index))
-              prefix (if (> scope-split-index -1) (subs prefix (inc scope-split-index)) prefix)
+              prefix (if (> scope-split-index -1)
+                       (subs prefix (inc scope-split-index))
+                       prefix)
+              js-dot-access (and (= -1 scope-split-index)
+                                 (not keyword?)
+                                 (not field-call?)
+                                 (not method-call?)
+                                 (parse-js-dot-access comp-env ns prefix))
               prefix-tokens (tokenize-prefix prefix)
               candidates (cond dependency-context
-                               (dependencies-candidates comp-env ns prefix prefix-tokens context)
+                               (dependencies-candidates comp-env ns
+                                                        prefix prefix-tokens context)
                                keyword? (keyword-candidates comp-env ns prefix-tokens
                                                             double-colon? scope-name)
-                               scope-name (concat
-                                           (scoped-candidates comp-env ns scope-name prefix-tokens)
-                                           (static-methods-candidates comp-env ns scope-name
-                                                                      prefix prefix-tokens)
-                                           (static-fields-candidates comp-env ns scope-name
-                                                                     prefix prefix-tokens))
-                               method-call? (method-candidates comp-env ns locals
-                                                               (:fn-param context)
-                                                               (:fn-param-meta context)
-                                                               prefix prefix-tokens)
+                               ;; No need to check for locals since a scoped symbol cannot
+                               ;; be a local
+                               (and scope-name (nil? comp-env))
+                               (concat
+                                (scoped-candidates comp-env ns
+                                                   scope-name prefix-tokens)
+                                (static-methods-candidates comp-env ns scope-name
+                                                           prefix-tokens)
+                                (static-fields-candidates comp-env ns scope-name
+                                                          prefix-tokens))
+                               (and scope-name (instance? CljsCompilerEnv comp-env))
+                               (cljs-scoped-candidates comp-env ns
+                                                       scope-name prefix prefix-tokens)
+                               (and method-call? (instance? CljsCompilerEnv comp-env))
+                               (cljs-field-candidates comp-env ns locals
+                                                      (:fn-param context)
+                                                      prefix true)
+                               (and method-call? (nil? comp-env))
+                               (method-candidates comp-env ns locals
+                                                  (:fn-param context)
+                                                  (:fn-param-meta context)
+                                                  prefix-tokens)
+                               (and field-call? (instance? CljsCompilerEnv comp-env))
+                               (cljs-field-candidates comp-env ns locals
+                                                      (:fn-param context)
+                                                      prefix false)
                                field-call? (field-candidates comp-env ns locals
                                                              (:fn-param context)
                                                              (:fn-param-meta context)
-                                                             prefix prefix-tokens)
+                                                             prefix-tokens)
+                               js-dot-access (js-dot-candidates comp-env ns js-dot-access)
                                :else
                                (concat
                                 (locals-candidates locals prefix-tokens)
@@ -784,10 +901,12 @@
                                 (special-forms-candidates comp-env ns fn-context-position
                                                           prefix-tokens)
                                 (literal-candidates prefix)))]
-          (->> candidates
-               distinct
-               (sort-by :candidate by-length-comparator)
-               (take max-candidates-number)))))))
+          (if (instance? ElispString candidates)
+            candidates
+            (->> candidates
+                 distinct
+                 (sort-by :candidate by-length-comparator)
+                 (take max-candidates-number))))))))
 
 ;; members -> cljs completion
 

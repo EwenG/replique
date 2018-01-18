@@ -4,6 +4,7 @@
             [goog.date :as date]
             [goog.Uri]
             [replique.omniscient-runtime]
+            [replique.cljs-env.completion]
             [goog.object :as o])
   (:require-macros [replique.interactive]))
 
