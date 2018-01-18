@@ -140,9 +140,11 @@
              (concat (list (ns-core-refers comp-env ns) imports))
              (into {})))))
   (ns-aliases [comp-env ns]
-    (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)]
-      (merge (:requires ns)
-             (:require-macros ns))))
+    (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)
+          aliases-candidates (merge (:requires ns)
+                                    (:require-macros ns))
+          imports (:imports ns)]
+      (apply dissoc aliases-candidates (keys imports))))
   (ns-imports [comp-env ns]
     (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)]
       (:imports ns)))
