@@ -87,12 +87,18 @@ Enter the following in the tooling REPL:
                                           :prefix "tooli"})
 ```
 => 
-```clojure
-{:repl-env :replique/clj
+
+```
+{:candidates ({:candidate "tooling-msg", :type :namespace, :match-index 5} 
+              {:candidate "tooling-repl", :type :function, :ns "replique.repl", :match-index 5} 
+              {:candidate "replique.tooling", :type :namespace, :match-index 14} 
+              {:candidate "shared-tooling-repl", :type :function, :ns "replique.repl", :match-index 12} 
+              {:candidate "replique.tooling-msg", :type :namespace, :match-index 14}), 
  :type :completion
- :process-id #uuid "79de3c8b-2d53-41fd-a089-73afc9efed22"
- :candidates ({:candidate "tooling-msg" :type :namespace} 
-              {:candidate "tooling-repl" :type :function :ns "replique.repl"})}
+ :repl-env :replique/clj
+ :context nil
+ :ns replique.repl
+ :prefix "tooli"}
 ```
 
 We are done, kill the process to exit.
