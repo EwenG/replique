@@ -47,8 +47,10 @@
   (->> (when-let [scope (if (= 0 (count munged-scope-name))
                           js/window
                           (try (js/eval munged-scope-name) (catch js/Error e nil)))]
+         ;; getAllPropertyNames may not be available on old google closure versions
+         ;; ~ before clojurescript 1.9.562
          (for [k (o/getAllPropertyNames scope true true)
-               :when (and (or include-methods? (not (fn? (unchecked-get scope k))))
+               :when (and (or include-methods? (not (fn? (elisp/custom-unchecked-get scope k))))
                           (not (gstring/isNumeric k)))
                :let [match-index (matches? k (tokenize-prefix munged-prefix))]
                :when match-index]
@@ -60,10 +62,12 @@
 
 (defn js-fields-candidates [munged-prefix munged-param methods?]
   (->> (when-let [scope (try (js/eval munged-param) (catch js/Error e nil))]
+         ;; getAllPropertyNames may not be available on old google closure versions
+         ;; ~ before clojurescript 1.9.562
          (for [k (o/getAllPropertyNames scope true true)
                :when (and (if methods?
-                            (fn? (unchecked-get scope k))
-                            (not (fn? (unchecked-get scope k))))
+                            (fn? (elisp/custom-unchecked-get scope k))
+                            (not (fn? (elisp/custom-unchecked-get scope k))))
                           (not (gstring/isNumeric k)))
                :let [match-index (matches? k (tokenize-prefix munged-prefix))]
                :when match-index]
