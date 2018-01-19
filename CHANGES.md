@@ -1,6 +1,6 @@
 # Version 0.0.9
 
-- Autocompletion refactoring - fuzzy matching, autocompletion for files and javascript interop 
+- Autocompletion refactoring - fuzzy matching, autocompletion for files and javascript interop calls
 - Improve the REPL startup sequence, interactive commands can now be used while the REPL is starting
 - Fix Replique startup under jdk9
 - Fix the compilation order of Clojurescript files (and their dependencies)
