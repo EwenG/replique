@@ -1,5 +1,7 @@
 # Version 0.0.9
 
+- Autocompletion refactoring
+- Fix Replique startup under jdk9
 - Fix the compilation order of Clojurescript files (and their dependencies)
 - Add metadata (line, column number, file name) to forms evaluated at the REPL from a clj/cljs buffer
 - Clojurescript constants can now be reloaded
