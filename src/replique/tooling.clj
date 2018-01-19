@@ -120,6 +120,13 @@
                                    :context nil})
   )
 
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :list-namespaces]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    {:namespaces (->> (all-ns)
+                      (map str)
+                      (sort completion/by-length-comparator))}))
+
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :list-namespaces]
   [msg]
   (tooling-msg/with-tooling-response msg
@@ -127,7 +134,8 @@
       {:namespaces '()}
       {:namespaces (->> (->CljsCompilerEnv @@cljs-compiler-env)
                         replique.environment/all-ns
-                        (map str))})))
+                        (map str)
+                        (sort completion/by-length-comparator))})))
 
 (defn output-main-js-file [output-to main-ns]
   (let [port (server/server-port)]
