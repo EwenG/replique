@@ -5,7 +5,8 @@
                             pr-str print-prefix-map print-map])
   (:require [clojure.string :as s]
             [goog.string :as gstring])
-  (:require-macros [replique.cljs-env.elisp-printer :refer [print-with-meta]])
+  (:require-macros [replique.cljs-env.elisp-printer :refer [print-with-meta custom-unchecked-get]]
+                   [replique.cljs :refer [with-version]])
   (:import [goog.string StringBuffer]))
 
 (defprotocol IWriter
@@ -79,7 +80,7 @@
     (let [c (.charAt s n)
           e (if (and (= 0 n) (= \~ c))
               "~~"
-              (unchecked-get char-escape-string c))]
+              (custom-unchecked-get char-escape-string c))]
       (if e (-write w e) (-append w c))))
   (-append w \")
   nil)
@@ -129,7 +130,7 @@
   (print-prefix-map
    (map (fn [k]
           [(cond-> k (some? (re-matches #"[A-Za-z_\*\+\?!\-'][\w\*\+\?!\-']*" k)) keyword)
-           (unchecked-get o k)])
+           (custom-unchecked-get o k)])
         (js-keys o))
    -pr-writer w)
   (-write w "]"))
@@ -268,11 +269,6 @@
     (print-with-meta
      o w
      (print-sequential "(" -pr-writer " " ")" o w)))
-  TransformerIterator
-  (-pr-writer [o w]
-    (print-with-meta
-     o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
   IndexedSeq
   (-pr-writer [o w]
     (print-with-meta
@@ -393,6 +389,16 @@
      (-write w "[\"~#object\" [cljs.core.Volatile ")
      (-pr-writer {:val (.-state o)} w)
      (-write w "]]"))))
+
+(with-version
+  [1 9 562]
+  [nil nil nil]
+  (extend-protocol IPrintWithWriter
+    TransformerIterator
+    (-pr-writer [o w]
+      (print-with-meta
+       o w
+       (print-sequential "(" -pr-writer " " ")" o w)))))
 
 (defn pr-seq [objs writer]
   (-pr-writer (first objs) writer)
