@@ -88,16 +88,16 @@ Enter the following in the tooling REPL:
 ```
 => 
 
-```
+```clojure
 {:candidates ({:candidate "tooling-msg", :type :namespace, :match-index 5} 
               {:candidate "tooling-repl", :type :function, :ns "replique.repl", :match-index 5} 
               {:candidate "replique.tooling", :type :namespace, :match-index 14} 
               {:candidate "shared-tooling-repl", :type :function, :ns "replique.repl", :match-index 12} 
-              {:candidate "replique.tooling-msg", :type :namespace, :match-index 14}), 
- :type :completion
- :repl-env :replique/clj
- :context nil
- :ns replique.repl
+              {:candidate "replique.tooling-msg", :type :namespace, :match-index 14}),
+ :type :completion,
+ :repl-env :replique/clj,
+ :context nil,
+ :ns replique.repl,
  :prefix "tooli"}
 ```
 
