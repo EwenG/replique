@@ -1,3 +1,5 @@
+# Version 0.0.10
+
 # Version 0.0.9
 
 - Autocompletion refactoring - fuzzy matching, autocompletion for files and javascript interop calls
