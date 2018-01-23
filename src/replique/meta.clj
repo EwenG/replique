@@ -26,9 +26,9 @@
     (format "zip:%s" url-str)
     :else url-str))
 
-(defn ns-file [comp-env the-ns]
+(defn ns-files [comp-env the-ns]
   (let [interns (env/ns-interns comp-env the-ns)]
-    (some (fn [[_ v]] (:file (env/meta comp-env v))) interns)))
+    (distinct (keep (fn [[_ v]] (:file (env/meta comp-env v))) interns))))
 
 (defn resource-str [^String f]
   (when f
@@ -47,30 +47,71 @@
   (when-let [f (resource-str sym-at-point)]
     {:file f}))
 
+(defn read-keyword [ns keyword-string]
+  (let [kw (try (read-string keyword-string) (catch Exception e nil))]
+    (when (keyword? kw)
+      (if (= keyword-string (str kw))
+        kw
+        (keyword (str (env/ns-name ns)) (name kw))))))
+
 (defn handle-meta [comp-env ns {:keys [in-comment? in-string? locals] :as context} ^String prefix]
   (let [ns (or (and ns (env/find-ns comp-env (symbol ns)))
                (env/find-ns comp-env (env/default-ns comp-env)))]
     (when (and prefix (not in-comment?))
       (if in-string?
         (handle-meta-str prefix)
-        (when (and (not (.startsWith prefix ":"))
-                   (not (contains? locals prefix)))
-          (let [prefix (.replaceFirst prefix "^#_" "")
-                prefix-sym (symbol prefix)
-                resolved (safe-ns-resolve comp-env ns prefix-sym)
-                resolved (when (and resolved (not (class? resolved))) resolved)
-                resolved-ns (when (nil? resolved) (env/find-ns comp-env prefix-sym))
-                ;; example: clojure.main$repl
-                resolved-munged (when (and (nil? resolved) (nil? resolved-ns))
-                                  (ns-resolve-munged comp-env ns prefix-sym))
-                m (-> (env/meta comp-env (or resolved resolved-ns resolved-munged))
-                      (assoc :ns (str ns)))]
-            (cond resolved (let [protocol (get m :protocol)
-                                 m (if protocol
-                                     (env/meta comp-env protocol)
-                                     m)]
-                             (update m :file resource-str))
-                  resolved-munged (update m :file resource-str)
-                  resolved-ns (->> (ns-file comp-env resolved-ns)
-                                   resource-str
-                                   (assoc m :file)))))))))
+        (let [prefix (.replaceFirst prefix "^#_" "")]
+          (cond (contains? locals prefix) (let [[point-start] (get locals prefix)]
+                                            {:local? true
+                                             :point-start point-start})
+                (.startsWith prefix ":")
+                (let [double-colon? (.startsWith prefix "::")
+                      prefix (.replaceFirst prefix "(^::?)" "")
+                      scope-split-index (.lastIndexOf prefix "/")
+                      scope-name (when (> scope-split-index -1) (subs prefix 0 scope-split-index))
+                      prefix (if (> scope-split-index -1)
+                               (subs prefix (inc scope-split-index))
+                               prefix)]
+                  (cond (and double-colon? scope-name)
+                        (let [scope (env/resolve-namespace comp-env (symbol scope-name) ns)]
+                          (when scope
+                            {:keyword? true
+                             :namespace (str scope)
+                             :name (str prefix)
+                             :files (->> (ns-files comp-env scope)
+                                         (map resource-str))}))
+                        double-colon?
+                        {:keyword? true
+                         :namespace (str (env/ns-name ns))
+                         :name (str prefix)
+                         :files (->> (ns-files comp-env ns)
+                                     (map resource-str))}
+                        scope-name
+                        (let [scope (env/resolve-namespace comp-env (symbol scope-name) ns)]
+                          (when scope
+                            {:keyword? true
+                             :namespace (str scope)
+                             :name (str prefix)
+                             :files (->> (ns-files comp-env scope)
+                                         (map resource-str))}))))
+                :else
+                (let [prefix-sym (symbol prefix)
+                      resolved (safe-ns-resolve comp-env ns prefix-sym)
+                      resolved (when (and resolved (not (class? resolved))) resolved)
+                      resolved-ns (when (nil? resolved) (env/find-ns comp-env prefix-sym))
+                      ;; example: clojure.main$repl
+                      resolved-munged (when (and (nil? resolved) (nil? resolved-ns))
+                                        (ns-resolve-munged comp-env ns prefix-sym))
+                      m (env/meta comp-env (or resolved resolved-ns resolved-munged))]
+                  (cond resolved (let [protocol (:protocol m)
+                                       m (if (and protocol (not (contains? m :file)))
+                                           (env/meta comp-env protocol)
+                                           m)]
+                                   (update m :file resource-str))
+                        resolved-munged (update m :file resource-str)
+                        resolved-ns (let [files (->> (ns-files comp-env resolved-ns)
+                                                     (map resource-str))]
+                                      (if (> (count files) 1)
+                                        (assoc m :files files)
+                                        (assoc m :file (first files))))))))))))
+
