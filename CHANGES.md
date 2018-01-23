@@ -1,5 +1,8 @@
 # Version 0.0.10
 
+- Metadata for namespaced keywords
+- Metadata for namespaces: now returns all the files of a namespace when its definition is split in multiple files 
+
 # Version 0.0.9
 
 - Autocompletion refactoring - fuzzy matching, autocompletion for files and javascript interop calls
