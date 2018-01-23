@@ -11,7 +11,7 @@
 (defonce tooling-prn prn)
 
 (defmacro with-tooling-response [msg & resp]
-  `(try (merge (~'do ~@resp) ~msg)
+  `(try (dissoc (merge (~'do ~@resp) ~msg) :context)
         (catch Exception t# (assoc ~msg :error t#))))
 
 (defmulti tooling-msg-handle (fn [{:keys [repl-env type]}] [repl-env type]))
