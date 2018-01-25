@@ -16,7 +16,7 @@
                       -repl-options read-source-map *cljs-verbose* *repl-opts*
                       default-special-fns -setup evaluate-form analyze-source err-out
                       -tear-down]])
-  (:import [java.io FileWriter PrintWriter Closeable]))
+  (:import [java.io File FileWriter PrintWriter Closeable]))
 
 ;;Patch cljs.closure/output-main-file in order to:
 ;; - Avoid the need to provide an :asset-path option. :asset-path is
@@ -780,14 +780,37 @@
           (assoc-in [:reload :require-macros] :reload))
       ns-infos)))
 
-;; patch cljs.util/changed? to only check for modified file when using :reload-all
+;; patch cljs.compiler/requires-compilation? to only check for modified file when using :reload-all
+;; or when the namespace of the file is not in the compiler environment yet
 
-(defonce changed?-o @#'cljs.util/changed?)
+(defn requires-compilation?
+  ([src dest]
+   (requires-compilation? src dest
+                          (when env/*compiler*
+                            (:options @env/*compiler*))))
+  ([^File src ^File dest opts]
+   (let [{:keys [ns requires]} (ana/parse-ns src)]
+     (if (and (= 'cljs.loader ns) (not (contains? opts :cache-key)))
+       false
+       (env/ensure
+        (or (not (.exists dest))
+            (and *reload-all* (util/changed? src dest))
+            (and (nil? (get-in @env/*compiler* [::ana/namespaces ns])) (util/changed? src dest))
+            (let [version' (util/compiled-by-version dest)
+                  version (util/clojurescript-version)]
+              (and version (not= version version')))
+            (and opts
+                 (not (and (io/resource "cljs/core.aot.js") (= 'cljs.core ns)))
+                 (not= (#'comp/build-affecting-options opts)
+                       (#'comp/build-affecting-options (util/build-options dest))))
+            (and opts (:source-map opts)
+                 (if (= (:optimizations opts) :none)
+                   (not (.exists (io/file (str (.getPath dest) ".map"))))
+                   (not (get-in @env/*compiler* [::compiled-cljs (.getAbsolutePath dest)]))))
+            (when-let [recompiled' (and comp/*recompiled* @cljs.compiler/*recompiled*)]
+              (some requires recompiled'))))))))
 
-(defn changed? [a b]
-  (if *reload-all* (changed?-o a b) false))
-
-(alter-var-root #'cljs.util/changed? (constantly changed?))
+(alter-var-root #'cljs.compiler/requires-compilation? (constantly requires-compilation?))
 
 ;; Custom constructor to be able to set :file :line and :column when evaluating
 ;; code from a source file at the REPL
