@@ -47,7 +47,7 @@
   (when-let [f (resource-str sym-at-point)]
     {:file f}))
 
-(defn read-keyword [ns keyword-string]
+#_(defn read-keyword [ns keyword-string]
   (let [kw (try (read-string keyword-string) (catch Exception e nil))]
     (when (keyword? kw)
       (if (= keyword-string (str kw))
@@ -64,8 +64,8 @@
           (cond (contains? locals prefix) (let [[point-start] (get locals prefix)]
                                             {:local? true
                                              :point-start point-start})
-                (.startsWith prefix ":")
-                (let [double-colon? (.startsWith prefix "::")
+                #_(.startsWith prefix ":")
+                #_(let [double-colon? (.startsWith prefix "::")
                       prefix (.replaceFirst prefix "(^::?)" "")
                       scope-split-index (.lastIndexOf prefix "/")
                       scope-name (when (> scope-split-index -1) (subs prefix 0 scope-split-index))
