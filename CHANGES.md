@@ -1,5 +1,7 @@
 # Version 0.0.10
 
+- Clojurescript dependencies are now checked for recompilation when analyzed for the first time
+- Performance improvement for the replique/reload-all command when used in a cljs context 
 - Metadata for namespaces: now returns all the files of a namespace when its definition is split in multiple files 
 
 # Version 0.0.9
