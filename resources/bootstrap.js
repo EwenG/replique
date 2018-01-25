@@ -21,20 +21,21 @@
     };
 
     var forceReload = function(src) {
-      // cljs.core is not compatible with reloading. For example, Atom does not extend IReset
-      // reset! check the type of the first argument instead. Reloading cljs.core would require
-      // to recreate all already instantiated atoms
-      if(!(src === "cljs.core")) {
+      var dependencies = [];
+      var visitedDependencies = {};
+      do {
         var path = goog.dependencies_.nameToPath[src];
-        objremove(goog.dependencies_.visited, path);
-        objremove(goog.dependencies_.written, path);
-        objremove(goog.dependencies_.written, goog.basePath + path);
-        if(goog.cljsReloadAll_) {
+        if(!(src === "cljs.core") && !visitedDependencies[src]) {
+          visitedDependencies[src] = true;
+          objremove(goog.dependencies_.visited, path);
+          objremove(goog.dependencies_.written, path);
+          objremove(goog.dependencies_.written, goog.basePath + path);
           for(src in goog.dependencies_.requires[path]) {
-            forceReload(src);
+            dependencies.push(src);
           }
         }
-      }
+        src = dependencies.pop();
+      } while(goog.cljsReloadAll_ && dependencies.length > 0);
     };
 
     goog.require__ = goog.require;
@@ -100,4 +101,3 @@
     }
   }
 })();
-
