@@ -503,12 +503,12 @@ replique.cljs_env.repl.connect(\"" url "\");
                                     {:status :error :value "Connection broken"})))
                           (catch InterruptedException e
                             (try (callback
-                                  {:status 500 :body "Connection closed"
+                                  {:status 409 :body "Connection closed"
                                    :content-type "text/plain"})
                                  (catch Exception e nil))))))]
     (try (.submit ^ExecutorService result-executor result-task)
          (catch RejectedExecutionException e
-           {:status 500 :body "Connection closed" :content-type "text/plain"}))))
+           {:status 409 :body "Connection closed" :content-type "text/plain"}))))
 
 (defmethod dispatch-request :print [{:keys [content]} callback]
   ;; Maybe we should print only in the currently active REPL instead of all REPLs

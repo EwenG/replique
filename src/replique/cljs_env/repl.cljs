@@ -104,12 +104,20 @@
                  (send-result
                   (eval-connection url) url (wrap-message :result result (:session @connection)))))
               false)
-    ;; Reconnection logic. Try to reconnect once per second
-    ;; We don't try to reconnect immediatly because otherwise, when reloading the page,
-    ;; the error listener is triggered, which generates an error on the server side
-    ;; (broken socket)
     (.listen conn goog.net.EventType/ERROR
-             (fn [] (js/setTimeout #(connect url) 1000))
+             (fn [e]
+               (if (= 409 (.getStatus conn))
+                 ;; Connection closed by the server.
+                 ;; Print a reconnection message but do not try to reconnect automatically in order
+                 ;; to avoid breaking the connection of an eventual other device trying to
+                 ;; connect the the cljs REPL
+                 (.log js/console (str
+                                   "Replique connection broken. To reconnect, call:\nreplique.cljs_env.repl.connect(" (pr-str url) ");"))
+                 ;; Reconnection logic. Try to reconnect once per second
+                 ;; We don't try to reconnect immediatly because otherwise, when reloading the page,
+                 ;; the error listener is triggered, which generates an error on the server side
+                 ;; (broken socket)
+                 (js/setTimeout #(connect url) 1000)))
              false)
     conn))
 
