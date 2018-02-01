@@ -198,7 +198,9 @@
 
 (defmethod print-method Character [^Character c, ^Writer w]
   (.write w "\"~c")
-  (.write w (str c))
+  (if-let [c-string (get char-name-string c)]
+    (.write w c-string)
+    (.write w (str c)))
   (.write w "\""))
 
 (defmethod print-method Class [^Class c, ^Writer w]
@@ -392,9 +394,11 @@
   (keys (methods print-method))
   (keys (methods clojure.core/print-method))
 
+  (with-out-str (pr #'clojure.core/prn))
+
   ;; core protocol CollReduce ReduceKV -- exclude Object
   ;; find-protocol-impl
-
+  
   ;; handle print-level/print-length
   )
 
