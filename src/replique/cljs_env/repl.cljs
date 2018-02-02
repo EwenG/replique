@@ -45,9 +45,13 @@
 
 (defn wrap-message
   ([t data]
-   (pr-str {:type t :content data}))
+   (binding [*print-length* nil
+             *print-level* nil]
+     (pr-str {:type t :content data})))
   ([t data session]
-   (pr-str {:type t :content data :session session})))
+   (binding [*print-length* nil
+             *print-level* nil]
+     (pr-str {:type t :content data :session session}))))
 
 (defn flush-print-queue! []
   (doseq [str print-queue]
