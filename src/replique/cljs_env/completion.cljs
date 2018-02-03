@@ -43,6 +43,11 @@
         (compare s1 s2)
         res))))
 
+(defn elisp-pr-str [x]
+  (binding [*print-level* nil
+            *print-length* nil]
+    (elisp/pr-str x)))
+
 (defn js-scoped-candidates [original-scope-name munged-scope-name munged-prefix include-methods?]
   (->> (when-let [scope (if (= 0 (count munged-scope-name))
                           js/window
@@ -58,7 +63,7 @@
             :match-index (+ (count original-scope-name) match-index)}))
        (sort-by :candidate by-length-comparator)
        (take max-candidates-number)
-       elisp/pr-str))
+       elisp-pr-str))
 
 (defn js-fields-candidates [munged-prefix munged-param methods?]
   (->> (when-let [scope (try (js/eval munged-param) (catch js/Error e nil))]
@@ -75,7 +80,7 @@
             :match-index (+ (if methods? 1 2) match-index)}))
        (sort-by :candidate by-length-comparator)
        (take max-candidates-number)
-       elisp/pr-str))
+       elisp-pr-str))
 
 (comment
   (matches? "forEach" (tokenize-prefix "for"))
