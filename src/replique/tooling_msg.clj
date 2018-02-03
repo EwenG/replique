@@ -34,7 +34,7 @@
                       :repl-env utils/*repl-env*
                       :thread (.getName ^Thread thread)
                       :ns (ns-name *ns*)
-                      :value (with-out-str (print-stack-trace ex))})))))
+                      :value ex})))))
 
 (defn tooling-available? []
   (boolean (and tooling-out tooling-err tooling-out-lock)))
