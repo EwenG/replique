@@ -1,7 +1,17 @@
+# Version 0.0.11
+
+- Tooling messages exception are now returned as data instead of strings
+
+- The cljs REPL no longer tries to automatically reconnect when the connection is closed by the cljs server because of a new connection coming in
+- Clojurescript dependencies are now checked for recompilation when analyzed for the first time
+- Performance improvement for the replique/reload-all command when used in a cljs context 
+- Metadata for namespaces: now returns all the files of a namespace when its definition is split in multiple files 
+
+
 # Version 0.0.10
 
 - Tooling messages exception are now returned as data instead of strings
-- Fix autocompletion of cljs scoped candidates
+
 - The cljs REPL no longer tries to automatically reconnect when the connection is closed by the cljs server because of a new connection coming in
 - Clojurescript dependencies are now checked for recompilation when analyzed for the first time
 - Performance improvement for the replique/reload-all command when used in a cljs context 
