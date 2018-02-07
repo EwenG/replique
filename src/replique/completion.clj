@@ -186,20 +186,29 @@
        (sort-by :candidate by-length-comparator)
        (take max-candidates-number)))
 
-(defn all-ns-candidates* [all-ns-data prefix-tokens]
-  (->> (for [ns-str all-ns-data
-             :let [match-index (matches? ns-str prefix-tokens)]
-             :when match-index]
-         {:candidate ns-str :type :namespace :match-index match-index})
-       (take max-candidates-number)))
+(defn all-ns-candidates*
+  ([all-ns-data prefix-tokens]
+   (all-ns-candidates* all-ns-data prefix-tokens false))
+  ([all-ns-data prefix-tokens munge?]
+   (->> (for [ns-str all-ns-data
+              :let [match-index (matches? ns-str prefix-tokens)]
+              :when match-index]
+          (if munge?
+            {:candidate (munge ns-str) :type :class :match-index match-index}
+            {:candidate ns-str :type :namespace :match-index match-index}))
+        (take max-candidates-number))))
 
 ;; We assume that the number of namespaces only grows, this is often true, but not always (when
 ;; remove-ns is used)
-(defn all-ns-candidates [comp-env prefix-tokens]
-  (let [all-ns* (env/all-ns comp-env)]
-    (when (not= (count (get-all-ns-data comp-env)) (count all-ns*))
-      (compute-all-ns-data comp-env all-ns*))
-    (all-ns-candidates* (get-all-ns-data comp-env) prefix-tokens)))
+(defn all-ns-candidates
+  ([comp-env prefix-tokens]
+   (all-ns-candidates comp-env prefix-tokens false))
+  ([comp-env prefix-tokens munge?]
+   (when-not (and (instance? CljsCompilerEnv comp-env) munge?)
+     (let [all-ns* (env/all-ns comp-env)]
+       (when (not= (count (get-all-ns-data comp-env)) (count all-ns*))
+         (compute-all-ns-data comp-env all-ns*))
+       (all-ns-candidates* (get-all-ns-data comp-env) prefix-tokens munge?)))))
 
 (defn classpath-namespaces-candidates [comp-env namespaces-on-classpath prefix-tokens]
   (->> (for [ns-str (get namespaces-on-classpath (env/file-extension comp-env))
@@ -312,20 +321,18 @@
 (defn package-unmunge [package]
   (.replace (str package) \_ \-))
 
-(defn generated-classes [comp-env ns package]
-  (when-let [the-ns (env/find-ns comp-env (-> package package-unmunge symbol))]
-    (for [[sym var] (env/ns-map comp-env the-ns)
-          :when (if (instance? CljsCompilerEnv comp-env)
-                  (:type var)
-                  (class? var))]
+(defn generated-classes [ns package]
+  (when-let [the-ns (find-ns (-> package package-unmunge symbol))]
+    (for [[sym var] (ns-imports the-ns)
+          :when (and (class? var) (.startsWith (.getName ^Class var) package))]
       (str package "." sym))))
 
 (defn simple-class-with-package [comp-env ns package prefix]
   (->> (for [^String class-str (concat
                                 (if (instance? CljsCompilerEnv comp-env)
                                   (provides-from-js-dependency-index comp-env)
-                                  (:classes-on-classpath @classpath-data))
-                                (generated-classes comp-env ns package))
+                                  (concat (:classes-on-classpath @classpath-data)
+                                          (generated-classes ns package))))
              :when (.startsWith class-str (str package "." prefix))
              :let [dot-last-index (.lastIndexOf class-str ".")]
              :when (< dot-last-index (count class-str))]
@@ -407,7 +414,7 @@
         (= position :package-or-class)
         (concat (classpath-classes-for-import comp-env prefix-tokens)
                 (dependency-index-candidates comp-env prefix-tokens)
-                (all-ns-candidates comp-env prefix-tokens))
+                (all-ns-candidates comp-env prefix-tokens true))
         (= position :class)
         ;; package can be a namespace for deftype / defrecord generated classes
         (simple-class-with-package comp-env ns (:package dependency-context) prefix)
@@ -451,7 +458,7 @@
                                   (subs prefix 0 split-index)
                                   (= scope-name "js")
                                   ""
-                                  :else (env/ns-name scope))
+                                  :else (str (env/ns-name scope)))
               js-prefix (if (> split-index -1)
                           (subs prefix (inc split-index))
                           prefix)
@@ -537,14 +544,6 @@
                   {:candidate (str ":" kw)
                    :type :keyword
                    :match-index (+ 1 match-index)}))))
-
-;; We assume that the number of namespaces only grows, this is often true, but not always (when
-;; remove-ns is used)
-(defn all-ns-candidates [comp-env prefix-tokens]
-  (let [all-ns* (env/all-ns comp-env)]
-    (when (not= (count (get-all-ns-data comp-env)) (count all-ns*))
-      (compute-all-ns-data comp-env all-ns*))
-    (all-ns-candidates* (get-all-ns-data comp-env) prefix-tokens)))
 
 (defn static-methods-candidates [comp-env ns scope-name prefix-tokens]
   (when (nil? comp-env)
