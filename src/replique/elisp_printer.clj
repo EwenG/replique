@@ -7,15 +7,41 @@
 (defn escape-symbol [symbol-str]
   (.replaceAll symbol-str "(?=[\\\\?\\[\\]\\(\\)\\{\\}\\+\\-#;\\.])"  "\\\\"))
 
-(defn- print-sequential [^String begin, print-one, ^String sep, ^String end, sequence, ^Writer w]
-  (.write w begin)
-  (when-let [xs (seq sequence)]
-    (loop [[x & xs] xs]
-      (print-one x w)
-      (when xs
-        (.write w sep)
-        (recur xs))))
-  (.write w end))
+(defn print-more-level [w]
+  (.write w "\"~+level\""))
+
+(defn print-more-length-one [w]
+  (.write w "\"~+length\""))
+
+(defn print-more-length-map [w]
+  (print-more-length-one w)
+  (.write w " ")
+  (print-more-length-one w))
+
+(defn- print-sequential [^String begin, print-one, ^String sep, ^String end, sequence, ^Writer w
+                         print-more-length]
+  (binding [*print-level* (when (number? *print-level*) (dec *print-level*))]
+    (if (and (number? *print-level*) (neg? *print-level*))
+      (print-more-level w)
+      (do
+        (.write w begin)
+        (when-let [xs (seq sequence)]
+          (if (number? *print-length*)
+            (loop [[x & xs] xs
+                   print-length *print-length*]
+              (if (zero? print-length)
+                (print-more-length w)
+                (do
+                  (print-one x w)
+                  (when xs
+                    (.write w sep)
+                    (recur xs (dec print-length))))))
+            (loop [[x & xs] xs]
+              (print-one x w)
+              (when xs
+                (.write w sep)
+                (recur xs)))))
+        (.write w end)))))
 
 (declare pr-on)
 (declare pr)
@@ -112,7 +138,7 @@
    (.write w "\"")))
 
 (defmethod print-method clojure.lang.ISeq [o, ^Writer w]
-  (print-sequential "(" pr-on " " ")" o w))
+  (print-sequential "(" pr-on " " ")" o w print-more-length-one))
 
 (prefer-method print-method clojure.lang.ISeq clojure.lang.IPersistentCollection)
 (prefer-method print-method clojure.lang.ISeq java.util.Collection)
@@ -131,7 +157,7 @@
 (defmethod print-method clojure.lang.IPersistentVector [v, ^Writer w]
   (print-with-meta
    v w
-   (print-sequential "[" pr-on " " "]" v w)))
+   (print-sequential "[" pr-on " " "]" v w print-more-length-one)))
 
 (defn- print-prefix-map [m print-one w]
   (print-sequential
@@ -140,7 +166,8 @@
      (do (print-one (key e) w) (.append w \space) (print-one (val e) w)))
    " "
    "))"
-   (seq m) w))
+   (seq m) w
+   print-more-length-map))
 
 (defn- print-map [m print-one w]
   (print-prefix-map m print-one w))
@@ -158,12 +185,12 @@
 (defmethod print-method java.util.List [c, ^Writer w]
   (print-with-meta
    c w
-   (print-sequential "(" pr-on " " ")" c w)))
+   (print-sequential "(" pr-on " " ")" c w print-more-length-one)))
 
 (defmethod print-method java.util.RandomAccess [v, ^Writer w]
   (print-with-meta
    v w
-   (print-sequential "[" pr-on " " "]" v w)))
+   (print-sequential "[" pr-on " " "]" v w print-more-length-one)))
 
 (defmethod print-method java.util.Map [m, ^Writer w]
   (print-with-meta
@@ -174,7 +201,7 @@
   (print-with-meta
    s w
    (.write w "[\"~#set\" ")
-   (print-sequential "[" pr-on " " "]" (seq s) w)
+   (print-sequential "[" pr-on " " "]" (seq s) w print-more-length-one)
    (.write w "]")))
 
 (defmethod print-method clojure.lang.IRecord [r, ^Writer w]
@@ -193,7 +220,7 @@
   (print-with-meta
    s w
    (.write w "[\"~#set\" ")
-   (print-sequential "[" pr-on " " "]" (seq s) w)
+   (print-sequential "[" pr-on " " "]" (seq s) w print-more-length-one)
    (.write w "]")))
 
 (defmethod print-method Character [^Character c, ^Writer w]
@@ -351,13 +378,13 @@
   (print-date d w))
 
 (defmethod print-method Eduction [c, ^Writer w]
-  (print-sequential "(" pr-on " " ")" c w))
+  (print-sequential "(" pr-on " " ")" c w print-more-length-one))
 
 (defn- print-timestamp
   "Print a java.sql.Timestamp as RFC3339 timestamp, always in UTC."
   [^java.sql.Timestamp ts, ^java.io.Writer w]
   (let [^java.text.DateFormat utc-format (.get @#'clojure.instant/thread-local-utc-timestamp-format)]
-    (.write w "\"#i")
+    (.write w "\"~i")
     (.write w (.format utc-format ts))
     ;; add on nanos and offset
     ;; RFC3339 says to use -00:00 when the timezone is unknown (+00:00 implies a known GMT)
@@ -391,15 +418,21 @@
 
 
 (comment
+  (with-out-str (pr #'clojure.core/prn))
+
+  (with-out-str (pr (tagged-literal 'e 44)))
+
+  (with-out-str (binding [*print-level* 1]
+                  (pr 
+                   {:e [{:f "f"}]})))
+  )
+
+(comment
   (keys (methods print-method))
   (keys (methods clojure.core/print-method))
 
-  (with-out-str (pr #'clojure.core/prn))
-
   ;; core protocol CollReduce ReduceKV -- exclude Object
   ;; find-protocol-impl
-  
-  ;; handle print-level/print-length
   )
 
 ;; zero copy (for things serialized from cljs)

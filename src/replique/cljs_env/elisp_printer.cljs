@@ -21,15 +21,41 @@
 (defn escape-symbol [symbol-str]
   (s/replace symbol-str #"(?=[\\?\[\]\(\)\{\}\+\-#;\.])" "\\"))
 
-(defn- print-sequential [^String begin print-one ^String sep ^String end sequence w]
-  (-write w begin)
-  (when-let [xs (seq sequence)]
-    (loop [[x & xs] xs]
-      (print-one x w)
-      (when xs
-        (-write w sep)
-        (recur xs))))
-  (-write w end))
+(defn print-more-level [w]
+  (-write w "\"~+level\""))
+
+(defn print-more-length-one [w]
+  (-write w "\"~+length\""))
+
+(defn print-more-length-map [w]
+  (print-more-length-one w)
+  (-write w " ")
+  (print-more-length-one w))
+
+(defn- print-sequential [^String begin print-one ^String sep ^String end sequence w
+                         print-more-length]
+  (binding [*print-level* (when (number? *print-level*) (dec *print-level*))]
+    (if (and (number? *print-level*) (neg? *print-level*))
+      (print-more-level w)
+      (do
+        (-write w begin)
+        (when-let [xs (seq sequence)]
+          (if (number? *print-length*)
+            (loop [[x & xs] xs
+                   print-length *print-length*]
+              (if (zero? print-length)
+                (print-more-length w)
+                (do
+                  (print-one x w)
+                  (when xs
+                    (-write w sep)
+                    (recur xs (dec print-length))))))
+            (loop [[x & xs] xs]
+              (print-one x w)
+              (when xs
+                (-write w sep)
+                (recur xs)))))
+        (-write w end)))))
 
 (defprotocol IPrintWithWriter
   (-pr-writer [o writer]))
@@ -120,7 +146,8 @@
      (do (print-one (key e) w) (-append w \space) (print-one (val e) w)))
    " "
    "))"
-   (seq m) w))
+   (seq m) w
+   print-more-length-map))
 
 (defn- print-map [m print-one w]
   (print-prefix-map m print-one w))
@@ -138,7 +165,7 @@
 (defn print-js-array [o w]
   (cljs.core/prn o)
   (-write w "[\"~#js\" ")
-  (print-sequential "[" -pr-writer " " "]" o w)
+  (print-sequential "[" -pr-writer " " "]" o w print-more-length-one)
   (-write w "]"))
 
 (defn print-regexp [o w]
@@ -196,14 +223,14 @@
   (print-with-meta
    o w
    (-write w "[\"~#queue\" ")
-   (print-sequential "[" -pr-writer " " "]" o w)
+   (print-sequential "[" -pr-writer " " "]" o w print-more-length-one)
    (-write w "]")))
 
 (defn print-set [o w]
   (print-with-meta
    o w
    (-write w "[\"~#set\" ")
-   (print-sequential "[" -pr-writer " " "]" o w)
+   (print-sequential "[" -pr-writer " " "]" o w print-more-length-one)
    (-write w "]")))
 
 (defn print-record [o w]
@@ -251,13 +278,13 @@
   List
   (-pr-writer [o w] (print-with-meta
                      o w
-                     (print-sequential "(" -pr-writer " " ")" o w)))
+                     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   Var
   (-pr-writer [o w] (print-with-meta
                      o w
                      (print-var o w)))
   Eduction
-  (-pr-writer [o w] (print-sequential "(" -pr-writer " " ")" o w))
+  (-pr-writer [o w] (print-sequential "(" -pr-writer " " ")" o w print-more-length-one))
   UUID
   (-pr-writer [o w] (print-uuid o w))
   ExceptionInfo
@@ -268,93 +295,93 @@
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
+     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   IndexedSeq
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
+     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   RSeq
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
+     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   PersistentQueue
   (-pr-writer [o w] (print-queue o w))
   PersistentQueueSeq
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
+     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   PersistentTreeMapSeq
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
+     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   NodeSeq
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
+     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   ArrayNodeSeq
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
+     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   Cons
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
+     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   EmptyList
   (-pr-writer [o w] (-write w "()"))
   PersistentVector
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "[" -pr-writer " " "]" o w)))
+     (print-sequential "[" -pr-writer " " "]" o w print-more-length-one)))
   ChunkedCons
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
+     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   ChunkedSeq
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
+     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   Subvec
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "[" -pr-writer " " "]" o w)))
+     (print-sequential "[" -pr-writer " " "]" o w print-more-length-one)))
   BlackNode
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "[" -pr-writer " " "]" o w)))
+     (print-sequential "[" -pr-writer " " "]" o w print-more-length-one)))
   RedNode
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "[" -pr-writer " " "]" o w)))
+     (print-sequential "[" -pr-writer " " "]" o w print-more-length-one)))
   ObjMap
   (-pr-writer [o w] (print-with-meta o w (print-map o -pr-writer w)))
   KeySeq
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
+     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   ValSeq
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
+     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   PersistentArrayMapSeq
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
+     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   PersistentArrayMap
   (-pr-writer [o w] (print-with-meta o w (print-map o -pr-writer w)))
   PersistentHashMap
@@ -369,12 +396,12 @@
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
+     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   ES6IteratorSeq
   (-pr-writer [o w]
     (print-with-meta
      o w
-     (print-sequential "(" -pr-writer " " ")" o w)))
+     (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))
   Atom
   (-pr-writer [o w]
     (print-with-meta
@@ -398,7 +425,7 @@
     (-pr-writer [o w]
       (print-with-meta
        o w
-       (print-sequential "(" -pr-writer " " ")" o w)))))
+       (print-sequential "(" -pr-writer " " ")" o w print-more-length-one)))))
 
 (defn pr-seq [objs writer]
   (-pr-writer (first objs) writer)
