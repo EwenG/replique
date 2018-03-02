@@ -58,7 +58,7 @@
     (let [scope-split-index (.lastIndexOf fn-context "/")
           scope-name (when (> scope-split-index -1) (subs fn-context 0 scope-split-index))
           suffix (when (> scope-split-index -1) (subs fn-context (inc scope-split-index)))]
-      (when (and scope-name suffix)
+      (when (and (> (count scope-name) 0) (> (count suffix) 0))
         (when-let [^Class class (context/resolve-class ns (symbol scope-name))]
           (let [methods (for [^Method method (.getMethods class)
                               :when (and (= suffix (.getName method))
