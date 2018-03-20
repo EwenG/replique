@@ -9,6 +9,8 @@
 
 (function() {
   var loadQueue = null;
+  // hook to wait for cljs files to be loaded
+  goog.replique_loading__ = false;
 
   if(!COMPILED) {
       
@@ -56,6 +58,10 @@
           loaded = !loaded;
           if(loadQueue.length === 0) {
             loadQueue = null;
+            if(goog.replique_after_load_hook__) {
+              goog.replique_loading__ = false;
+              goog.replique_after_load_hook__.call(null);
+            }
             return null;
           } else {
             return goog.writeScriptTag__.apply(null, loadQueue.shift());
@@ -78,6 +84,7 @@
       if(loadQueue) {
         return loadQueue.push([src, opt_sourceText]);
       } else {
+        goog.replique_loading__ = true;
         loadQueue = [];
         return goog.writeScriptTag__(src, opt_sourceText);
       }

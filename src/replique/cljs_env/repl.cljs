@@ -6,6 +6,7 @@
   Remove the use of goog.event because it is not compatible with reloading (reload-all)."
   (:require
    [goog.array :as garray]
+   [goog.object :as o]
    [goog.userAgent.product :as product]
    [goog.net.EventType])
   (:import [goog.net XhrIo CorsXmlHttpFactory]))
@@ -98,15 +99,30 @@
     (pr-str result)))
 
 (declare connect)
+(declare eval-connection)
+
+(defn process-pending-eval []
+  (let [{:keys [pending-eval]} @connection]
+    (when pending-eval
+      (swap! connection dissoc :pending-eval)
+      (let [result (evaluate-javascript pending-eval)
+            {:keys [url session]} @connection]
+        (send-result
+         (eval-connection url) url (wrap-message :result result session))))))
+
+(o/set js/goog "replique_after_load_hook__" process-pending-eval)
 
 (defn eval-connection [url]
   (let [conn (xhr-connection)]
     (.listen conn goog.net.EventType/SUCCESS
              (fn [e]
-               (let [js (.getResponseText (.-currentTarget e))
-                     result (evaluate-javascript js)]
-                 (send-result
-                  (eval-connection url) url (wrap-message :result result (:session @connection)))))
+               (let [js (.getResponseText (.-currentTarget e))]
+                 (swap! connection assoc :pending-eval js)
+                 ;; Wait for all file to be loaded
+                 ;; This seems necessary on some browsers even if the async attribute of <script>
+                 ;; has been set to false
+                 (when-not (o/get js/goog "replique_loading__")
+                   (process-pending-eval))))
               false)
     (.listen conn goog.net.EventType/ERROR
              (fn [e]
