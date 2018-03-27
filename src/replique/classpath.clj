@@ -41,3 +41,8 @@
 (defn update-classpath [classpath]
   (add-classpath (root-dynamic-classloader) (paths->urls (classpath->paths classpath))))
 
+(def system-module-resources
+  (try
+    (require 'replique.classpath-jdk9+)
+    @(resolve 'replique.classpath-jdk9+/system-module-resources)
+    (catch Exception e nil)))
