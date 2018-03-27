@@ -120,8 +120,183 @@
 ;; Also put the :cljs/quit "magic keyword" handling logic out of repl*
 
 (with-version
-  [1 9 854]
+  [1 10 238]
   [nil nil nil]
+  (defn repl*
+    [repl-env {:keys [init inits need-prompt quit-prompt prompt flush read eval print caught reader
+                      print-no-newline source-map-inline wrap repl-requires
+                      compiler-env bind-err]
+               :or {need-prompt #(if (readers/indexing-reader? *in*)
+                                   (== (readers/get-column-number *in*) 1)
+                                   (identity true))
+                    quit-prompt repl-quit-prompt
+                    prompt repl-prompt
+                    flush flush
+                    read repl-read
+                    eval #'cljs.repl/eval-cljs
+                    print println
+                    caught repl-caught
+                    reader #(readers/source-logging-push-back-reader
+                             *in*
+                             1 "NO_SOURCE_FILE")
+                    print-no-newline print
+                    source-map-inline true
+                    repl-requires '[[cljs.repl :refer-macros [source doc find-doc apropos dir pst]]
+                                    [cljs.pprint :refer [pprint] :refer-macros [pp]]]
+                    bind-err true}
+               :as opts}]
+    (doseq [[unknown-opt suggested-opt] (util/unknown-opts (set (keys opts)) (set/union known-repl-opts cljsc/known-opts))]
+      (when suggested-opt
+        (println (str "WARNING: Unknown option '" unknown-opt "'. Did you mean '" suggested-opt "'?"))))
+    (let [repl-opts (-repl-options repl-env)
+          repl-requires (into repl-requires (:repl-requires repl-opts))
+          {:keys [analyze-path repl-verbose warn-on-undeclared special-fns
+                  checked-arrays static-fns fn-invoke-direct]
+           :as opts
+           :or   {warn-on-undeclared true}}
+          (merge
+           {:def-emits-var true}
+           (cljsc/add-implicit-options
+            (merge-with (fn [a b] (if (nil? b) a b))
+                        repl-opts
+                        opts
+                        {:prompt prompt
+                         :need-prompt need-prompt
+                         :flush flush
+                         :read read
+                         :print print
+                         :caught caught
+                         :reader reader
+                         :print-no-newline print-no-newline
+                         :source-map-inline source-map-inline})))
+          done? (atom false)]
+      (env/with-compiler-env (or compiler-env (env/default-compiler-env opts))
+        (when (:source-map opts)
+          (.start (Thread. (bound-fn [] (read-source-map "cljs/core.aot.js")))))
+        (binding [cljs.repl/*repl-env* repl-env
+                  ana/*unchecked-if* false
+                  ana/*unchecked-arrays* false
+                  *err* (if bind-err
+                          (cond-> *out*
+                            (not (instance? PrintWriter *out*)) (PrintWriter.))
+                          *err*)
+                  ana/*cljs-ns* ana/*cljs-ns*
+                  *cljs-verbose* repl-verbose
+                  ana/*cljs-warnings*
+                  (let [warnings (opts :warnings)]
+                    (merge
+                     ana/*cljs-warnings*
+                     (if (or (true? warnings)
+                             (false? warnings))
+                       (zipmap (keys ana/*cljs-warnings*) (repeat warnings))
+                       warnings)
+                     (zipmap
+                      [:unprovided :undeclared-var
+                       :undeclared-ns :undeclared-ns-form]
+                      (repeat (if (false? warnings)
+                                false
+                                warn-on-undeclared)))
+                     {:infer-warning false}))
+                  ana/*checked-arrays* checked-arrays
+                  ana/*cljs-static-fns* static-fns
+                  ana/*fn-invoke-direct* (and static-fns fn-invoke-direct)
+                  *repl-opts* opts]
+          (try
+            (let [env {:context :expr :locals {}}
+                  special-fns (merge default-special-fns special-fns)
+                  is-special-fn? (set (keys special-fns))
+                  request-prompt (Object.)
+                  request-exit (Object.)
+                  opts (comp/with-core-cljs opts
+                         (fn []
+                           (if-let [merge-opts (:merge-opts (-setup repl-env opts))]
+                             (merge opts merge-opts)
+                             opts)))
+                  init (do
+                         ;; ??? executing this as a side effect of binding init ???
+                         #_(evaluate-form repl-env env "<cljs repl>"
+                                          `(~'set! ~'cljs.core/*print-namespace-maps* true)
+                                          identity opts)
+                         (or init
+                             #(evaluate-form repl-env env "<cljs repl>"
+                                             (with-meta
+                                               `(~'ns ~'cljs.user
+                                                 (:require ~@repl-requires))
+                                               {:line 1 :column 1})
+                                             identity opts)))
+                  read-eval-print
+                  (fn []
+                    (let [input (binding [*ns* (create-ns ana/*cljs-ns*)
+                                          reader/resolve-symbol ana/resolve-symbol
+                                          reader/*data-readers* tags/*cljs-data-readers*
+                                          reader/*alias-map*
+                                          (apply merge
+                                                 ((juxt :requires :require-macros)
+                                                  (ana/get-namespace ana/*cljs-ns*)))]
+                                  (read request-prompt request-exit))]
+                      (or ({request-exit request-exit
+                            #_:cljs/quit #_request-exit
+                            request-prompt request-prompt} input)
+                          (if (and (seq? input) (is-special-fn? (first input)))
+                            (do
+                              ((get special-fns (first input)) repl-env env input opts)
+                              (print nil))
+                            (let [value (eval repl-env env input opts)]
+                              (print value))))))]
+              (cljs.repl/maybe-install-npm-deps opts)
+              (comp/with-core-cljs opts
+                (fn []
+                  (binding [*repl-opts* opts]
+                    (try
+                      (when analyze-path
+                        (if (vector? analyze-path)
+                          (run! #(analyze-source % opts) analyze-path)
+                          (analyze-source analyze-path opts)))
+                      (init)
+                      (cljs.repl/run-inits repl-env inits)
+                      (catch Throwable e
+                        (caught e repl-env opts)))
+                    (when-let [src (:watch opts)]
+                      (.start
+                       (Thread.
+                        ((ns-resolve 'clojure.core 'binding-conveyor-fn)
+                         (fn []
+                           (let [log-file (io/file (util/output-directory opts) "watch.log")]
+                             (err-out (println "Watch compilation log available at:" (str log-file)))
+                             (try
+                               (let [log-out (FileWriter. log-file)]
+                                 (binding [*err* log-out
+                                           *out* log-out]
+                                   (cljsc/watch src (dissoc opts :watch)
+                                                env/*compiler* done?)))
+                               (catch Throwable e
+                                 (caught e repl-env opts)))))))))
+                    ;; let any setup async messages flush
+                    (Thread/sleep 50)
+                    (binding [*in* (if (true? (:source-map-inline opts))
+                                     *in*
+                                     (reader))]
+                      (quit-prompt)
+                      (prompt)
+                      (flush)
+                      (loop []
+                        (when-not
+                            (try
+                              (identical? (read-eval-print) request-exit)
+                              (catch Throwable e
+                                (caught e repl-env opts)
+                                nil))
+                          (when (need-prompt)
+                            (prompt)
+                            (flush))
+                          (recur))))))))
+            (finally
+              (reset! done? true)
+              (-tear-down repl-env))))))))
+
+(with-version
+  [1 9 854]
+  [1 9 946]
   (defn repl*
     [repl-env {:keys [init need-prompt quit-prompt prompt flush read eval print caught reader
                       print-no-newline source-map-inline wrap repl-requires
@@ -783,15 +958,16 @@
 ;; patch cljs.compiler/requires-compilation? to only check for modified file when using :reload-all
 ;; or when the namespace of the file is not in the compiler environment yet
 
-(defn requires-compilation?
-  ([src dest]
-   (requires-compilation? src dest
-                          (when env/*compiler*
-                            (:options @env/*compiler*))))
-  ([^File src ^File dest opts]
-   (let [{:keys [ns requires]} (ana/parse-ns src)]
-     (if (and (= 'cljs.loader ns) (not (contains? opts :cache-key)))
-       false
+(with-version
+  [1 10 238]
+  [nil nil nil]
+  (defn requires-compilation?
+    ([src dest]
+     (requires-compilation? src dest
+                            (when env/*compiler*
+                              (:options @env/*compiler*))))
+    ([^File src ^File dest opts]
+     (let [{:keys [ns requires]} (ana/parse-ns src)]
        (env/ensure
         (or (not (.exists dest))
             (and *reload-all* (util/changed? src dest))
@@ -801,14 +977,44 @@
               (and version (not= version version')))
             (and opts
                  (not (and (io/resource "cljs/core.aot.js") (= 'cljs.core ns)))
-                 (not= (#'comp/build-affecting-options opts)
-                       (#'comp/build-affecting-options (util/build-options dest))))
+                 (not= (ana/build-affecting-options opts)
+                       (ana/build-affecting-options (util/build-options dest))))
             (and opts (:source-map opts)
                  (if (= (:optimizations opts) :none)
                    (not (.exists (io/file (str (.getPath dest) ".map"))))
                    (not (get-in @env/*compiler* [::compiled-cljs (.getAbsolutePath dest)]))))
             (when-let [recompiled' (and comp/*recompiled* @cljs.compiler/*recompiled*)]
               (some requires recompiled'))))))))
+
+(with-version
+  [0 0 0]
+  [1 9 946]
+  (defn requires-compilation?
+    ([src dest]
+     (requires-compilation? src dest
+                            (when env/*compiler*
+                              (:options @env/*compiler*))))
+    ([^File src ^File dest opts]
+     (let [{:keys [ns requires]} (ana/parse-ns src)]
+       (if (and (= 'cljs.loader ns) (not (contains? opts :cache-key)))
+         false
+         (env/ensure
+          (or (not (.exists dest))
+              (and *reload-all* (util/changed? src dest))
+              (and (nil? (get-in @env/*compiler* [::ana/namespaces ns])) (util/changed? src dest))
+              (let [version' (util/compiled-by-version dest)
+                    version (util/clojurescript-version)]
+                (and version (not= version version')))
+              (and opts
+                   (not (and (io/resource "cljs/core.aot.js") (= 'cljs.core ns)))
+                   (not= (#'comp/build-affecting-options opts)
+                         (#'comp/build-affecting-options (util/build-options dest))))
+              (and opts (:source-map opts)
+                   (if (= (:optimizations opts) :none)
+                     (not (.exists (io/file (str (.getPath dest) ".map"))))
+                     (not (get-in @env/*compiler* [::compiled-cljs (.getAbsolutePath dest)]))))
+              (when-let [recompiled' (and comp/*recompiled* @cljs.compiler/*recompiled*)]
+                (some requires recompiled')))))))))
 
 (alter-var-root #'cljs.compiler/requires-compilation? (constantly requires-compilation?))
 
