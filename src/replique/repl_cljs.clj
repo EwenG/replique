@@ -49,6 +49,18 @@
 (defonce cljs-core-bindings #{#'*assert* #'*print-length* #'*print-meta* #'*print-level*
                               #'*flush-on-newline* #'*print-readably* #'*print-dup*})
 
+;; Used to send runtime REPL params to the Replique client (*print-length*, *print-level* ...)
+;; Also used to reset set! these values when the js runtime reconnects to the REPL
+;; Unlike with the Clojure REPL these values are thus global to all cljs REPLs !
+;; repl-params are initialized to the same value than the ones of the Clojure process
+(defonce repl-params (atom {"cljs.core/*assert*" *assert*
+                            "cljs.core/*print-length*" *print-length*
+                            "cljs.core/*print-meta*" *print-meta*
+                            "cljs.core/*print-level*" *print-level*
+                            "cljs.core/*flush-on-newline*" *flush-on-newline*
+                            "cljs.core/*print-readably*" *print-readably*
+                            "cljs.core/*print-dup*" *print-dup*}))
+
 (def env {:context :expr :locals {}})
 
 (defn dispatcher [{:keys [method path content]} callback]
@@ -157,8 +169,8 @@ replique.cljs_env.repl.connect(\"" url "\");
 
 (defn init-core-bindings []
   `(do
-     ~@(for [v cljs-core-bindings]
-         `(~'set! ~(symbol "cljs.core" (-> v meta :name str)) ~(deref v)))))
+     ~@(for [[k v] @repl-params]
+         `(~'set! ~(symbol k) ~v))))
 
 (defn compile-dependency? [source ns-info]
   (not= (:ns source) (:ns ns-info)))
@@ -318,6 +330,7 @@ replique.cljs_env.repl.connect(\"" url "\");
                                       (.cancel eval-future false))
                                     (.get eval-future)))
                                 (.get eval-future))]
+                   (reset! repl-params (:params result))
                    (handle-stacktrace repl-env result))
                  (catch RejectedExecutionException e
                    {:status :error
@@ -575,6 +588,9 @@ replique.cljs_env.repl.connect(\"" url "\");
 
 (defmethod utils/repl-type :replique/cljs [repl-env]
   :cljs)
+
+(defmethod utils/repl-params :replique/cljs [repl-env]
+  (select-keys @repl-params ["cljs.core/*print-length*" "cljs.core/*print-level*"]))
 
 ;; Customized REPL to allow exiting the REPL with :cljs/quit
 ;; Also always reset the reader even is :source-map-inline is false in order to set the metadata on

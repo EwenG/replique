@@ -75,7 +75,14 @@
 (defn evaluate-javascript
   "Process a single block of JavaScript received from the server"
   [block]
-  (let [result
+  (let [repl-params {"cljs.core/*assert*" *assert*
+                     "cljs.core/*print-length*" *print-length*
+                     "cljs.core/*print-meta*" *print-meta*
+                     "cljs.core/*print-level*" *print-level*
+                     "cljs.core/*flush-on-newline*" *flush-on-newline*
+                     "cljs.core/*print-readably*" *print-readably*
+                     "cljs.core/*print-dup*" *print-dup*}
+        result
         (try
           (let [eval-result (js* "eval(~{block})")]
             (if (instance? js/Error eval-result)
@@ -85,9 +92,11 @@
                :stacktrace
                (if (.hasOwnProperty eval-result "stack")
                  (.-stack eval-result)
-                 "No stacktrace available.")}
+                 "No stacktrace available.")
+               :params repl-params}
               {:status :success
-               :value (str eval-result)}))
+               :value (str eval-result)
+               :params repl-params}))
           (catch :default e
             {:status :exception
              :ua-product (get-ua-product)
@@ -95,8 +104,11 @@
              :stacktrace
              (if (.hasOwnProperty e "stack")
                (.-stack e)
-               "No stacktrace available.")}))]
-    (pr-str result)))
+               "No stacktrace available.")
+             :params repl-params}))]
+    (binding [*print-level* nil
+              *print-length* nil]
+      (pr-str result))))
 
 (declare connect)
 (declare eval-connection)

@@ -23,6 +23,7 @@
 
 (defmulti repl-type identity)
 (defmulti repl-ns identity)
+(defmulti repl-params identity)
 
 ;; Same as Delay but don't realize the Delay on exception.
 ;; This would not be possible with clojure Delay because it makes its function ^:once because

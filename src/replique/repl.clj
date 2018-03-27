@@ -32,19 +32,21 @@
 
 (defn print-repl-meta []
   (when (and (tooling-msg/tooling-available?) server/*session*)
-    (binding [*out* tooling-msg/tooling-out
-              *print-length* nil
-              *print-level* nil
-              *print-meta* nil]
-      (utils/with-lock tooling-msg/tooling-out-lock
-        (tooling-msg/tooling-prn {:type :repl-meta
-                                  :process-id tooling-msg/process-id
-                                  :session server/*session*
-                                  ;; use dynamic vars for repl-type and repl-env in order to
-                                  ;; come back to the right repl-type when leaving a repl
-                                  :repl-type (utils/repl-type utils/*repl-env*)
-                                  :repl-env utils/*repl-env*
-                                  :ns (utils/repl-ns utils/*repl-env*)})))))
+    (let [params (utils/repl-params utils/*repl-env*)]
+      (binding [*out* tooling-msg/tooling-out
+                *print-length* nil
+                *print-level* nil
+                *print-meta* nil]
+        (utils/with-lock tooling-msg/tooling-out-lock
+          (tooling-msg/tooling-prn {:type :repl-meta
+                                    :process-id tooling-msg/process-id
+                                    :session server/*session*
+                                    ;; use dynamic vars for repl-type and repl-env in order to
+                                    ;; come back to the right repl-type when leaving a repl
+                                    :repl-type (utils/repl-type utils/*repl-env*)
+                                    :repl-env utils/*repl-env*
+                                    :ns (utils/repl-ns utils/*repl-env*)
+                                    :params params}))))))
 
 (defn start-repl-process [project-map {:keys [process-id host port cljs-compile-path version]}]
   (try
@@ -127,6 +129,11 @@
 
 (defmethod utils/repl-ns :replique/clj [repl-env]
   (ns-name *ns*))
+
+(defmethod utils/repl-params :replique/clj [repl-env]
+  {"clojure.core/*print-level*" *print-level*
+   "clojure.core/*print-length*" *print-length*
+   "clojure.core/*warn-on-reflection*" *warn-on-reflection*})
 
 (defn set-source-meta! []
   (let [char (.read *in*)
