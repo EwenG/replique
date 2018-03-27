@@ -14,7 +14,8 @@
   `(try (dissoc (merge (~'do ~@resp) ~msg) :context)
         (catch Exception t# (assoc ~msg :error t#))))
 
-(defmulti tooling-msg-handle (fn [{:keys [repl-env type]}] [repl-env type]))
+(defn tooling-msg-handle-dispatch-fn [{:keys [repl-env type]}] [repl-env type])
+(defmulti tooling-msg-handle tooling-msg-handle-dispatch-fn)
 
 (defmethod tooling-msg-handle :default
   [{:keys [process-id repl-env type] :as msg}]
