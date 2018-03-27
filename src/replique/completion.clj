@@ -58,6 +58,7 @@
 
 (defn class-file? [^String path-str]
   (and (.endsWith path-str ".class")
+       (not (= path-str "module-info.class"))
        (not (.contains path-str "__"))
        (not (.contains path-str "$"))))
 
@@ -139,11 +140,18 @@
   (let [path-str (.getName ^java.util.jar.JarEntry jar-entry)]
     (handle-classpath-file* path-str)))
 
+(defn handle-system-module-resources [r]
+  (when (class-file? r)
+    (let [class-name (class-file->class-name r)]
+      (set! *classes-on-classpath* (conj! *classes-on-classpath* class-name)))))
+
 (defn compute-classpath-data []
   (binding [*classes-on-classpath* (transient [])
             *file-resources* (transient [])
             *namespaces-on-classpath* (java.util.HashMap.)]
     (files/visit-files (classpath/paths) handle-classpath-file handle-classpath-jar)
+    (doseq [r classpath/system-module-resources]
+      (handle-system-module-resources r))
     (let [cljc-namespaces (.remove *namespaces-on-classpath* "cljc")
           cljc-namespaces (when cljc-namespaces (persistent! cljc-namespaces))]
       (doseq [k (keys *namespaces-on-classpath*)]
@@ -906,7 +914,5 @@
                  distinct
                  (sort-by :candidate by-length-comparator)
                  (take max-candidates-number))))))))
-
-;; members -> cljs completion
 
 ;; Not all classes are enumerable (deftypes, defrecord generated classes)
