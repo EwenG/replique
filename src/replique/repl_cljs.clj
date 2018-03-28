@@ -425,7 +425,8 @@ replique.cljs_env.repl.connect(\"" url "\");
                    :output-dir utils/cljs-compile-path
                    :optimizations :none
                    :recompile-dependents false
-                   :cache-analysis true
+                   ;; We want the analysis data to be cleared on process restart
+                   :cache-analysis false
                    ;; Do not automatically install node deps. This must be done explicitly instead
                    :install-deps false}
         repl-opts (cljs.repl/-repl-options repl-env)

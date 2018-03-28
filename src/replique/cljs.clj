@@ -118,6 +118,7 @@
 ;; (*print-namespace-maps* is set whatever the value of the init parameter). A clojurescript
 ;; patch would not be accepted because cljs devs think this is fine ...
 ;; Also put the :cljs/quit "magic keyword" handling logic out of repl*
+;; Also set :cache-analysis to false
 
 (with-version
   [1 10 238]
@@ -155,7 +156,7 @@
            :as opts
            :or   {warn-on-undeclared true}}
           (merge
-           {:def-emits-var true}
+           {:cache-analysis false :def-emits-var true}
            (cljsc/add-implicit-options
             (merge-with (fn [a b] (if (nil? b) a b))
                         repl-opts
@@ -330,7 +331,7 @@
            :as opts
            :or   {warn-on-undeclared true}}
           (merge
-           {:cache-analysis true :source-map true :def-emits-var true}
+           {:cache-analysis false :source-map true :def-emits-var true}
            (cljsc/add-implicit-options
             (merge-with (fn [a b] (if (nil? b) a b))
                         repl-opts
@@ -510,7 +511,7 @@
            :as opts
            :or   {warn-on-undeclared true}}
           (merge
-           {:cache-analysis true :source-map true :def-emits-var true}
+           {:cache-analysis false :source-map true :def-emits-var true}
            (cljsc/add-implicit-options
             (merge-with (fn [a b] (if (nil? b) a b))
                         repl-opts
@@ -688,7 +689,7 @@
          {:keys [analyze-path repl-verbose warn-on-undeclared special-fns static-fns] :as opts
           :or   {warn-on-undeclared true}}
          (merge
-          {:cache-analysis true :source-map true :def-emits-var true}
+          {:cache-analysis false :source-map true :def-emits-var true}
           (cljsc/add-implicit-options
            (merge-with (fn [a b] (if (nil? b) a b))
                        repl-opts
