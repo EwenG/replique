@@ -65,6 +65,14 @@
     (.push print-queue (pr-str data)))
   (flush-print-queue!))
 
+(defn send-print-tooling [s]
+  (let [conn (xhr-connection)]
+    (.send conn
+           (:url @connection)
+           "POST"
+           (wrap-message :print-tooling s (:session @connection))
+           nil)))
+
 (defn get-ua-product []
   (cond
     product/SAFARI :safari

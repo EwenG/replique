@@ -1,5 +1,6 @@
 # Version 0.0.11
 
+- Tooling support to visualize watchable data
 - Support for Clojurescript 1.10.238
 - Autocompletion of system classes for jdk9+
 - Fix auto completion in import contexts

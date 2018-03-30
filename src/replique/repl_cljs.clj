@@ -76,6 +76,8 @@
         :result
         (and (= :post method) (= :print (:type content)))
         :print
+        (and (= :post method) (= :print-tooling (:type content)))
+        :print-tooling
         (and (= :get method))
         :assets))
 
@@ -319,8 +321,10 @@ replique.cljs_env.repl.connect(\"" url "\");
                        eval-future (.submit ^ExecutorService eval-executor
                                             ^Callable eval-task)
                        result (if timeout-before-submitted
-                                ;; Timeout before the task gets submitted, useful to implement
-                                ;; timeout on things like autocompletion requests
+                                ;; Timeout before the task gets submitted, useful to implement a
+                                ;; timeout on evaluations initiated by a tooling msg
+                                ;; (autocompletion, watch ...) in order to avoid blocking the
+                                ;; thread when the js runtime is not available
                                 (try
                                   (.get eval-future timeout-before-submitted TimeUnit/MILLISECONDS)
                                   (catch TimeoutException e
@@ -530,6 +534,12 @@ replique.cljs_env.repl.connect(\"" url "\");
     (binding [*out* out]
       (print (:content content))
       (.flush *out*)))
+  {:status 200 :body "ignore__" :content-type "text/plain"})
+
+(defmethod dispatch-request :print-tooling [{:keys [content]} callback]
+  (binding [*out* tooling-msg/tooling-out]
+    (utils/with-lock tooling-msg/tooling-out-lock
+      (.append *out* ^String (:content content))))
   {:status 200 :body "ignore__" :content-type "text/plain"})
 
 (defn call-post-eval-hooks [repl-env prev-comp-env comp-env]

@@ -11,7 +11,8 @@
             [replique.environment :as env :refer [->CljsCompilerEnv]]
             [replique.context :as context]
             [replique.completion :as completion]
-            [replique.source-meta]))
+            [replique.source-meta]
+            [replique.watch]))
 
 (def ^:private cljs-compiler-env
   (utils/dynaload 'replique.repl-cljs/compiler-env))
