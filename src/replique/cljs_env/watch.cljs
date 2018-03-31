@@ -48,22 +48,24 @@
     (remove-watch watchable (keyword "replique.watch" (str buffer-id)))
     (swap! watched-refs dissoc buffer-id)))
 
-(defn update-replique-watch [process-id var-sym buffer-id]
+(defn update-replique-watch [process-id var-sym buffer-id print-length print-level]
   (let [watchable (get @watched-refs buffer-id)]
     (if (some? watchable)
       (let [watchable-value (maybe-deref watchable)]
         (swap! watched-refs-values assoc buffer-id watchable-value)
-        watchable-value)
+        (binding [*print-length* print-length
+                  *print-level* print-level]
+          (pr-str watchable-value)))
       (let [watchable (maybe-nested-iref var-sym)]
         (if watchable
           (do
             (add-replique-watch process-id var-sym buffer-id)
-            (recur process-id var-sym buffer-id))
+            (recur process-id var-sym buffer-id print-length print-level))
           (throw (js/Error. :replique-watch/undefined)))))))
 
 (comment
-  (def tt (atom 33))
-  (reset! tt 5)
+  (def tt (atom [1 "e"]))
+  (reset! tt '{:e "e" f [1 2 3 (ffff "e") 5]})
 
   (remove-watch tt (keyword "replique.watch" "1"))
   (.-watches tt)

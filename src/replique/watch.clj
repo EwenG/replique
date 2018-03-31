@@ -63,12 +63,14 @@
       nil)))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :update-watch]
-  [{:keys [buffer-id] :as msg}]
+  [{:keys [buffer-id print-length print-level] :as msg}]
   (tooling-msg/with-tooling-response msg
     (let [ref (get @watched-refs buffer-id)
           ref-value @ref]
       (swap! watched-refs-values assoc buffer-id ref-value)
-      {:var-value (pr-str ref-value)})))
+      {:var-value (binding [*print-length* print-length
+                            *print-level* print-level]
+                    (pr-str ref-value))})))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :add-watch]
   [{:keys [process-id var-sym buffer-id] :as msg}]
@@ -97,13 +99,15 @@
         {}))))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :update-watch]
-  [{:keys [process-id var-sym buffer-id] :as msg}]
+  [{:keys [process-id var-sym buffer-id print-length print-level] :as msg}]
   (tooling-msg/with-tooling-response msg
     (let [{:keys [status value stacktrace] :as ret}
           (@cljs-evaluate-form
            @@cljs-repl-env
-           (format "replique.cljs_env.watch.update_replique_watch(%s, %s, %s);"
-                   (pr-str process-id) (pr-str (@cljs-munged var-sym)) (pr-str buffer-id))
+           (format "replique.cljs_env.watch.update_replique_watch(%s, %s, %s, %s, %s);"
+                   (pr-str process-id) (pr-str (@cljs-munged var-sym)) (pr-str buffer-id)
+                   (if (nil? print-length) "null" (pr-str print-length))
+                   (if (nil? print-level) "null" (pr-str print-level)))
            :timeout-before-submitted 100)]
       (if-not (= status :success)
         {:error (or stacktrace value)
