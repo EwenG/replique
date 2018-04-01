@@ -34,6 +34,8 @@
                                            'clojure.core/defrecord
                                            'cljs.core/deftype
                                            'cljs.core/defrecord]
+                            :defmethod-like ['clojure.core/defmethod
+                                             'cljs.core/defmethod]
                             :for-like ['clojure.core/for
                                        'cljs.core/for
                                        'clojure.core/doseq
