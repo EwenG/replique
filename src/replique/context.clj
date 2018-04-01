@@ -28,12 +28,12 @@
                                       'cljs.core/fn
                                       'clojure.core/defmacro
                                       'cljs.core/defmacro
-                                      'clojure.core/deftype
-                                      'clojure.core/defrecord
-                                      'cljs.core/deftype
-                                      'cljs.core/defrecord
                                       'clojure.core/defmethod
                                       'cljs.core/defmethod]
+                            :deftype-like ['clojure.core/deftype
+                                           'clojure.core/defrecord
+                                           'cljs.core/deftype
+                                           'cljs.core/defrecord]
                             :for-like ['clojure.core/for
                                        'cljs.core/for
                                        'clojure.core/doseq
