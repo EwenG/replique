@@ -46,14 +46,17 @@
   (remove-watch (maybe-nested-iref #'replique.repl-cljs/compiler-env) ::2)
   )
 
+(defn add-replique-watch [var-sym buffer-id]
+  (let [var (resolve var-sym)
+        ref (maybe-nested-iref var)]
+    (add-watch ref (keyword "replique.watch" (str buffer-id)) (ref-watcher buffer-id))
+    (swap! watched-refs assoc buffer-id ref)
+    {}))
+
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :add-watch]
   [{:keys [var-sym buffer-id] :as msg}]
   (tooling-msg/with-tooling-response msg
-    (let [var (resolve var-sym)
-          ref (maybe-nested-iref var)]
-      (add-watch ref (keyword "replique.watch" (str buffer-id)) (ref-watcher buffer-id))
-      (swap! watched-refs assoc buffer-id ref)
-      {})))
+    (add-replique-watch var-sym buffer-id)))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :remove-watch]
   [{:keys [buffer-id] :as msg}]
@@ -90,17 +93,30 @@
 (defn parse-browse-path [browse-path]
   (into '() (map read-string) browse-path))
 
+(defn refresh-watch [{:keys [buffer-id update? var-sym print-length print-level browse-path]
+                      :as msg}]
+  (let [ref (get @watched-refs buffer-id)]
+    (if (some? ref)
+      (let [browse-path (parse-browse-path browse-path)]
+        (when update?
+          (swap! watched-refs-values assoc buffer-id @ref))
+        (let [ref-value (get @watched-refs-values buffer-id)]
+          {:var-value (binding [*print-length* print-length
+                                *print-level* print-level]
+                        (pr-str (browse-get-in ref-value browse-path)))}))
+      (let [var (resolve var-sym)
+            ref (maybe-nested-iref var)]
+        (if ref
+          (do
+            (add-replique-watch var-sym buffer-id)
+            (recur msg))
+          {:error (IllegalStateException. (str var-sym " is not defined"))
+           :undefined true})))))
+
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :refresh-watch]
-  [{:keys [buffer-id update? print-length print-level browse-path] :as msg}]
+  [msg]
   (tooling-msg/with-tooling-response msg
-    (let [ref (get @watched-refs buffer-id)
-          browse-path (parse-browse-path browse-path)]
-      (when update?
-        (swap! watched-refs-values assoc buffer-id @ref))
-      (let [ref-value (get @watched-refs-values buffer-id)]
-        {:var-value (binding [*print-length* print-length
-                              *print-level* print-level]
-                      (pr-str (browse-get-in ref-value browse-path)))}))))
+    (refresh-watch msg)))
 
 (declare serializable?)
 
@@ -118,36 +134,48 @@
         (or (coll? x) (instance? Collection x)) (every? serializable? x)
         :else false))
 
+(defn browse-candidates [{:keys [buffer-id var-sym prefix browse-path] :as msg}]
+  (let [ref (get @watched-refs buffer-id)]
+    (if (some? ref)
+      (let [browse-path (parse-browse-path browse-path)
+            ref-value (browse-get-in @ref browse-path)
+            prefix-tokens (completion/tokenize-prefix (str prefix))]
+        ;; Only return candidates that can be read by the clojure/clojurescript reader.
+        ;; This allows keeping the browse path on the client side and thus makes serveral things
+        ;; easier to implement, like handling a browser refresh for example
+        {:candidates
+         (cond (or (map? ref-value) (instance? Map ref-value))
+               (doall
+                (for [k (keys ref-value)
+                      :when (and (completion/matches? (str k) prefix-tokens)
+                                 (serializable? k))]
+                  (binding [*print-length* nil
+                            *print-level* nil
+                            *print-meta* nil]
+                    (pr-str k))))
+               (or (coll? ref-value) (instance? Collection ref-value)
+                   (and (class ref-value) (.isArray (class ref-value))))
+               (doall
+                (for [i (range (count ref-value))
+                      :when (completion/matches? (str i) prefix-tokens)]
+                  (binding [*print-length* nil
+                            *print-level* nil
+                            *print-meta* nil]
+                    (pr-str i))))
+               :else nil)})
+      (let [var (resolve var-sym)
+            ref (maybe-nested-iref var)]
+        (if ref
+          (do
+            (add-replique-watch var-sym buffer-id)
+            (recur msg))
+          {:error (IllegalStateException. (str var-sym " is not defined"))
+           :undefined true})))))
+
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :browse-candidates]
   [{:keys [buffer-id prefix browse-path] :as msg}]
   (tooling-msg/with-tooling-response msg
-    (let [ref (get @watched-refs buffer-id)
-          browse-path (parse-browse-path browse-path)
-          ref-value (browse-get-in @ref browse-path)
-          prefix-tokens (completion/tokenize-prefix (str prefix))]
-      ;; Only return candidates that can be read by the clojure/clojurescript reader.
-      ;; This allows keeping the browse path on the client side and thus makes serveral things
-      ;; easier to implement, like handling a browser refresh for example
-      {:candidates
-       (cond (or (map? ref-value) (instance? Map ref-value))
-             (doall
-              (for [k (keys ref-value)
-                    :when (and (completion/matches? (str k) prefix-tokens)
-                               (serializable? k))]
-                (binding [*print-length* nil
-                          *print-level* nil
-                          *print-meta* nil]
-                  (pr-str k))))
-             (or (coll? ref-value) (instance? Collection ref-value)
-                 (and (class ref-value) (.isArray (class ref-value))))
-             (doall
-              (for [i (range (count ref-value))
-                    :when (completion/matches? (str i) prefix-tokens)]
-                (binding [*print-length* nil
-                          *print-level* nil
-                          *print-meta* nil]
-                  (pr-str i))))
-             :else nil)})))
+    (browse-candidates msg)))
 
 (comment
   (.isArray (class (int-array 2)))
