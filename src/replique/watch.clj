@@ -68,8 +68,7 @@
 (defn browse-get [o k]
   (cond (or (instance? ILookup o) (instance? Map o))
         (get o k)
-        (and (or (coll? o) (instance? Collection o))
-             (seqable? o))
+        (and (or (coll? o) (instance? Collection  o)))
         (nth (seq o) k)
         :else nil))
 
@@ -110,7 +109,7 @@
 
 (defn serializable? [x]
   (cond (nil? x) true
-        (boolean? x) true
+        (instance? Boolean x) true
         (number? x) true
         (string? x) true
         (symbol? x) true
@@ -171,7 +170,7 @@
        (.add 3)) [3])
 
   (coll? #{"e"})
-  (seqable? "ee")
+  
   )
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :add-watch]
