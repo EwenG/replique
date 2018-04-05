@@ -84,14 +84,19 @@
   (or (find-ns comp-env sym) (get (ns-aliases comp-env ns) sym)))
 
 (defn cljs-ns-map-resolve*
-  [comp-env [sym ns]]
-  (let [ns (get-in @(get-wrapped comp-env) [:cljs.analyzer/namespaces ns])]
-    [sym (or (get-in ns [:defs sym]) (get-in ns [:macros sym]))]))
+  [comp-env [sym ns-or-qualified-sym]]
+  (let [ns (if (namespace ns-or-qualified-sym)
+             (symbol (namespace ns-or-qualified-sym))
+             ns-or-qualified-sym)
+        ns (get-in @(get-wrapped comp-env) [:cljs.analyzer/namespaces ns])
+        var-sym (when (namespace ns-or-qualified-sym) (symbol (name ns-or-qualified-sym)))]
+    [sym (or (get-in ns [:defs (or var-sym sym)]) (get-in ns [:macros (or var-sym sym)]))]))
 
 (defn cljs-ns-map-resolve
-  "Symbols retrieved from a namespace :uses, :use-macros, :renames or :rename-macros entries 
-  refer to the namespace the symbol is imported from. They must be further resolved to get the 
-  var analysis map"
+  "Symbols retrieved from a namespace :uses or :use-macros entry refer to the namespace the symbol
+  is imported from. Symbols retrieved from a namespace :renames or :rename-macros entry refer
+  to the fully qualified symbol of the renamed mapping.
+  They must be further resolved to get the var analysis map."
   [comp-env ns-map]
   (->> (map (partial cljs-ns-map-resolve* comp-env) ns-map)
        (into {})))
