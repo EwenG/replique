@@ -114,6 +114,14 @@
 
       (update :imports dissoc sym)))
 
+(defn- ns-aliases-reducer [comp-env m sym ns-sym]
+  ;; :requires and :require-macros contain mapping from namespace symbols to themselves 
+  (if (= sym ns-sym)
+    m
+    (if-let [resolved-ns (find-ns comp-env ns-sym)]
+      (assoc! m sym resolved-ns)
+      m)))
+
 (extend-protocol NamespaceEnv
   CljsCompilerEnv
   (all-ns [comp-env]
@@ -146,10 +154,11 @@
              (into {})))))
   (ns-aliases [comp-env ns]
     (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)
-          aliases-candidates (merge (:requires ns)
-                                    (:require-macros ns))
-          imports (:imports ns)]
-      (apply dissoc aliases-candidates (keys imports))))
+          aliases-candidates (merge (:requires ns) (:require-macros ns))
+          aliases-candidates (->> (:imports ns) keys (apply dissoc aliases-candidates))]
+      (->> aliases-candidates
+           (reduce-kv (partial ns-aliases-reducer comp-env) (transient {}))
+           persistent!)))
   (ns-imports [comp-env ns]
     (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)]
       (:imports ns)))
