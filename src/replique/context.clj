@@ -27,9 +27,7 @@
                                       'clojure.core/fn
                                       'cljs.core/fn
                                       'clojure.core/defmacro
-                                      'cljs.core/defmacro
-                                      'clojure.core/defmethod
-                                      'cljs.core/defmethod]
+                                      'cljs.core/defmacro]
                             :deftype-like ['clojure.core/deftype
                                            'clojure.core/defrecord
                                            'cljs.core/deftype
