@@ -1,115 +1,6 @@
 (ns replique.context
-  (:require [replique.environment :as env :refer [->CljsCompilerEnv]]
-            [replique.utils :as utils])
-  (:import [java.lang.reflect Modifier Method]
-           [clojure.lang Keyword]))
-
-(def binding-context->vars {:let-like ['clojure.core/let
-                                       'cljs.core/let
-                                       'clojure.core/if-let
-                                       'cljs.core/if-let
-                                       'clojure.core/when-let
-                                       'cljs.core/when-let
-                                       'clojure.core/if-some
-                                       'cljs.core/if-some
-                                       'clojure.core/when-some
-                                       'cljs.core/when-some
-                                       'clojure.core/loop
-                                       'cljs.core/loop
-                                       'clojure.core/with-open
-                                       'clojure.core/dotimes
-                                       'cljs.core/dotimes
-                                       'clojure.core/with-local-vars]
-                            :fn-like ['clojure.core/defn
-                                      'cljs.core/defn
-                                      'clojure.core/defn-
-                                      'cljs.core/defn-
-                                      'clojure.core/fn
-                                      'cljs.core/fn
-                                      'clojure.core/defmacro
-                                      'cljs.core/defmacro]
-                            :deftype-like ['clojure.core/deftype
-                                           'clojure.core/defrecord
-                                           'cljs.core/deftype
-                                           'cljs.core/defrecord]
-                            :defmethod-like ['clojure.core/defmethod
-                                             'cljs.core/defmethod]
-                            :for-like ['clojure.core/for
-                                       'cljs.core/for
-                                       'clojure.core/doseq
-                                       'cljs.core/doseq]
-                            :letfn-like ['clojure.core/letfn
-                                         'cljs.core/letfn]})
-
-(def ns-context->vars {:ns-like ['clojure.core/ns]})
-
-(def dependency-context->vars {:require-like ['clojure.core/require
-                                              'cljs.core/require]
-                               :use-like ['clojure.core/use
-                                          'cljs.core/use]
-                               :require-macros-like ['cljs.core/require-macros]
-                               :import-like ['clojure.core/import
-                                             'cljs.core/import]
-                               :refer-like ['clojure.core/refer]
-                               :refer-clojure-like ['clojure.core/refer-clojure
-                                                    'cljs.core/refer-clojure]
-                               :load-like ['clojure.core/load]})
-
-(defn categories->vars-namespaces-reducer [namespaces category vars]
-  (reduce #(conj %1 (-> %2 namespace)) namespaces vars))
-
-(def categories-namespaces (reduce-kv categories->vars-namespaces-reducer
-                                      #{} (merge binding-context->vars
-                                                 ns-context->vars
-                                                 dependency-context->vars)))
-
-(defn reverse-aliases-reducer [reversed-aliases alias-sym ns]
-  (let [ns-str (str (env/ns-name ns))]
-    (if (contains? categories-namespaces ns-str)
-      (assoc reversed-aliases ns-str alias-sym)
-      reversed-aliases)))
-
-(defn sym->category-reducer [comp-env category aliases the-ns sym->category v]
-  (let [v-name (name v)
-        v-sym (symbol v-name)
-        v-ns-str (namespace v)
-        resolved (env/ns-resolve comp-env the-ns v-sym)
-        referred? (-> (env/meta comp-env resolved) :ns str (= v-ns-str))
-        fully-resolved? (env/ns-resolve comp-env the-ns v)
-        alias-sym (get aliases v-ns-str)]
-    (cond-> sym->category
-      referred? (assoc v-name category)
-      fully-resolved? (assoc (str v) category)
-      alias-sym (assoc (str alias-sym "/" v-name) category))))
-
-(defn compute-categories->syms [comp-env ns aliases category->vars]
-  (loop [categories (keys category->vars)
-         sym->category {}]
-    (if-let [category (first categories)]
-      (let [sym->category (reduce (partial sym->category-reducer comp-env
-                                           category aliases ns)
-                                  sym->category (get category->vars category))]
-        (recur (rest categories) sym->category))
-      sym->category)))
-
-;; We assume (:require :rename) is not used
-(defn compute-context->categories->syms [comp-env repl-env ns]
-  (let [ns (symbol ns)
-        the-ns (env/find-ns comp-env ns)]
-    (when the-ns
-      (let [aliases (reduce-kv reverse-aliases-reducer {} (env/ns-aliases comp-env the-ns))
-            binding-syms (compute-categories->syms comp-env ns aliases binding-context->vars)
-            ns-syms (compute-categories->syms comp-env ns aliases ns-context->vars)
-            dependency-syms (compute-categories->syms
-                             comp-env ns aliases dependency-context->vars)]
-        {:binding-context binding-syms
-         :dependency-context dependency-syms
-         :ns-context ns-syms
-         :repl-type (utils/repl-type repl-env)}))))
-
-(defn compute-context->categories->syms-cljs [comp-env repl-env ns]
-  (let [result (compute-context->categories->syms comp-env repl-env ns)]
-    (assoc-in result [:ns-context "ns"] :ns-like)))
+  (:require [replique.utils :as utils])
+  (:import [clojure.lang Keyword]))
 
 (defn try-get-object-class [comp-env ns object-str]
   (let [object-str (try (read-string object-str)
@@ -143,3 +34,153 @@
           (when-let [tag (get meta :tag)]
             (when-let [^Class class (resolve-class ns tag)]
               class)))))
+
+(def context-forms-clj {'clojure.core/let [:binding-context :let-like]
+                        'clojure.core/if-let [:binding-context :let-like]
+                        'clojure.core/when-let [:binding-context :let-like]
+                        'clojure.core/if-some [:binding-context :let-like]
+                        'clojure.core/when-some [:binding-context :let-like]
+                        'clojure.core/loop [:binding-context :let-like]
+                        'clojure.core/with-open [:binding-context :let-like]
+                        'clojure.core/dotimes [:binding-context :let-like]
+                        'clojure.core/with-local-vars [:binding-context :let-like]
+                        
+                        'clojure.core/defn [:binding-context :fn-like]
+                        'clojure.core/defn- [:binding-context :fn-like]
+                        'clojure.core/fn [:binding-context :fn-like]
+                        'clojure.core/defmacro [:binding-context :fn-like]
+
+                        'clojure.core/deftype [:binding-context :deftype-like]
+                        'clojure.core/defrecord [:binding-context :deftype-like]
+
+                        'clojure.core/defmethod [:binding-context :defmethod-like]
+
+                        'clojure.core/for [:binding-context :for-like]
+                        'clojure.core/doseq [:binding-context :for-like]
+
+                        'clojure.core/letfn [:binding-context :letfn-like]
+
+                        'clojure.core/require [:dependency-context :require-like]
+
+                        'clojure.core/use [:dependency-context :use-like]
+
+                        'clojure.core/import [:dependency-context :import-like]
+
+                        'clojure.core/refer [:dependency-context :refer-like]
+
+                        'clojure.core/refer-clojure [:dependency-context :refer-clojure-like]
+
+                        'clojure.core/load [:dependency-context :load-like]})
+
+(def context-forms-cljs {'cljs.core/let [:binding-context :let-like]
+                         'cljs.core/if-let [:binding-context :let-like]
+                         'cljs.core/when-let [:binding-context :let-like]
+                         'cljs.core/if-some [:binding-context :let-like]
+                         'cljs.core/when-some [:binding-context :let-like]
+                         'cljs.core/loop [:binding-context :let-like]
+                         'cljs.core/dotimes [:binding-context :let-like]
+
+                         'cljs.core/defn [:binding-context :fn-like]
+                         'cljs.core/defn- [:binding-context :fn-like]
+                         'cljs.core/fn [:binding-context :fn-like]
+                         'cljs.core/defmacro [:binding-context :fn-like]
+
+                         'cljs.core/deftype [:binding-context :deftype-like]
+                         'cljs.core/defrecord [:binding-context :deftype-like]
+
+                         'cljs.core/defmethod [:binding-context :defmethod-like]
+
+                         'cljs.core/for [:binding-context :for-like]
+                         'cljs.core/doseq [:binding-context :for-like]
+
+                         'cljs.core/letfn [:binding-context :letfn-like]
+
+                         'cljs.core/require [:dependency-context :require-like]
+
+                         'cljs.core/use [:dependency-context :use-like]
+
+                         'cljs.core/require-macros [:dependency-context :require-macros-like]
+
+                         'cljs.core/import [:dependency-context :import-like]
+
+                         'cljs.core/refer-clojure [:dependency-context :refer-clojure-like]})
+
+
+(def context-forms-by-namespaces-clj {'clojure.core context-forms-clj})
+(def context-forms-by-namespaces-cljs {'cljs.core context-forms-cljs})
+
+(def ^:dynamic *binding-context* nil)
+(def ^:dynamic *dependency-context* nil)
+
+(defn var->sym [comp-env v]
+  (let [{:keys [ns name]} (env/meta comp-env v)]
+    (when (and ns name)
+      (symbol (str (env/ns-name ns)) (str name)))))
+
+(defn override-default-require-symbol [comp-env context-forms the-ns-map]
+  (doseq [[v [context form-context]] context-forms]
+    (when-let [v-name (name v)]
+      (let [v-sym (symbol v-name)
+            ns-map-v (var->sym comp-env (get the-ns-map v-sym))]
+        (when-not (= v ns-map-v)
+          (case context
+            :binding-context (->> (assoc! *binding-context* (str v-sym) nil)
+                                  (set! *binding-context*))
+            :dependency-context (->> (assoc! *dependency-context* (str v-sym) nil)
+                                     (set! *dependency-context*))))))))
+
+(defn additional-symbols-from-mapping [comp-env context-forms sym v]
+  (when-let [v (var->sym comp-env v)]
+    (when-let [[context form-context] (get context-forms v)]
+      (let [v-sym (symbol (name v))]
+        (when-not (= sym v-sym)
+          (case context
+            :binding-context (->> form-context
+                                  (assoc! *binding-context* (str sym))
+                                  (set! *binding-context*))
+            :dependency-context (->> form-context
+                                     (assoc! *dependency-context* (str sym))
+                                     (set! *dependency-context*))))))))
+
+(defn additional-symbols-from-aliases
+  [comp-env context-forms context-forms-by-namespaces alias n]
+  (when-let [context-forms (get context-forms-by-namespaces (env/ns-name n))]
+    (doseq [[v [context form-context]] context-forms]
+      (let [v-name (name v)]
+        (let [sym (symbol (str alias) (str v-name))]
+          (case context
+            :binding-context (->> form-context
+                                  (assoc! *binding-context* (str sym))
+                                  (set! *binding-context*))
+            :dependency-context (->> form-context
+                                     (assoc! *dependency-context* (str sym))
+                                     (set! *dependency-context*))))))))
+
+(defn context-forms-overrides [comp-env repl-env ns context-forms context-forms-by-namespaces]
+  (let [ns (symbol ns)
+        the-ns (env/find-ns comp-env ns)]
+    (when the-ns
+      (binding [*binding-context* (transient {})
+                *dependency-context* (transient {})]
+        (let [the-ns-map (env/ns-map comp-env the-ns)
+              the-ns-aliases (env/ns-aliases comp-env the-ns)]
+          (override-default-require-symbol comp-env context-forms the-ns-map)
+          (doseq [[sym v] the-ns-map]
+            (additional-symbols-from-mapping comp-env context-forms sym v))
+          (doseq [[alias n] the-ns-aliases]
+            (additional-symbols-from-aliases comp-env context-forms context-forms-by-namespaces
+                                             alias n)))
+        {:binding-context (persistent! *binding-context*)
+         :dependency-context (persistent! *dependency-context*)
+         :repl-type (utils/repl-type repl-env)}))))
+
+(comment
+  (context-forms-overrides nil (str *ns*) context-forms-clj context-forms-by-namespaces-clj)
+
+  (require '[replique.environment :as env])
+  (def cenv (env/->CljsCompilerEnv @replique.repl-cljs/compiler-env))
+
+  (context-forms-overrides cenv
+                           "replique.compliment.ns-mappings-cljs-test"
+                           context-forms-cljs context-forms-by-namespaces-cljs)
+  )

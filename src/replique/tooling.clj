@@ -98,7 +98,7 @@
       {:meta m})))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :meta]
-  [{:keys [context ns is-string?] :as msg}]
+  [{:keys [context ns] :as msg}]
   (tooling-msg/with-tooling-response msg
     (let [prefix (:symbol msg)
           comp-env (->CljsCompilerEnv @@cljs-compiler-env)
@@ -110,14 +110,12 @@
                                    :repl-env :replique/clj
                                    :ns "replique.repl"
                                    :symbol "clojure.core$str"
-                                   :is-string? true
                                    :context nil})
 
   (tooling-msg/tooling-msg-handle {:type :meta
                                    :repl-env :replique/clj
                                    :ns "replique.tooling"
                                    :symbol "output-main-js-file"
-                                   :is-string? false
                                    :context nil})
   )
 
@@ -231,14 +229,19 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
   [{:keys [ns repl-env] :as msg}]
   (tooling-msg/with-tooling-response msg
     (when ns
-      (context/compute-context->categories->syms nil repl-env ns))))
+      (context/context-forms-overrides
+       nil repl-env ns
+       context/context-forms-clj
+       context/context-forms-by-namespaces-clj))))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :context]
   [{:keys [ns repl-env] :as msg}]
   (tooling-msg/with-tooling-response msg
     (when ns
-      (context/compute-context->categories->syms-cljs
-       (->CljsCompilerEnv @@cljs-compiler-env) repl-env ns))))
+      (context/context-forms-overrides
+       (->CljsCompilerEnv @@cljs-compiler-env) repl-env ns
+       context/context-forms-cljs
+       context/context-forms-by-namespaces-cljs))))
 
 (comment
   (tooling-msg/tooling-msg-handle {:repl-env :replique/clj
