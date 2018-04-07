@@ -836,7 +836,8 @@
         (elisp/->ElispString value)))))
 
 (defn candidates
-  [comp-env ns {:keys [locals in-string? in-comment? in-ns-form? at-binding-position?
+  [comp-env ns {:keys [locals in-string? in-comment? in-ns-form?
+                       at-binding-position? at-local-binding-position?
                        fn-context fn-context-position dependency-context]
                 :as context}
    ^String prefix]
