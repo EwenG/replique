@@ -844,7 +844,9 @@
                (env/find-ns comp-env (env/default-ns comp-env)))]
     (if in-string?
       (in-string-candidates comp-env ns context prefix)
-      (when (and (not in-comment?) (not at-binding-position?) ns)
+      (when (and (not in-comment?)
+                 (not at-binding-position?) (not at-local-binding-position?)
+                 ns)
         (let [prefix (.replaceFirst prefix "^#_" "")
               keyword? (.startsWith prefix ":")
               double-colon? (.startsWith prefix "::")
