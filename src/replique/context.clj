@@ -1,5 +1,6 @@
 (ns replique.context
-  (:require [replique.utils :as utils])
+  (:require [replique.utils :as utils]
+            [replique.environment :as env])
   (:import [clojure.lang Keyword]))
 
 (defn try-get-object-class [comp-env ns object-str]
