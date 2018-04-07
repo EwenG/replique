@@ -1,6 +1,7 @@
 (ns replique.find-usage
   (:require [replique.environment :as env]
-            [replique.watch :as w :refer :all :rename {browse-get bb2}])
+            [replique.watch :as w :rename {browse-get bb2}]
+            [replique.context :as context])
   (:import [java.io FileReader BufferedReader PushbackReader]))
 
 (comment
@@ -36,30 +37,67 @@
       (prn (char (.read r))))
     ))
 
-
 ;; -----------------------------
 
-(defn var-symbols-in-namespace [comp-env var-ns var-sym var ns]
-  (let [var-ns-sym (env/ns-name var-ns)
-        mapping-symbols (for [[sym v] (env/ns-map comp-env ns)
-                              :when (= var v)]
-                          sym)
-        alias-symbols (for [[alias n] (env/ns-aliases comp-env ns)
-                            :when (= var-ns n)]
-                        (symbol (str alias) (str var-sym)))]
-    (doall (concat mapping-symbols alias-symbols))))
+(def ^:dynamic *context-forms-overrides* nil)
 
-(defn var-symbols-in-namespaces-reducer [comp-env var-ns var-sym var m ns]
-  (let [var-symbols (var-symbols-in-namespace comp-env var-ns var-sym var ns)]
+(defn ns-map-reducer [comp-env context-forms var syms sym v]
+  (context/additional-symbols-from-mapping comp-env context-forms sym v)
+  (if (= var v)
+    (conj syms sym)
+    syms))
+
+(defn ns-aliases-reducer
+  [comp-env context-forms context-forms-by-namespaces var-ns var-sym var syms alias n]
+  (context/additional-symbols-from-aliases
+   comp-env context-forms context-forms-by-namespaces alias n)
+  (if (= var-ns n)
+    (conj syms (symbol (str alias) (str var-sym)))
+    syms))
+
+(defn var-symbols-in-namespace
+  ([comp-env var-ns var-sym var ns]
+   (var-symbols-in-namespace comp-env var-ns var-sym var ns nil nil))
+  ([comp-env var-ns var-sym var ns context-forms context-forms-by-namespaces]
+   (binding [context/*binding-context* (transient {})
+             context/*dependency-context* (transient {})]
+     (let [var-ns-sym (env/ns-name var-ns)
+           the-ns-map (env/ns-map comp-env ns)]
+       (context/override-default-require-symbol comp-env context-forms the-ns-map)
+       (let [mapping-symbols (reduce-kv (partial ns-map-reducer comp-env context-forms var)
+                                        '() the-ns-map)
+             alias-symbols (reduce-kv (partial ns-aliases-reducer
+                                               comp-env
+                                               context-forms context-forms-by-namespaces
+                                               var-ns var-sym var)
+                                      '() (env/ns-aliases comp-env ns))
+             binding-context (persistent! context/*binding-context*)
+             dependency-context (persistent! context/*dependency-context*)]
+         (when (or (seq binding-context) (seq dependency-context))
+           (set! *context-forms-overrides*
+                 (assoc! *context-forms-overrides*
+                         (str ns) {:binding-context binding-context
+                                   :dependency-context dependency-context})))
+         (doall (concat mapping-symbols alias-symbols)))))))
+
+(defn var-symbols-in-namespaces-reducer
+  [comp-env context-forms context-forms-by-namespaces var-ns var-sym var m ns]
+  (let [var-symbols (var-symbols-in-namespace
+                     comp-env var-ns var-sym var ns context-forms context-forms-by-namespaces)]
     (if (seq var-symbols)
       (assoc! m (str ns) var-symbols)
       m)))
 
-(defn var-symbols-in-namespaces [comp-env var-ns var-sym var namespaces]
-  (->> namespaces
-       (reduce (partial var-symbols-in-namespaces-reducer comp-env var-ns var-sym var)
-               (transient {}))
-       persistent!))
+(defn var-symbols-in-namespaces
+  ([comp-env var-ns var-sym var namespaces]
+   (var-symbols-in-namespaces comp-env var-ns var-sym var namespaces nil nil))
+  ([comp-env var-ns var-sym var namespaces context-forms context-forms-by-namespaces]
+   (->> namespaces
+        (reduce (partial var-symbols-in-namespaces-reducer
+                         comp-env context-forms context-forms-by-namespaces
+                         var-ns var-sym var)
+                (transient {}))
+        persistent!)))
 
 (defn safe-ns-resolve [comp-env ns sym]
   (try (env/ns-resolve comp-env ns sym)
@@ -67,15 +105,15 @@
 
 (defn symbols-in-namespaces
   [comp-env ns
-   {:keys [at-binding-position? in-comment? in-string? locals] :as context}
-   ^String prefix]
+   {:keys [at-local-binding-position? in-comment? in-string? locals] :as context}
+   ^String prefix context-forms context-forms-by-namespaces]
   (let [ns (or (and ns (env/find-ns comp-env (symbol ns)))
                (env/find-ns comp-env (env/default-ns comp-env)))]
     (when (and prefix
-               #_(not at-binding-position?) (not in-comment?) (not in-string?)
-               (not (get locals prefix)))
+               (not at-local-binding-position?) (not in-comment?) (not in-string?))
       (let [prefix (.replaceFirst prefix "^#_" "")]
-        (when (not (contains? locals prefix))
+        (when (and (not (contains? locals prefix))
+                   (not (contains? (env/special-forms comp-env) prefix)))
           (let [prefix-sym (symbol prefix)
                 resolved (safe-ns-resolve comp-env ns prefix-sym)
                 resolved (when (env/looks-like-var? comp-env resolved) resolved)
@@ -83,26 +121,12 @@
                 var-ns (:ns m)
                 var-sym (:name m)]
             (when (and resolved var-ns var-sym)
-              (var-symbols-in-namespaces comp-env var-ns var-sym resolved
-                                         (env/all-ns comp-env)))))))))
+              (binding [*context-forms-overrides* (transient {})]
+                (var-symbols-in-namespaces comp-env var-ns var-sym resolved
+                                           (env/all-ns comp-env)
+                                           context-forms context-forms-by-namespaces)))))))))
 
 (comment
-  (ns-name (.-ns #'var-symbols-in-namespace))
-  (.-sym #'var-symbols-in-namespace)
-
-  (meta #'var-symbols-in-namespace)
-
-  (filter #(identical? (val %) #'var-symbols-in-namespace) (ns-map *ns*))
-  (filter #(identical? (val %) #'clojure.core/proxy-mappings) (ns-map *ns*))
-  proxy-mappings
-  
-  (filter #(identical? (val %) #'replique.watch/browse-get) (ns-map *ns*))
-  (ns-unmap *ns* 'browse-get)
-
-  (ns-aliases *ns*)
-
-  (symbol (str "rrn") "rr")
-  
   (let [v #'replique.watch/browse-get]
     (var-symbols-in-namespace nil (.-ns v) (.-sym v) v *ns*))
   (let [v #'prn]
@@ -116,25 +140,8 @@
     (def v-ns (env/find-ns cenv (symbol (namespace vv))))
     (def v (env/ns-resolve cenv v-ns v-sym)))
   
-  (var-symbols-in-namespace cenv v-ns v-sym v nn)
+  (var-symbols-in-namespaces cenv v-ns v-sym v [nn])
 
-  (for [[k2 v2] (env/ns-map cenv nn)
-        :when (= 'cljs-ns-m k2) #_(identical? v2 v)]
-    v2)
-
-  (env/resolve-namespace cenv 'cljs-ns-m nn)
-  
-  (env/ns-aliases cenv nn)
-  
-  'replique.compliment.ns-mappings-cljs-test2/ff2
-  (env/cljs-ns-map-resolve* cenv (first {'ff3 'replique.compliment.ns-mappings-cljs-test2/ff2}))
-
-
-  (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)
-          aliases-candidates (merge (:requires ns)
-                                    (:require-macros ns))
-          imports (:imports ns)]
-      (apply dissoc aliases-candidates (keys imports)))
+  (env/meta cenv (env/ns-resolve cenv (env/find-ns cenv 'cljs.core) 'prn))
+  (env/meta cenv nil)
   )
-
-;; at-binding-position? for var definition -> add a binding-position type
