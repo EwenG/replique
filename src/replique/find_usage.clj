@@ -78,15 +78,15 @@
                  (assoc! *context-forms-overrides*
                          (str ns) {:binding-context binding-context
                                    :dependency-context dependency-context})))
-         (doall (concat mapping-symbols alias-symbols)))))))
+         (-> (concat mapping-symbols alias-symbols)
+             doall
+             (conj (symbol (str var-ns) (str var-sym)))))))))
 
 (defn var-symbols-in-namespaces-reducer
   [comp-env context-forms context-forms-by-namespaces var-ns var-sym var m ns]
   (let [var-symbols (var-symbols-in-namespace
                      comp-env var-ns var-sym var ns context-forms context-forms-by-namespaces)]
-    (if (seq var-symbols)
-      (assoc! m (str ns) var-symbols)
-      m)))
+    (assoc! m (str ns) var-symbols)))
 
 (defn var-symbols-in-namespaces
   ([comp-env var-ns var-sym var namespaces]
@@ -122,9 +122,12 @@
                 var-sym (:name m)]
             (when (and resolved var-ns var-sym)
               (binding [*context-forms-overrides* (transient {})]
-                (var-symbols-in-namespaces comp-env var-ns var-sym resolved
-                                           (env/all-ns comp-env)
-                                           context-forms context-forms-by-namespaces)))))))))
+                {:symbols-in-namespaces
+                 (var-symbols-in-namespaces
+                  comp-env var-ns var-sym resolved
+                  (env/all-ns comp-env)
+                  context-forms context-forms-by-namespaces)
+                 :context-overrides (persistent! *context-forms-overrides*)}))))))))
 
 (comment
   (let [v #'replique.watch/browse-get]
