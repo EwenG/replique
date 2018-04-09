@@ -14,7 +14,6 @@
 (def ^:private cljs-load-file (utils/dynaload 'replique.repl-cljs/-load-file))
 (def ^:private cljs-in-ns* (utils/dynaload 'replique.repl-cljs/in-ns*))
 (def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
-(def ^:private cljs-repl-env (utils/dynaload 'replique.repl-cljs/repl-env))
 (def ^:private cljs-set-repl-verbose (utils/dynaload 'replique.repl-cljs/set-repl-verbose))
 (def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
 (def ^:private cljs-munge (utils/dynaload 'cljs.compiler/munge))
