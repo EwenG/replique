@@ -539,7 +539,8 @@ replique.cljs_env.repl.connect(\"" url "\");
 (defmethod dispatch-request :print-tooling [{:keys [content]} callback]
   (binding [*out* tooling-msg/tooling-out]
     (utils/with-lock tooling-msg/tooling-out-lock
-      (.append *out* ^String (:content content))))
+      (.append *out* ^String (:content content))
+      (flush)))
   {:status 200 :body "ignore__" :content-type "text/plain"})
 
 (defn call-post-eval-hooks [repl-env prev-comp-env comp-env]
