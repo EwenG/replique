@@ -78,9 +78,7 @@
                  (assoc! *context-forms-overrides*
                          (str ns) {:binding-context binding-context
                                    :dependency-context dependency-context})))
-         (-> (concat mapping-symbols alias-symbols)
-             doall
-             (conj (symbol (str var-ns) (str var-sym)))))))))
+         (doall (concat mapping-symbols alias-symbols)))))))
 
 (defn var-symbols-in-namespaces-reducer
   [comp-env context-forms context-forms-by-namespaces var-ns var-sym var m ns]
@@ -99,6 +97,64 @@
                 (transient {}))
         persistent!)))
 
+(defn scoped-keywords-in-namespace [comp-env k-ns k-name the-ns]
+  (if (= k-ns the-ns)
+    (list (symbol (str "::" k-name)))
+    (doall
+     (for [[alias ns] (env/ns-aliases comp-env the-ns)
+           :when (= ns k-ns)]
+       (symbol (str "::" alias) k-name)))))
+
+(defn scoped-keywords-in-namespaces-reducer [comp-env k-ns k-name m the-ns]
+  (let [keywords (scoped-keywords-in-namespace comp-env k-ns k-name the-ns)]
+    (assoc! m (str the-ns) keywords)))
+
+(defn scoped-keywords-in-namespaces [comp-env k-ns k-name namespaces]
+  (->> namespaces
+       (reduce (partial scoped-keywords-in-namespaces-reducer comp-env k-ns k-name)
+               (transient {}))
+       persistent!))
+
+(defn namespaces-empty-map-reducer [m the-ns]
+  (assoc! m (str the-ns) '()))
+
+(defn namespaces-empty-map [namespaces]
+  (->> namespaces
+       (reduce namespaces-empty-map-reducer (transient {}))
+       persistent!))
+
+(defn symbols-in-namespaces-keyword [comp-env ns context prefix]
+  (let [double-colon? (.startsWith prefix "::")
+        prefix (.replaceFirst prefix "(^::?)" "")
+        scope-split-index (.lastIndexOf prefix "/")
+        scope-name (when (> scope-split-index -1) (subs prefix 0 scope-split-index))
+        prefix (if (> scope-split-index -1)
+                 (subs prefix (inc scope-split-index))
+                 prefix)]
+    (when (> (count prefix) 0)
+      (cond (and double-colon? scope-name)
+            (when-let [scope (env/resolve-namespace comp-env (symbol scope-name) ns)]
+              {:symbols-in-namespaces (scoped-keywords-in-namespaces
+                                       comp-env scope prefix (env/all-ns comp-env))
+               :find-usage-type :keyword
+               :keyword (keyword (str scope) prefix)})
+            double-colon?
+            {:symbols-in-namespaces (scoped-keywords-in-namespaces
+                                     comp-env ns prefix (env/all-ns comp-env))
+             :find-usage-type :keyword
+             :keyword (keyword (str ns) prefix)}
+            scope-name (if-let [scope (env/find-ns comp-env (symbol scope-name))]
+                         {:symbols-in-namespaces (scoped-keywords-in-namespaces
+                                                  comp-env scope prefix (env/all-ns comp-env))
+                          :find-usage-type :keyword
+                          :keyword (keyword scope-name prefix)}
+                         {:symbols-in-namespaces (namespaces-empty-map (env/all-ns comp-env))
+                          :find-usage-type :keyword
+                          :keyword (keyword scope-name prefix)})
+            :else {:symbols-in-namespaces (namespaces-empty-map (env/all-ns comp-env))
+                   :find-usage-type :keyword
+                   :keyword (keyword prefix)}))))
+
 (defn safe-ns-resolve [comp-env ns sym]
   (try (env/ns-resolve comp-env ns sym)
        (catch ClassNotFoundException e nil)))
@@ -111,23 +167,28 @@
                (env/find-ns comp-env (env/default-ns comp-env)))]
     (when (and prefix
                (not at-local-binding-position?) (not in-comment?) (not in-string?))
-      (let [prefix (.replaceFirst prefix "^#_" "")]
-        (when (and (not (contains? locals prefix))
-                   (not (contains? (env/special-forms comp-env) prefix)))
-          (let [prefix-sym (symbol prefix)
-                resolved (safe-ns-resolve comp-env ns prefix-sym)
-                resolved (when (env/looks-like-var? comp-env resolved) resolved)
-                m (env/meta comp-env resolved)
-                var-ns (:ns m)
-                var-sym (:name m)]
-            (when (and resolved var-ns var-sym)
-              (binding [*context-forms-overrides* (transient {})]
-                {:symbols-in-namespaces
-                 (var-symbols-in-namespaces
-                  comp-env var-ns var-sym resolved
-                  (env/all-ns comp-env)
-                  context-forms context-forms-by-namespaces)
-                 :context-overrides (persistent! *context-forms-overrides*)}))))))))
+      (let [prefix (.replaceFirst prefix "^#_" "")
+            keyword? (.startsWith prefix ":")]
+        (if keyword?
+          (symbols-in-namespaces-keyword comp-env ns context prefix)
+          (when (and (not (contains? locals prefix))
+                     (not (contains? (env/special-forms comp-env) prefix)))
+            (let [prefix-sym (symbol prefix)
+                  resolved (safe-ns-resolve comp-env ns prefix-sym)
+                  resolved (when (env/looks-like-var? comp-env resolved) resolved)
+                  m (env/meta comp-env resolved)
+                  var-ns (:ns m)
+                  var-sym (:name m)]
+              (when (and resolved var-ns var-sym)
+                (binding [*context-forms-overrides* (transient {})]
+                  {:symbols-in-namespaces
+                   (var-symbols-in-namespaces
+                    comp-env var-ns var-sym resolved
+                    (env/all-ns comp-env)
+                    context-forms context-forms-by-namespaces)
+                   :context-overrides (persistent! *context-forms-overrides*)
+                   :find-usage-type :var
+                   :var (symbol (str var-ns) (str var-sym))})))))))))
 
 (comment
   (let [v #'replique.watch/browse-get]
