@@ -1,5 +1,6 @@
 # Version 0.0.11
 
+- A .repliquedoc file can be added to directories to exclude from the Replique search based features (find-usage, main js file refreshing, ...)
 - Tooling support to visualize watchable data
 - Support for Clojurescript 1.10.238
 - Autocompletion of system classes for jdk9+
