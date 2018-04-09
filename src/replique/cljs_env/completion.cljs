@@ -50,7 +50,8 @@
 
 (defn js-scoped-candidates [original-scope-name munged-scope-name munged-prefix include-methods?]
   (->> (when-let [scope (if (= 0 (count munged-scope-name))
-                          js/window
+                          ;; js/window is not defined for all js runtimes
+                          (try js/window (catch js/Error e nil))
                           (try (js/eval munged-scope-name) (catch js/Error e nil)))]
          ;; getAllPropertyNames may not be available on old google closure versions
          ;; ~ before clojurescript 1.9.562
