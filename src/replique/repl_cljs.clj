@@ -463,6 +463,9 @@ replique.cljs_env.repl.connect(\"" url "\");
               cljs.util/mkdirs (spit (slurp (io/resource "goog/deps.js"))))
             (spit (File. ^String utils/cljs-compile-path "replique/cljs_env/bootstrap.js")
                   (slurp (io/resource "bootstrap.js")))))))
+
+    (spit (File. ^String utils/cljs-compile-path ".repliqueignore") "")
+
     compiler-env))
 
 ;; This must be executed on a single thread (the server thread for example)
