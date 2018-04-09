@@ -170,7 +170,10 @@
     (binding [replique.cljs/*reload-all* (boolean (contains? opts :reload-all))]
       (let [comp-opts (:options @@replique.repl-cljs/compiler-env)
             compiled (replique.repl-cljs/compile-file repl-env file-path comp-opts)]
-        (repl-eval-compiled compiled repl-env file-path comp-opts)))))
+        (repl-eval-compiled compiled repl-env file-path comp-opts))))
+  replique.repl-cljs/IReplEval
+  (replique.repl-cljs/-evaluate-form [this js & opts]
+    (evaluate-form this js)))
 
 (defn init-repl-env []
   (NashornEnv. {:wrap #'replique.repl-cljs/wrap-fn}))
