@@ -16,18 +16,31 @@
 
 (def ^:private cljs-compiler-env
   (utils/dynaload 'replique.repl-cljs/compiler-env))
+(def ^:private cljs-repl-env
+  (utils/dynaload 'replique.repl-cljs/repl-env))
+(def ^:private cljs-repl-env-nashorn
+  (utils/dynaload 'replique.nashorn/repl-env))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :completion]
   [{:keys [context ns prefix] :as msg}]
   (tooling-msg/with-tooling-response msg
     (when prefix
-      {:candidates (completion/candidates nil ns context prefix)})))
+      {:candidates (completion/candidates nil nil ns context prefix)})))
 
-(defmethod tooling-msg/tooling-msg-handle [:replique/cljs :completion]
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :completion]
   [{:keys [context ns prefix] :as msg}]
   (tooling-msg/with-tooling-response msg
     (when prefix
       {:candidates (completion/candidates (->CljsCompilerEnv @@cljs-compiler-env)
+                                          @@cljs-repl-env
+                                          ns context prefix)})))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :completion]
+  [{:keys [context ns prefix] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (when prefix
+      {:candidates (completion/candidates (->CljsCompilerEnv @@cljs-compiler-env)
+                                          @@cljs-repl-env-nashorn
                                           ns context prefix)})))
 
 (comment

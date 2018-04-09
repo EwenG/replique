@@ -665,6 +665,9 @@ replique.cljs_env.repl.connect(\"" url "\");
     [repl-env file-path]
     [repl-env file-path opts]))
 
+(defprotocol IReplEval
+  (-evaluate-form [this js & opts]))
+
 (defn compile-file [repl-env file-path opts]
   (cljs-env/with-compiler-env @compiler-env
     (let [repl-opts (cljs.repl/-repl-options repl-env)
@@ -687,7 +690,10 @@ replique.cljs_env.repl.connect(\"" url "\");
     (load-file repl-env file-path nil))
   (-load-file [repl-env file-path opts]
     (binding [replique.cljs/*reload-all* (boolean (contains? opts :reload-all))]
-      (load-file repl-env file-path))))
+      (load-file repl-env file-path)))
+  IReplEval
+  (-evaluate-form [this js & opts]
+    (apply evaluate-form this js opts)))
 
 (defn set-repl-verbose [b]
   (set! cljs.repl/*cljs-verbose* b))
