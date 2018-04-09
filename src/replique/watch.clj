@@ -7,6 +7,7 @@
            [java.util Map Collection]))
 
 (def ^:private cljs-repl-env (utils/dynaload 'replique.repl-cljs/repl-env))
+(def ^:private cljs-repl-env-nashorn (utils/dynaload 'replique.nashorn/repl-env))
 (def ^:private cljs-evaluate-form (utils/dynaload 'replique.repl-cljs/evaluate-form))
 (def ^:private cljs-munged (utils/dynaload 'cljs.compiler/munge))
 
@@ -201,70 +202,100 @@
   
   )
 
-(defmethod tooling-msg/tooling-msg-handle [:replique/cljs :add-watch]
-  [{:keys [process-id var-sym buffer-id] :as msg}]
-  (tooling-msg/with-tooling-response msg
-    (let [{:keys [status value]}
-          (@cljs-evaluate-form
-           @@cljs-repl-env
-           (format "replique.cljs_env.watch.add_replique_watch(%s, %s, %s);"
-                   (pr-str process-id) (pr-str (@cljs-munged var-sym)) (pr-str buffer-id))
-           :timeout-before-submitted 100)]
-      (if-not (= status :success)
-        {:error value}        
-        {}))))
+(defn add-replique-watch-cljs [repl-env {:keys [process-id var-sym buffer-id] :as msg}]
+  (let [{:keys [status value]}
+        (@cljs-evaluate-form
+         repl-env
+         (format "replique.cljs_env.watch.add_replique_watch(%s, %s, %s);"
+                 (pr-str process-id) (pr-str (@cljs-munged var-sym)) (pr-str buffer-id))
+         :timeout-before-submitted 100)]
+    (if-not (= status :success)
+      {:error value}        
+      {})))
 
-(defmethod tooling-msg/tooling-msg-handle [:replique/cljs :remove-watch]
-  [{:keys [process-id buffer-id] :as msg}]
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :add-watch] [msg]
   (tooling-msg/with-tooling-response msg
-    (let [{:keys [status value]}
-          (tooling-msg/with-tooling-response msg
-            (@cljs-evaluate-form
-             @@cljs-repl-env
-             (format "replique.cljs_env.watch.remove_replique_watch(%s);" (pr-str buffer-id))
-             :timeout-before-submitted 100))]
-      (if-not (= status :success)
-        {:error value}
-        {}))))
+    (add-replique-watch-cljs @@cljs-repl-env msg)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :add-watch] [msg]
+  (tooling-msg/with-tooling-response msg
+    (add-replique-watch-cljs @@cljs-repl-env-nashorn msg)))
+
+(defn remove-watch-cljs [repl-env {:keys [process-id buffer-id] :as msg}]
+  (let [{:keys [status value]}
+        (tooling-msg/with-tooling-response msg
+          (@cljs-evaluate-form
+           repl-env
+           (format "replique.cljs_env.watch.remove_replique_watch(%s);" (pr-str buffer-id))
+           :timeout-before-submitted 100))]
+    (if-not (= status :success)
+      {:error value}
+      {})))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :remove-watch] [msg]
+  (tooling-msg/with-tooling-response msg
+    (remove-watch-cljs @@cljs-repl-env msg)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :remove-watch] [msg]
+  (tooling-msg/with-tooling-response msg
+    (remove-watch-cljs @@cljs-repl-env-nashorn msg)))
 
 (defn browse-path->js-array [browse-path]
   `[~@(interpose (symbol ",") browse-path)])
 
-(defmethod tooling-msg/tooling-msg-handle [:replique/cljs :refresh-watch]
-  [{:keys [process-id update? var-sym buffer-id print-length print-level browse-path]
-    :as msg}]
-  (tooling-msg/with-tooling-response msg
-    (let [{:keys [status value stacktrace] :as ret}
-          (@cljs-evaluate-form
-           @@cljs-repl-env
-           (format "replique.cljs_env.watch.refresh_watch(%s, %s, %s, %s, %s, %s, %s);"
-                   (pr-str process-id) (pr-str (boolean update?)) 
-                   (pr-str (@cljs-munged var-sym)) (pr-str buffer-id)
-                   (if (nil? print-length) "null" (pr-str print-length))
-                   (if (nil? print-level) "null" (pr-str print-level))
-                   (if (nil? browse-path) "null" (pr-str (browse-path->js-array browse-path))))
-           :timeout-before-submitted 100)]
-      (if-not (= status :success)
-        {:error (or stacktrace value)
-         :undefined (.contains ^String value (str :replique-watch/undefined))}
-        {:var-value value}))))
+(defn refresh-watch-cljs
+  [repl-env {:keys [process-id update? var-sym buffer-id print-length print-level browse-path]
+             :as msg}]
+  (let [{:keys [status value stacktrace] :as ret}
+        (@cljs-evaluate-form
+         repl-env
+         (format "replique.cljs_env.watch.refresh_watch(%s, %s, %s, %s, %s, %s, %s);"
+                 (pr-str process-id) (pr-str (boolean update?)) 
+                 (pr-str (@cljs-munged var-sym)) (pr-str buffer-id)
+                 (if (nil? print-length) "null" (pr-str print-length))
+                 (if (nil? print-level) "null" (pr-str print-level))
+                 (if (nil? browse-path) "null" (pr-str (browse-path->js-array browse-path))))
+         :timeout-before-submitted 100)]
+    (if-not (= status :success)
+      {:error (or stacktrace value)
+       :undefined (.contains ^String value (str :replique-watch/undefined))}
+      {:var-value value})))
 
-(defmethod tooling-msg/tooling-msg-handle [:replique/cljs :browse-candidates]
-  [{:keys [process-id var-sym buffer-id prefix browse-path] :as msg}]
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :refresh-watch]
+  [msg]
   (tooling-msg/with-tooling-response msg
-    (let [{:keys [status value stacktrace] :as ret}
-          (@cljs-evaluate-form
-           @@cljs-repl-env
-           (format "replique.cljs_env.watch.browse_candidates(%s, %s, %s, %s, %s);"
-                   (pr-str process-id) (pr-str (@cljs-munged var-sym)) (pr-str buffer-id)
-                   (pr-str prefix) (if (nil? browse-path)
-                                     "null"
-                                     (pr-str (browse-path->js-array browse-path))))
-           :timeout-before-submitted 100)]
-      (if-not (= status :success)
-        {:error (or stacktrace value)
-         :undefined (.contains ^String value (str :replique-watch/undefined))}
-        {:candidates (elisp/->ElispString value)}))))
+    (refresh-watch-cljs @@cljs-repl-env msg)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :refresh-watch]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (refresh-watch-cljs @@cljs-repl-env-nashorn msg)))
+
+(defn browse-candidates-cljs
+  [repl-env {:keys [process-id var-sym buffer-id prefix browse-path] :as msg}]
+  (let [{:keys [status value stacktrace] :as ret}
+        (@cljs-evaluate-form
+         repl-env
+         (format "replique.cljs_env.watch.browse_candidates(%s, %s, %s, %s, %s);"
+                 (pr-str process-id) (pr-str (@cljs-munged var-sym)) (pr-str buffer-id)
+                 (pr-str prefix) (if (nil? browse-path)
+                                   "null"
+                                   (pr-str (browse-path->js-array browse-path))))
+         :timeout-before-submitted 100)]
+    (if-not (= status :success)
+      {:error (or stacktrace value)
+       :undefined (.contains ^String value (str :replique-watch/undefined))}
+      {:candidates (elisp/->ElispString value)})))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :browse-candidates]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (browse-candidates-cljs @@cljs-repl-env msg)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :browse-candidates]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (browse-candidates-cljs @@cljs-repl-env-nashorn msg)))
 
 (comment
   (def tt (atom 2))
