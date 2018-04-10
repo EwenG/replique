@@ -1,5 +1,6 @@
 # Version 0.0.11
 
+- Add a find-usage feature
 - A .repliquedoc file can be added to directories to exclude from the Replique search based features (find-usage, main js file refreshing, ...)
 - Tooling support to visualize watchable data
 - Support for Clojurescript 1.10.238
@@ -9,7 +10,6 @@
 # Version 0.0.10
 
 - Tooling messages exception are now returned as data instead of strings
-
 - The cljs REPL no longer tries to automatically reconnect when the connection is closed by the cljs server because of a new connection coming in
 - Clojurescript dependencies are now checked for recompilation when analyzed for the first time
 - Performance improvement for the replique/reload-all command when used in a cljs context 
