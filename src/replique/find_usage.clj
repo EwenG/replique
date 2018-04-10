@@ -123,7 +123,7 @@
        (reduce namespaces-empty-map-reducer (transient {}))
        persistent!))
 
-(defn symbols-in-namespaces-keyword [comp-env ns context prefix]
+(defn symbols-in-namespaces-keyword [comp-env ns context ^String prefix]
   (let [double-colon? (.startsWith prefix "::")
         prefix (.replaceFirst prefix "(^::?)" "")
         scope-split-index (.lastIndexOf prefix "/")
