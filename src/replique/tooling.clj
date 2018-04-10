@@ -12,7 +12,8 @@
             [replique.context :as context]
             [replique.completion :as completion]
             [replique.source-meta]
-            [replique.watch]))
+            [replique.watch]
+            [replique.find-usage :as find-usage]))
 
 (def ^:private cljs-compiler-env
   (utils/dynaload 'replique.repl-cljs/compiler-env))
@@ -272,3 +273,22 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
   (tooling-msg/with-tooling-response msg
     (reset! replique.source-meta/source-meta (select-keys msg [:url :line :column]))
     {}))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :symbols-in-namespaces]
+  [{:keys [context ns] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (let [prefix (:symbol msg)]
+      (assoc (find-usage/symbols-in-namespaces
+              nil ns context prefix
+              context/context-forms-clj context/context-forms-by-namespaces-clj)
+             :default-ns "user"))))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/cljs :symbols-in-namespaces]
+  [{:keys [context ns is-string?] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (let [prefix (:symbol msg)
+          comp-env (->CljsCompilerEnv @@cljs-compiler-env)]
+      (assoc (find-usage/symbols-in-namespaces
+              comp-env ns context prefix
+              context/context-forms-cljs context/context-forms-by-namespaces-cljs)
+             :default-ns "cljs.user"))))
