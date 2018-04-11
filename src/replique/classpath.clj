@@ -33,10 +33,20 @@
        (map #(.toUri ^Path %))
        (map #(.toURL ^URI %))))
 
+(defn urls->paths [urls]
+  (->> urls
+       (map #(.toURI ^URL %))
+       (map #(Paths/get ^URI %))))
+
 (defn paths []
-  (concat (classpath->paths (System/getProperty "java.class.path"))
-          ;; nil under jdk9
-          (classpath->paths (System/getProperty "sun.boot.class.path"))))
+  (let [dynamic-classloader ^DynamicClassLoader (root-dynamic-classloader)
+        dynamic-classloader-paths (when dynamic-classloader
+                                    (urls->paths (.getURLs dynamic-classloader)))]
+    (distinct
+     (concat (classpath->paths (System/getProperty "java.class.path"))
+             dynamic-classloader-paths
+             ;; nil under jdk9
+             (classpath->paths (System/getProperty "sun.boot.class.path"))))))
 
 (defn update-classpath [classpath]
   (add-classpath (root-dynamic-classloader) (paths->urls (classpath->paths classpath))))
