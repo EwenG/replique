@@ -32,9 +32,10 @@
     (apply clojure.main/repl (apply concat options-map))))
 
 (defn cljs-repl
-  "Start a Clojurescript REPL"
-  []
-  (@cljs-repl*))
+  "Start a Clojurescript REPL. When a main-namescape is provided, the namespace is compiled if
+  it is not already loaded in the compiler environment."
+  ([] (@cljs-repl* nil))
+  ([main-namespace] (@cljs-repl* main-namespace)))
 
 (defn cljs-repl-nashorn
   "Start a Clojurescript Nashorn REPL"
