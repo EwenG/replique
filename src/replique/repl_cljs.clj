@@ -630,40 +630,6 @@ replique.cljs_env.repl.connect(\"" url "\");
                  request-exit
                  input))))))))
 
-(defn cljs-repl []
-  (let [repl-env @repl-env
-        compiler-env @compiler-env
-        {:keys [state]} @server/cljs-server
-        repl-opts (replique.repl/options-with-repl-meta
-                   {:compiler-env compiler-env
-                    ;; Code modifying the runtime should not be put in :init, otherwise it
-                    ;; would be lost on browser refresh
-                    :init (fn [] (in-ns* repl-env 'cljs.user))
-                    ;; cljs results are strings, so we must not print with prn
-                    :print println
-                    :caught cljs.repl/repl-caught
-                    :read (repl-read-with-exit :cljs/quit)
-                    :reader #(let [{:keys [url line column]} @replique.source-meta/source-meta
-                                   url (try (URL. url) (catch Exception _ nil))
-                                   path (when url (utils/url->path url))]
-                               (replique.cljs/source-logging-push-back-reader
-                                *in* 1 (or path "NO_SOURCE_FILE") (or line 1) (or column 1)))})]
-    (swap! cljs-outs conj *out*)
-    (when (not= :started state)
-      (println (format "Waiting for browser to connect on port %d ..." (server/server-port))))
-    (binding [utils/*repl-env* :replique/browser]
-      (apply
-       (partial replique.cljs/repl repl-env)
-       (->> (merge (:options @compiler-env) repl-opts {:eval eval-cljs})
-            (apply concat))))
-    (swap! cljs-outs disj *out*)))
-
-(defn stop-cljs-server []
-  (let [{:keys [eval-executor result-executor]} @server/cljs-server]
-    (swap! server/cljs-server assoc :state :stopped)
-    (when eval-executor (shutdown-eval-executor eval-executor))
-    (when result-executor (.shutdownNow ^ExecutorService result-executor))))
-
 (defprotocol ReplLoadFile
   (-load-file
     [repl-env file-path]
@@ -687,6 +653,50 @@ replique.cljs_env.repl.connect(\"" url "\");
   (let [opts (:options @@compiler-env)
         compiled (compile-file repl-env file-path opts)]
     (:value (repl-eval-compiled compiled repl-env file-path opts))))
+
+;; Ensure a namespace is loaded in the compiler-env. If not, compiles it but does not load it
+(defn ensure-compiled [repl-env namespace]
+  (let [namespace (if (string? namespace) (symbol namespace) namespace)
+        {:keys [uri]} (closure/cljs-source-for-namespace namespace)]
+    (when uri
+      (when-not (get-in @@compiler-env [::ana/namespaces namespace])
+        (let [opts (:options @@compiler-env)]
+          (compile-file repl-env (.getPath ^URL uri) opts))))))
+
+(defn cljs-repl [main-namespace]
+  (let [repl-env @repl-env
+        compiler-env @compiler-env
+        {:keys [state]} @server/cljs-server
+        repl-opts (replique.repl/options-with-repl-meta
+                   {:compiler-env compiler-env
+                    ;; Code modifying the runtime should not be put in :init, otherwise it
+                    ;; would be lost on browser refresh
+                    :init (fn [] (in-ns* repl-env 'cljs.user))
+                    ;; cljs results are strings, so we must not print with prn
+                    :print println
+                    :caught cljs.repl/repl-caught
+                    :read (repl-read-with-exit :cljs/quit)
+                    :reader #(let [{:keys [url line column]} @replique.source-meta/source-meta
+                                   url (try (URL. url) (catch Exception _ nil))
+                                   path (when url (utils/url->path url))]
+                               (replique.cljs/source-logging-push-back-reader
+                                *in* 1 (or path "NO_SOURCE_FILE") (or line 1) (or column 1)))})]
+    (when main-namespace (ensure-compiled repl-env main-namespace))
+    (swap! cljs-outs conj *out*)
+    (when (not= :started state)
+      (println (format "Waiting for browser to connect on port %d ..." (server/server-port))))
+    (binding [utils/*repl-env* :replique/browser]
+      (apply
+       (partial replique.cljs/repl repl-env)
+       (->> (merge (:options @compiler-env) repl-opts {:eval eval-cljs})
+            (apply concat))))
+    (swap! cljs-outs disj *out*)))
+
+(defn stop-cljs-server []
+  (let [{:keys [eval-executor result-executor]} @server/cljs-server]
+    (swap! server/cljs-server assoc :state :stopped)
+    (when eval-executor (shutdown-eval-executor eval-executor))
+    (when result-executor (.shutdownNow ^ExecutorService result-executor))))
 
 (extend-type BrowserEnv
   ReplLoadFile
