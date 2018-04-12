@@ -1,5 +1,6 @@
 # Version 0.0.11
 
+- Add the possibility to ensure that a cljs namespace and its dependencies are loaded in the cljs analysis env when starting a cljs REPL 
 - Add a find-usage feature
 - A .repliquedoc file can be added to directories to exclude from the Replique search based features (find-usage, main js file refreshing, ...)
 - Tooling support to visualize watchable data
