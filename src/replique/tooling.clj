@@ -185,7 +185,7 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
               *err* utils/process-err]
       {:result (pr-str (eval (read-string {:read-cond :allow} form)))})))
 
-(defmethod tooling-msg/tooling-msg-handle [:replique/clj :classpath]
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :update-classpath]
   [msg]
   (tooling-msg/with-tooling-response msg
     (let [res (classpath/update-classpath (:classpath msg))]
@@ -292,3 +292,11 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
               comp-env ns context prefix
               context/context-forms-cljs context/context-forms-by-namespaces-cljs)
              :default-ns "cljs.user"))))
+
+;; Exclude system modules / boot classpath since we are only looking for clj/sc sources
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :classpath-for-sources]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    {:paths (->> (classpath/paths false)
+                 (into '() (map str))
+                 reverse)}))
