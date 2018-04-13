@@ -54,6 +54,11 @@
                         'clojure.core/deftype [:binding-context :deftype-like]
                         'clojure.core/defrecord [:binding-context :deftype-like]
 
+                        'clojure.core/extend-type [:binding-context :extend-type-like]
+                        'clojure.core/extend-protocol [:binding-context :extend-type-like]
+                        'clojure.core/reify [:binding-context :extend-type-like]
+                        'clojure.core/proxy [:binding-context :extend-type-like]
+                        
                         'clojure.core/defmethod [:binding-context :defmethod-like]
 
                         'clojure.core/for [:binding-context :for-like]
@@ -88,6 +93,12 @@
 
                          'cljs.core/deftype [:binding-context :deftype-like]
                          'cljs.core/defrecord [:binding-context :deftype-like]
+
+                         'cljs.core/extend-type [:binding-context :extend-type-like]
+                         'cljs.core/extend-protocol [:binding-context :extend-type-like]
+                         'cljs.core/reify [:binding-context :extend-type-like]
+                         'cljs.core/specify [:binding-context :extend-type-like]
+                         'cljs.core/specify! [:binding-context :extend-type-like]
 
                          'cljs.core/defmethod [:binding-context :defmethod-like]
 
