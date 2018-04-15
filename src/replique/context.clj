@@ -118,81 +118,65 @@
                          'cljs.core/refer-clojure [:dependency-context :refer-clojure-like]})
 
 
-(def context-forms-by-namespaces-clj {'clojure.core context-forms-clj})
-(def context-forms-by-namespaces-cljs {'cljs.core context-forms-cljs})
+(defn ns-map-reducer [comp-env var syms sym v]
+  (if (= var v)
+    (conj syms sym)
+    syms))
 
-(def ^:dynamic *binding-context* nil)
-(def ^:dynamic *dependency-context* nil)
+(defn ns-aliases-reducer
+  [comp-env var-ns var-sym var syms alias n]
+  (if (= var-ns n)
+    (conj syms (symbol (str alias) (str var-sym)))
+    syms))
 
-(defn var->sym [comp-env v]
-  (let [{:keys [ns name]} (env/meta comp-env v)]
-    (when (and ns name)
-      (symbol (str (env/ns-name ns)) (str name)))))
+(defn var-symbols-in-namespace [comp-env var-ns var-sym var ns]
+  (let [var-ns-sym (env/ns-name var-ns)
+        the-ns-map (env/ns-map comp-env ns)]
+    (let [mapping-symbols (reduce-kv (partial ns-map-reducer comp-env var)
+                                     '() the-ns-map)
+          alias-symbols (reduce-kv (partial ns-aliases-reducer
+                                            comp-env
+                                            var-ns var-sym var)
+                                   '() (env/ns-aliases comp-env ns))]
+      (doall (concat mapping-symbols alias-symbols)))))
 
-(defn override-default-require-symbol [comp-env context-forms the-ns-map]
-  (doseq [[v [context form-context]] context-forms]
-    (when-let [v-name (name v)]
-      (let [v-sym (symbol v-name)
-            ns-map-v (var->sym comp-env (get the-ns-map v-sym))]
-        (when-not (= v ns-map-v)
-          (case context
-            :binding-context (->> (assoc! *binding-context* (str v-sym) nil)
-                                  (set! *binding-context*))
-            :dependency-context (->> (assoc! *dependency-context* (str v-sym) nil)
-                                     (set! *dependency-context*))))))))
+(defn context-forms-reducer [form-context context-forms sym]
+  (assoc! context-forms (str sym) form-context))
 
-(defn additional-symbols-from-mapping [comp-env context-forms sym v]
-  (when-let [v (var->sym comp-env v)]
-    (when-let [[context form-context] (get context-forms v)]
-      (let [v-sym (symbol (name v))]
-        (when-not (= sym v-sym)
-          (case context
-            :binding-context (->> form-context
-                                  (assoc! *binding-context* (str sym))
-                                  (set! *binding-context*))
-            :dependency-context (->> form-context
-                                     (assoc! *dependency-context* (str sym))
-                                     (set! *dependency-context*))))))))
-
-(defn additional-symbols-from-aliases
-  [comp-env context-forms context-forms-by-namespaces alias n]
-  (when-let [context-forms (get context-forms-by-namespaces (env/ns-name n))]
-    (doseq [[v [context form-context]] context-forms]
-      (let [v-name (name v)]
-        (let [sym (symbol (str alias) (str v-name))]
-          (case context
-            :binding-context (->> form-context
-                                  (assoc! *binding-context* (str sym))
-                                  (set! *binding-context*))
-            :dependency-context (->> form-context
-                                     (assoc! *dependency-context* (str sym))
-                                     (set! *dependency-context*))))))))
-
-(defn context-forms-overrides [comp-env repl-env ns context-forms context-forms-by-namespaces]
+(defn context-forms [comp-env repl-env ns context-forms]
   (let [ns (symbol ns)
         the-ns (env/find-ns comp-env ns)]
     (when the-ns
-      (binding [*binding-context* (transient {})
-                *dependency-context* (transient {})]
-        (let [the-ns-map (env/ns-map comp-env the-ns)
-              the-ns-aliases (env/ns-aliases comp-env the-ns)]
-          (override-default-require-symbol comp-env context-forms the-ns-map)
-          (doseq [[sym v] the-ns-map]
-            (additional-symbols-from-mapping comp-env context-forms sym v))
-          (doseq [[alias n] the-ns-aliases]
-            (additional-symbols-from-aliases comp-env context-forms context-forms-by-namespaces
-                                             alias n)))
-        {:binding-context (persistent! *binding-context*)
-         :dependency-context (persistent! *dependency-context*)
-         :repl-type (utils/repl-type repl-env)}))))
+      (loop [binding-context (transient {})
+             dependency-context (transient {})
+             context-forms (seq context-forms)]
+        (if-let [[v [context form-context]] (first context-forms)]
+          (let [resolved (env/ns-resolve comp-env (symbol (namespace v)) v)
+                m (env/meta comp-env resolved)
+                var-ns (:ns m)
+                var-sym (:name m)]
+            (if (and var-ns var-sym)
+              (let [syms (var-symbols-in-namespace comp-env var-ns var-sym resolved the-ns)]
+                (case context
+                  :binding-context
+                  (recur (reduce (partial context-forms-reducer form-context)
+                                 binding-context (cons v syms))
+                         dependency-context
+                         (rest context-forms))
+                  :dependency-context
+                  (recur binding-context
+                         (reduce (partial context-forms-reducer form-context)
+                                 dependency-context (cons v syms))
+                         (rest context-forms))
+                  (recur binding-context dependency-context (rest context-forms))))
+              (recur binding-context dependency-context (rest context-forms))))
+          {:binding-context (persistent! binding-context)
+           :dependency-context (persistent! dependency-context)})))))
+
+(def ns-context-clj {:ns-context {"ns" :ns-like
+                                  "clojure.core/ns" :ns-like}})
 
 (comment
-  (context-forms-overrides nil (str *ns*) context-forms-clj context-forms-by-namespaces-clj)
-
   (require '[replique.environment :as env])
   (def cenv (env/->CljsCompilerEnv @replique.repl-cljs/compiler-env))
-
-  (context-forms-overrides cenv
-                           "replique.compliment.ns-mappings-cljs-test"
-                           context-forms-cljs context-forms-by-namespaces-cljs)
   )
