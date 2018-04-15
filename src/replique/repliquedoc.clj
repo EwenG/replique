@@ -27,7 +27,7 @@
         return-type (-> (.getName ^Class (.getReturnType method)) symbol)]
     {:name (format "%s.%s" (.getName fn-param-class) (.getName method))
      :index fn-context-position
-     :arglists '(["&" args])
+     :arglists '([& args])
      :return (-> (.getName ^Class (.getReturnType method)) symbol)}))
 
 (defn method-call [comp-env ns locals
