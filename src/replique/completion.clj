@@ -194,11 +194,12 @@
        (take max-candidates-number)))
 
 (defn all-ns-candidates*
-  ([all-ns-data prefix-tokens]
-   (all-ns-candidates* all-ns-data prefix-tokens false))
-  ([all-ns-data prefix-tokens munge?]
+  ([locals all-ns-data prefix-tokens]
+   (all-ns-candidates* locals all-ns-data prefix-tokens false))
+  ([locals all-ns-data prefix-tokens munge?]
    (->> (for [ns-str all-ns-data
-              :let [match-index (matches? ns-str prefix-tokens)]
+              :let [match-index (and (nil? (get locals ns-str))
+                                     (matches? ns-str prefix-tokens))]
               :when match-index]
           (if munge?
             {:candidate (munge ns-str) :type :class :match-index match-index}
@@ -208,14 +209,14 @@
 ;; We assume that the number of namespaces only grows, this is often true, but not always (when
 ;; remove-ns is used)
 (defn all-ns-candidates
-  ([comp-env prefix-tokens]
-   (all-ns-candidates comp-env prefix-tokens false))
-  ([comp-env prefix-tokens munge?]
+  ([comp-env locals prefix-tokens]
+   (all-ns-candidates comp-env locals prefix-tokens false))
+  ([comp-env locals prefix-tokens munge?]
    (when-not (and (instance? CljsCompilerEnv comp-env) munge?)
      (let [all-ns* (env/all-ns comp-env)]
        (when (not= (count (get-all-ns-data comp-env)) (count all-ns*))
          (compute-all-ns-data comp-env all-ns*))
-       (all-ns-candidates* (get-all-ns-data comp-env) prefix-tokens munge?)))))
+       (all-ns-candidates* locals (get-all-ns-data comp-env) prefix-tokens munge?)))))
 
 (defn classpath-namespaces-candidates [comp-env namespaces-on-classpath prefix-tokens]
   (->> (for [ns-str (get namespaces-on-classpath (env/file-extension comp-env))
@@ -270,7 +271,7 @@
     (when (not= (count (get-all-ns-data comp-env)) (count all-ns*))
       (compute-all-ns-data comp-env all-ns*))
     (if (= 0 (count ns-prefix))
-      (let [ns-candidates (all-ns-candidates* (get-all-ns-data comp-env) prefix-tokens)
+      (let [ns-candidates (all-ns-candidates* nil (get-all-ns-data comp-env) prefix-tokens)
             ns-candidates-no-suffix (all-ns-candidates-no-suffix
                                      (get-all-ns-data comp-env) prefix-tokens)]
         (distinct (concat ns-candidates-no-suffix ns-candidates)))
@@ -287,18 +288,20 @@
               :match-index match-index})
            (take max-candidates-number)))))
 
-(defn ns-aliases-candidates [comp-env ns prefix-tokens]
+(defn ns-aliases-candidates [comp-env ns locals prefix-tokens]
   (->> (for [alias-str (->> (env/ns-aliases comp-env ns) keys (map name))
-             :let  [match-index (matches? alias-str prefix-tokens)]
+             :let  [match-index (and (nil? (get locals alias-str))
+                                     (matches? alias-str prefix-tokens))]
              :when match-index]
          {:candidate alias-str :type :namespace :match-index match-index})
        (sort-by :candidate by-length-comparator)
        (take max-candidates-number)))
 
-(defn dependency-index-candidates [comp-env prefix-tokens]
+(defn dependency-index-candidates [comp-env locals prefix-tokens]
   (when (instance? CljsCompilerEnv comp-env)
     (->> (for [class-str (provides-from-js-dependency-index comp-env)
-               :let [match-index (matches? class-str prefix-tokens)]
+               :let [match-index (and (nil? (get locals class-str))
+                                      (matches? class-str prefix-tokens))]
                :when match-index]
            {:candidate class-str :type :namespace :match-index match-index})
          (take max-candidates-number))))
@@ -396,7 +399,7 @@
   (cond (= position :namespace)
         (concat
          (classpath-namespaces-with-prefix comp-env (:prefix dependency-context) prefix-tokens)
-         (dependency-index-candidates comp-env prefix-tokens)
+         (dependency-index-candidates comp-env nil prefix-tokens)
          (all-ns-with-prefix comp-env (:prefix dependency-context) prefix-tokens)
          ;; require is a macro in clojurescript
          (when-not (and in-ns-form?
@@ -420,8 +423,8 @@
              (vars-from-namespace-candidates comp-env namespace prefix-tokens))))
         (= position :package-or-class)
         (concat (classpath-classes-for-import comp-env prefix-tokens)
-                (dependency-index-candidates comp-env prefix-tokens)
-                (all-ns-candidates comp-env prefix-tokens true))
+                (dependency-index-candidates comp-env nil prefix-tokens)
+                (all-ns-candidates comp-env nil prefix-tokens true))
         (= position :class)
         ;; package can be a namespace for deftype / defrecord generated classes
         (simple-class-with-package comp-env ns (:package dependency-context) prefix)
@@ -482,12 +485,13 @@
             (when (= :success status)
               (elisp/->ElispString value))))))))
 
-(defn mapping-candidates [comp-env ns prefix-tokens]
+(defn mapping-candidates [comp-env ns locals prefix-tokens]
   (->> (let [var-candidates (env/ns-map comp-env ns)]
         (for [[var-sym var] var-candidates
               :let [var-name (name var-sym)
                     {:keys [arglists macro] :as var-meta} (env/meta comp-env var)
-                    match-index (matches? var-name prefix-tokens)]
+                    match-index (and (nil? (get locals var-name))
+                                     (matches? var-name prefix-tokens))]
               :when match-index]
           (if (= (type var) Class)
             {:candidate var-name
@@ -903,10 +907,10 @@
                                :else
                                (concat
                                 (locals-candidates locals prefix-tokens)
-                                (all-ns-candidates comp-env prefix-tokens)
-                                (ns-aliases-candidates comp-env ns prefix-tokens)
-                                (dependency-index-candidates comp-env prefix-tokens)
-                                (mapping-candidates comp-env ns prefix-tokens)
+                                (all-ns-candidates comp-env locals prefix-tokens)
+                                (ns-aliases-candidates comp-env ns locals prefix-tokens)
+                                (dependency-index-candidates comp-env locals prefix-tokens)
+                                (mapping-candidates comp-env ns locals prefix-tokens)
                                 (special-forms-candidates comp-env ns fn-context-position
                                                           prefix-tokens)
                                 (literal-candidates prefix)))]
