@@ -243,19 +243,18 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
   [{:keys [ns repl-env] :as msg}]
   (tooling-msg/with-tooling-response msg
     (when ns
-      (context/context-forms-overrides
-       nil repl-env ns
-       context/context-forms-clj
-       context/context-forms-by-namespaces-clj))))
+      (merge (context/context-forms
+              nil repl-env ns
+              context/context-forms-clj)
+             context/ns-context-clj))))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :context]
   [{:keys [ns repl-env] :as msg}]
   (tooling-msg/with-tooling-response msg
     (when ns
-      (context/context-forms-overrides
+      (context/context-forms
        (->CljsCompilerEnv @@cljs-compiler-env) repl-env ns
-       context/context-forms-cljs
-       context/context-forms-by-namespaces-cljs))))
+       context/context-forms-cljs))))
 
 (comment
   (tooling-msg/tooling-msg-handle {:repl-env :replique/clj
@@ -279,8 +278,7 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
   (tooling-msg/with-tooling-response msg
     (let [prefix (:symbol msg)]
       (assoc (find-usage/symbols-in-namespaces
-              nil ns context prefix
-              context/context-forms-clj context/context-forms-by-namespaces-clj)
+              nil ns context prefix)
              :default-ns "user"))))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/cljs :symbols-in-namespaces]
@@ -289,8 +287,7 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
     (let [prefix (:symbol msg)
           comp-env (->CljsCompilerEnv @@cljs-compiler-env)]
       (assoc (find-usage/symbols-in-namespaces
-              comp-env ns context prefix
-              context/context-forms-cljs context/context-forms-by-namespaces-cljs)
+              comp-env ns context prefix)
              :default-ns "cljs.user"))))
 
 ;; Exclude system modules / boot classpath since we are only looking for clj/sc sources
