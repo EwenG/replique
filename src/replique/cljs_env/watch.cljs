@@ -49,17 +49,14 @@
   ;; may not be found
   (when-let [watchable (get @watched-refs buffer-id)]
     (remove-watch watchable (keyword "replique.watch" (str buffer-id)))
-    (swap! watched-refs dissoc buffer-id)))
+    (swap! watched-refs dissoc buffer-id)
+    (swap! watched-refs-values dissoc buffer-id)))
 
 (defn browse-get [o k]
-  (cond (implements? ILookup o)
-        (get o k)
-        (object? o)
-        (o/get o k)
-        (array? o)
-        (aget o k)
-        (and (coll? o) (seqable? o))
-        (nth (seq o) k)
+  (cond (implements? ILookup o) (get o k)
+        (object? o) (o/get o k)
+        (array? o) (aget o k)
+        (and (coll? o) (seqable? o)) (nth (seq o) k)
         :else nil))
 
 (defn browse-get-in
@@ -103,8 +100,8 @@
 (defn serializable-map-entry? [e]
   (and (serializable? (key e)) (serializable? (val e))))
 
-(defn serializable-object-entry? [v k o]
-  (and (serializable? k) (serializable? v)))
+(defn serializable-object-entry? [o k]
+  (and (serializable? k) (serializable? (o/get o k))))
 
 (defn serializable? [x]
   (cond (nil? x) true
@@ -114,7 +111,9 @@
         (symbol? x) true
         (keyword? x) true
         (map? x) (every? serializable-map-entry? x)
-        (object? x) (o/every serializable-object-entry? x)
+        (object? x) (and o/getAllPropertyNames
+                         (every? (partial serializable-object-entry? x)
+                                 (o/getAllPropertyNames x)))
         (or (coll? x) (array? x)) (every? serializable? x)
         :else false))
 
