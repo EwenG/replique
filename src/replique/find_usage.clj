@@ -91,7 +91,7 @@
        persistent!))
 
 (defn ns-aliases-symbols [comp-env ns target-ns]
-  (doall (for [[k v] (env/ns-aliases comp-env ns)
+  (doall (for [[k v] (env/ns-aliases-all comp-env ns)
                :when (= v target-ns)]
            k)))
 
@@ -122,8 +122,9 @@
                 (let [prefix-sym (symbol prefix)
                       resolved (safe-ns-resolve comp-env ns prefix-sym)
                       resolved-ns (when (nil? resolved) (env/find-ns comp-env prefix-sym))
+                      resolved-ns (when resolved-ns (env/ns-name resolved-ns))
                       resolved-ns (if (and (nil? resolved) (nil? resolved-ns))
-                                    (get (env/ns-aliases comp-env ns) prefix-sym)
+                                    (get (env/ns-aliases-all comp-env ns) prefix-sym)
                                     (or resolved resolved-ns))]
                   (cond (env/looks-like-var? comp-env resolved)
                         (let [m (env/meta comp-env resolved)
@@ -156,7 +157,7 @@
                         {:symbols-in-namespaces (symbols-in-namespaces-aliases
                                                  comp-env resolved-ns)
                          :find-usage-type :namespace
-                         :namespace (env/ns-name resolved-ns)}))))))))
+                         :namespace resolved-ns}))))))))
 
 (comment
   (let [v #'replique.watch/browse-get]
