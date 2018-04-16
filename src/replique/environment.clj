@@ -45,6 +45,10 @@
   (ns-interns [comp-env ns])
   (ns-map [comp-env ns])
   (ns-aliases [comp-env ns])
+  ;; Cljs ns-aliases returns the namespace aliases with resolved namespaces but does not
+  ;; return aliases of goog closure libs (which cannot be resolved). This method
+  ;; returns all aliases. Values are not resolved (they are symbols)
+  (ns-aliases-all [comp-env ns])
   (ns-imports [comp-env ns])
   (ns-resolve [comp-env ns sym])
   (looks-like-var? [comp-env var])
@@ -159,6 +163,12 @@
       (->> aliases-candidates
            (reduce-kv (partial ns-aliases-reducer comp-env) (transient {}))
            persistent!)))
+  (ns-aliases-all [comp-env ns]
+    (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)
+          aliases-candidates (merge (:requires ns)
+                                    (:require-macros ns))
+          imports (:imports ns)]
+      (apply dissoc aliases-candidates (keys imports))))
   (ns-imports [comp-env ns]
     (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)]
       (:imports ns)))
@@ -214,6 +224,10 @@
     (clojure.core/ns-map ns))
   (ns-aliases [_ ns]
     (clojure.core/ns-aliases ns))
+  (ns-aliases-all [_ ns]
+    (->> (clojure.core/ns-aliases ns)
+         (reduce-kv #(assoc! %1 %2 (ns-name %3)) (transient {}))
+         persistent!))
   (ns-imports [_ ns]
     (clojure.core/ns-imports ns))
   (ns-resolve [_ ns sym]

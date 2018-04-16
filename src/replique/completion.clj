@@ -289,7 +289,7 @@
            (take max-candidates-number)))))
 
 (defn ns-aliases-candidates [comp-env ns locals prefix-tokens]
-  (->> (for [alias-str (->> (env/ns-aliases comp-env ns) keys (map name))
+  (->> (for [alias-str (->> (env/ns-aliases-all comp-env ns) keys (map name))
              :let  [match-index (and (nil? (get locals alias-str))
                                      (matches? alias-str prefix-tokens))]
              :when match-index]
@@ -457,18 +457,20 @@
 
 (defn cljs-scoped-candidates [comp-env repl-env ns scope-name prefix prefix-tokens]
   (let [scope (env/resolve-namespace comp-env (symbol scope-name) ns)
-        scoped-candidates (scoped-candidates* comp-env ns scope scope-name prefix-tokens)]
-    (if (first scoped-candidates)
-      scoped-candidates
-      (when (or scope (= "js" scope-name))
+        ;; :require of closure goog libs can be in alias but cannot be resolved, thus are not
+        ;; found by resolve-namespace
+        scope-from-alias (get (:requires ns) (symbol scope-name))]
+    (if scope
+      (scoped-candidates* comp-env ns scope scope-name prefix-tokens)
+      (when (or (and scope-from-alias (symbol? scope-from-alias)) (= "js" scope-name))
         (let [split-index (.lastIndexOf ^String prefix ".")
               js-scope-name (cond (and (> split-index -1) (not= scope-name "js"))
-                                  (str (env/ns-name scope) "." (subs prefix 0 split-index))
+                                  (str scope-from-alias "." (subs prefix 0 split-index))
                                   (and (> split-index -1) (= scope-name "js"))
                                   (subs prefix 0 split-index)
                                   (= scope-name "js")
                                   ""
-                                  :else (str (env/ns-name scope)))
+                                  :else (str scope-from-alias))
               js-prefix (if (> split-index -1)
                           (subs prefix (inc split-index))
                           prefix)
