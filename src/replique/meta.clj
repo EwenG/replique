@@ -62,8 +62,9 @@
                   resolved (safe-ns-resolve comp-env ns prefix-sym)
                   resolved (when (and resolved (not (class? resolved))) resolved)
                   resolved-ns (when (nil? resolved) (env/find-ns comp-env prefix-sym))
-                  resolved-ns (when (and (nil? resolved) (nil? resolved-ns))
-                                (get (env/ns-aliases comp-env ns) prefix-sym))
+                  resolved-ns (if (and (nil? resolved) (nil? resolved-ns))
+                                (get (env/ns-aliases comp-env ns) prefix-sym)
+                                (or resolved resolved-ns))
                   ;; example: clojure.main$repl
                   resolved-munged (when (and (nil? resolved) (nil? resolved-ns))
                                     (ns-resolve-munged comp-env ns prefix-sym))
