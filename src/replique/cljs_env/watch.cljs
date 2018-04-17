@@ -52,26 +52,64 @@
     (swap! watched-refs dissoc buffer-id)
     (swap! watched-refs-values dissoc buffer-id)))
 
+(declare js-equal)
+
+(defn js-equal-objects [x1 x2]
+  (let [ks (o/getKeys x1)
+        ks-length (.-length ks)]
+    (loop [i 0]
+      (if (>= i ks-length)
+        (let [ks (o/getKeys x2)
+              ks-length (.-length ks)]
+          (loop [i 0]
+            (if (>= i ks-length)
+              true
+              (let [k (aget ks i)]
+                (if (not (o/containsKey x1 k))
+                  false
+                  (recur (inc i)))))))
+        (let [k (aget ks i)]
+          (if (or (not (o/containsKey x2 k))
+                  (not (js-equal (o/get x1 k) (o/get x2 k))))
+            false
+            (recur (inc i))))))))
+
+(defn js-equal-arrays [x1 x2]
+  (let [x1-length (.-length x1)
+        x2-length (.-length x2)]
+    (when (= x1-length x2-length)
+      (loop [i 0]
+        (if (>= i x1-length)
+          true
+          (if (js-equal (aget x1 i) (aget x2 i))
+            (recur (inc i))
+            false))))))
+
+(defn js-equal [x1 x2]
+  (cond (and (object? x1) (object? x2))
+        (js-equal-objects x1 x2)
+        (and (array? x1) (array? x2))
+        (js-equal-arrays x1 x2)
+        :else (= x1 x2)))
+
+;; js objects/array do not implement cljs equality
+(defn browse-get-js [o k]
+  (when (map? o)
+    (when-let [entry (some #(when (js-equal k (key %)) %) o)]
+      (val entry))))
+
 (defn browse-get [o k]
-  (cond (implements? ILookup o) (get o k)
+  (cond (implements? ILookup o)
+        (if (or (object? k) (array? k))
+          (browse-get-js o k)
+          (get o k))
         (object? o) (o/get o k)
         (array? o) (aget o k)
         (and (coll? o) (seqable? o)) (nth (seq o) k)
         :else nil))
 
-(defn browse-get-in
-  ([m ks]
-   (reduce get m ks))
-  ([m ks not-found]
-   (loop [sentinel lookup-sentinel
-          m m
-          ks (seq ks)]
-     (if-not (nil? ks)
-       (let [m (get m (first ks) sentinel)]
-         (if (identical? sentinel m)
-           not-found
-           (recur sentinel m (next ks))))
-       m))))
+(defn browse-get-in [m ks]
+  (reduce browse-get m ks))
 
 (defn parse-browse-path [browse-path]
   (into '() (map reader/read-string) browse-path))
@@ -154,7 +192,9 @@
 
 (comment
   (def tt (atom {:e "e"}))
-  (reset! tt '{:e "e" f [1 2 3 (ffff "e") 5]})
+  (reset! tt {#js {:e 2} #js [1 2 3 4]
+              #js {:f 2} #js [1 2 3 4]
+              [1 2 3] nil})
 
   (remove-watch tt (keyword "replique.watch" "1"))
   (.-watches tt)

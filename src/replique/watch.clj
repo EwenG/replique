@@ -77,19 +77,8 @@
         :else nil))
 
 ;; like clojure.core/get-in but uses browse-get instead of get
-(defn browse-get-in
-  ([m ks]
-   (reduce browse-get m ks))
-  ([m ks not-found]
-   (loop [sentinel (Object.)
-          m m
-          ks (seq ks)]
-     (if ks
-       (let [m (browse-get m (first ks) sentinel)]
-         (if (identical? sentinel m)
-           not-found
-           (recur sentinel m (next ks))))
-       m))))
+(defn browse-get-in [m ks]
+  (reduce browse-get m ks))
 
 (defn parse-browse-path [browse-path]
   (into '() (map read-string) browse-path))
