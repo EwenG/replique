@@ -122,9 +122,7 @@
                 (let [prefix-sym (symbol prefix)
                       resolved (safe-ns-resolve comp-env ns prefix-sym)
                       resolved-ns (when (nil? resolved) (env/find-ns comp-env prefix-sym))
-                      resolved-ns (if (nil? resolved-ns)
-                                    (env/ns-name resolved-ns)
-                                    resolved-ns)
+                      resolved-ns (when resolved-ns (env/ns-name resolved-ns))
                       resolved-ns (if (and (nil? resolved) (nil? resolved-ns))
                                     (get (env/ns-aliases-all comp-env ns) prefix-sym)
                                     (or resolved resolved-ns))]
