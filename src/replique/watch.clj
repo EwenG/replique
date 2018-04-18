@@ -62,7 +62,8 @@
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :remove-watch]
   [{:keys [buffer-id] :as msg}]
   (tooling-msg/with-tooling-response msg
-    (let [ref (get @watched-refs buffer-id)]
+    ;; The ref may not be found if the process has been restarted
+    (when-let [ref (get @watched-refs buffer-id)]
       (remove-watch ref (keyword "replique.watch" (str buffer-id)))
       (swap! watched-refs dissoc buffer-id)
       (swap! watched-refs-values dissoc buffer-id)
@@ -113,57 +114,78 @@
 (defn serializable-map-entry? [e]
   (and (serializable? (key e)) (serializable? (val e))))
 
+(def ^:const symbols-separators-re #"[\]\[\s,\(\)\{\}\"\n\t~@^`;]")
+
+;; Not all symbols can be read byt the Clojure LispReader
+(defn serializable-symbol? [sym]
+  (let [sym-str (name sym)]
+    (not (or (.startsWith sym-str ":")
+             (.endsWith sym-str ":")
+             (.contains sym-str "::")
+             (.startsWith sym-str "#")
+             (.startsWith sym-str "/")
+             (.endsWith sym-str "/")
+             ;; The symbol does not start with a decimal
+             (<= 48 (.codePointAt sym-str 0) 57)
+             (re-find symbols-separators-re sym-str)))))
+
+(defn serializable-keyword? [kw]
+  (let [keyword-name (name kw)]
+    (not (or (.endsWith keyword-name ":")
+             (.contains keyword-name "::")
+             (.startsWith keyword-name "/")
+             (.endsWith keyword-name "/")
+             (re-find symbols-separators-re keyword-name)))))
+
 (defn serializable? [x]
   (cond (nil? x) true
         (instance? Boolean x) true
         (number? x) true
         (string? x) true
-        (symbol? x) true
-        (keyword? x) true
+        (and (symbol? x) (serializable-symbol? x)) true
+        (and (keyword? x) (serializable-keyword? x)) true
         (or (map? x) (instance? Map x)) (every? serializable-map-entry? x)
         (or (coll? x) (instance? Collection x)) (every? serializable? x)
         :else false))
 
 (defn browse-candidates [{:keys [buffer-id var-sym prefix browse-path] :as msg}]
-  (let [ref (get @watched-refs buffer-id)]
-    (if (some? ref)
-      (let [browse-path (parse-browse-path browse-path)
-            ref-value (browse-get-in @ref browse-path)
-            prefix-tokens (completion/tokenize-prefix (str prefix))]
-        ;; Only return candidates that can be read by the clojure/clojurescript reader.
-        ;; This allows keeping the browse path on the client side and thus makes serveral things
-        ;; easier to implement, like handling a browser refresh for example
-        {:candidates
-         (cond (or (map? ref-value) (instance? Map ref-value))
-               (doall
-                (for [k (keys ref-value)
-                      :when (and (completion/matches? (str k) prefix-tokens)
-                                 (serializable? k))]
-                  (binding [*print-length* nil
-                            *print-level* nil
-                            *print-meta* nil]
-                    (pr-str k))))
-               (or (coll? ref-value) (instance? Collection ref-value)
-                   (and (class ref-value) (.isArray (class ref-value))))
-               (doall
-                (for [i (range (count ref-value))
-                      :when (completion/matches? (str i) prefix-tokens)]
-                  (binding [*print-length* nil
-                            *print-level* nil
-                            *print-meta* nil]
-                    (pr-str i))))
-               :else nil)})
-      (let [var (resolve var-sym)
-            ref (maybe-nested-iref var)]
-        (if ref
-          (do
-            (add-replique-watch var-sym buffer-id)
-            (recur msg))
-          {:error (IllegalStateException. (str var-sym " is not defined"))
-           :undefined true})))))
+  (if-let [ref (get @watched-refs buffer-id)]
+    (let [browse-path (parse-browse-path browse-path)
+          ref-value (browse-get-in @ref browse-path)
+          prefix-tokens (completion/tokenize-prefix (str prefix))]
+      ;; Only return candidates that can be read by the clojure/clojurescript reader.
+      ;; This allows keeping the browse path on the client side and thus makes serveral things
+      ;; easier to implement, like handling a browser refresh for example
+      {:candidates
+       (cond (or (map? ref-value) (instance? Map ref-value))
+             (doall
+              (for [k (keys ref-value)
+                    :when (and (completion/matches? (str k) prefix-tokens)
+                               (serializable? k))]
+                (binding [*print-length* nil
+                          *print-level* nil
+                          *print-meta* nil]
+                  (pr-str k))))
+             (or (coll? ref-value) (instance? Collection ref-value)
+                 (and (class ref-value) (.isArray (class ref-value))))
+             (doall
+              (for [i (range (count ref-value))
+                    :when (completion/matches? (str i) prefix-tokens)]
+                (binding [*print-length* nil
+                          *print-level* nil
+                          *print-meta* nil]
+                  (pr-str i))))
+             :else nil)})
+    (let [var (resolve var-sym)
+          ref (maybe-nested-iref var)]
+      (if ref
+        (do
+          (add-replique-watch var-sym buffer-id)
+          (recur msg))
+        {:error (IllegalStateException. (str var-sym " is not defined"))
+         :undefined true}))))
 
-(defmethod tooling-msg/tooling-msg-handle [:replique/clj :browse-candidates]
-  [{:keys [buffer-id prefix browse-path] :as msg}]
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :browse-candidates] [msg]
   (tooling-msg/with-tooling-response msg
     (browse-candidates msg)))
 
@@ -287,8 +309,15 @@
     (browse-candidates-cljs @@cljs-repl-env-nashorn msg)))
 
 (comment
-  (def tt (atom 2))
-  (reset! tt 5)
+  (def tt (atom {:e "e" :f "f"}))
+  
+  (reset! tt {(symbol "\"ee\"") 33
+              (keyword "e~ee") 33
+              "eee  " 44
+              \e 33
+              Collection 33})
+
+  (get-in @tt [(symbol ":eee")])
   
   '{:type :add-watch, :repl-env :replique/browser, :var-sym replique.cljs-env.watch/tt, :buffer-id 1, :process-id "/home/ewen/clojure/replique/", :correlation-id 3512}
 

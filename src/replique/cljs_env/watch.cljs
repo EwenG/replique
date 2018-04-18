@@ -3,7 +3,8 @@
             [replique.cljs-env.elisp-printer :as elisp]
             [replique.cljs-env.completion :as completion]
             [cljs.reader :as reader]
-            [goog.object :as o]))
+            [goog.object :as o]
+            [goog.string :as s]))
 
 (defonce watched-refs (atom {}))
 (defonce watched-refs-values (atom {}))
@@ -135,6 +136,28 @@
 
 (declare serializable?)
 
+(def ^:const symbols-separators-re #"[\]\[\s,\(\)\{\}\"\n\t~@^`;]")
+
+(defn serializable-symbol? [sym]
+  (let [sym-str (name sym)]
+    (not (or (s/startsWith sym-str ":")
+             (s/endsWith sym-str ":")
+             (s/contains sym-str "::")
+             (s/startsWith sym-str "#")
+             (s/startsWith sym-str "/")
+             (s/endsWith sym-str "/")
+             ;; The symbol does not start with a decimal
+             (<= 48 (.charCodeAt sym-str 0) 57)
+             (re-find symbols-separators-re sym-str)))))
+
+(defn serializable-keyword? [kw]
+  (let [keyword-name (name kw)]
+    (not (or (s/endsWith keyword-name ":")
+             (s/contains keyword-name "::")
+             (s/startsWith keyword-name "/")
+             (s/endsWith keyword-name "/")
+             (re-find symbols-separators-re keyword-name)))))
+
 (defn serializable-map-entry? [e]
   (and (serializable? (key e)) (serializable? (val e))))
 
@@ -146,8 +169,8 @@
         (boolean? x) true
         (number? x) true
         (string? x) true
-        (symbol? x) true
-        (keyword? x) true
+        (and (symbol? x) (serializable-symbol? x)) true
+        (and (keyword? x) (serializable-keyword? x)) true
         (map? x) (every? serializable-map-entry? x)
         (object? x) (and o/getAllPropertyNames
                          (every? (partial serializable-object-entry? x)
@@ -156,45 +179,44 @@
         :else false))
 
 (defn browse-candidates [process-id var-sym buffer-id prefix browse-path]
-  (let [watchable (get @watched-refs buffer-id)]
-    (if (some? watchable)
-      (let [watchable-value (maybe-deref watchable)
-            browse-path (parse-browse-path browse-path)
-            watchable-value (browse-get-in watchable-value browse-path)
-            prefix-tokens (completion/tokenize-prefix (str prefix))]
-        (-> (cond (or (map? watchable-value) (object? watchable-value))
-                 (doall
-                  (for [k (if (object? watchable-value)
-                            (o/getKeys watchable-value)
-                            (keys watchable-value))
-                        :when (and (completion/matches? (str k) prefix-tokens)
-                                   (serializable? k))]
-                    (binding [*print-length* nil
-                              *print-level* nil
-                              *print-meta* nil]
-                      (pr-str k))))
-                 (or (coll? watchable-value) (array? watchable-value))
-                 (doall
-                  (for [i (range (count watchable-value))
-                        :when (completion/matches? (str i) prefix-tokens)]
-                    (binding [*print-length* nil
-                              *print-level* nil
-                              *print-meta* nil]
-                      (pr-str i))))
-                 :else nil)
-            elisp/pr-str))
-      (let [watchable (maybe-nested-iref var-sym)]
-        (if watchable
-          (do
-            (add-replique-watch process-id var-sym buffer-id)
-            (recur process-id var-sym buffer-id prefix browse-path))
-          (throw (js/Error. :replique-watch/undefined)))))))
+  (if-let [watchable (get @watched-refs buffer-id)]
+    (let [watchable-value (maybe-deref watchable)
+          browse-path (parse-browse-path browse-path)
+          watchable-value (browse-get-in watchable-value browse-path)
+          prefix-tokens (completion/tokenize-prefix (str prefix))]
+      (-> (cond (or (map? watchable-value) (object? watchable-value))
+                (doall
+                 (for [k (if (object? watchable-value)
+                           (o/getKeys watchable-value)
+                           (keys watchable-value))
+                       :when (and (completion/matches? (str k) prefix-tokens)
+                                  (serializable? k))]
+                   (binding [*print-length* nil
+                             *print-level* nil
+                             *print-meta* nil]
+                     (pr-str k))))
+                (or (coll? watchable-value) (array? watchable-value))
+                (doall
+                 (for [i (range (count watchable-value))
+                       :when (completion/matches? (str i) prefix-tokens)]
+                   (binding [*print-length* nil
+                             *print-level* nil
+                             *print-meta* nil]
+                     (pr-str i))))
+                :else nil)
+          elisp/pr-str))
+    (let [watchable (maybe-nested-iref var-sym)]
+      (if watchable
+        (do
+          (add-replique-watch process-id var-sym buffer-id)
+          (recur process-id var-sym buffer-id prefix browse-path))
+        (throw (js/Error. :replique-watch/undefined))))))
 
 (comment
   (def tt (atom {:e "e"}))
-  (reset! tt {#js {:e 2} #js [1 2 3 4]
+  (reset! tt {(keyword "ee~rr") #js [1 2 3 4]
               #js {:f 2} #js [1 2 3 4]
-              [1 2 3] nil})
+              \r 33})
 
   (remove-watch tt (keyword "replique.watch" "1"))
   (.-watches tt)
