@@ -322,3 +322,6 @@
   '{:type :add-watch, :repl-env :replique/browser, :var-sym replique.cljs-env.watch/tt, :buffer-id 1, :process-id "/home/ewen/clojure/replique/", :correlation-id 3512}
 
   )
+
+;; Not all non-readable symbols/keywords are handled - For example, symbols with spaces / symbols
+;; that start with a "#" ...
