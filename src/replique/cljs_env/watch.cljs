@@ -100,7 +100,7 @@
       (val entry))))
 
 (defn browse-get [o k]
-  (cond (implements? ILookup o)
+  (cond (map? o)
         (if (or (object? k) (array? k))
           (browse-get-js o k)
           (get o k))
@@ -134,11 +134,11 @@
                    print-length print-level browse-path))
           (throw (js/Error. :replique-watch/undefined)))))))
 
-(declare serializable?)
+#_(declare serializable?)
 
-(def ^:const symbols-separators-re #"[\]\[\s,\(\)\{\}\"\n\t~@^`;]")
+#_(def ^:const symbols-separators-re #"[\]\[\s,\(\)\{\}\"\n\t~@^`;]")
 
-(defn serializable-symbol? [sym]
+#_(defn serializable-symbol? [sym]
   (let [sym-str (name sym)]
     (not (or (s/startsWith sym-str ":")
              (s/endsWith sym-str ":")
@@ -150,7 +150,7 @@
              (<= 48 (.charCodeAt sym-str 0) 57)
              (re-find symbols-separators-re sym-str)))))
 
-(defn serializable-keyword? [kw]
+#_(defn serializable-keyword? [kw]
   (let [keyword-name (name kw)]
     (not (or (s/endsWith keyword-name ":")
              (s/contains keyword-name "::")
@@ -158,13 +158,13 @@
              (s/endsWith keyword-name "/")
              (re-find symbols-separators-re keyword-name)))))
 
-(defn serializable-map-entry? [e]
+#_(defn serializable-map-entry? [e]
   (and (serializable? (key e)) (serializable? (val e))))
 
-(defn serializable-object-entry? [o k]
+#_(defn serializable-object-entry? [o k]
   (and (serializable? k) (serializable? (o/get o k))))
 
-(defn serializable? [x]
+#_(defn serializable? [x]
   (cond (nil? x) true
         (boolean? x) true
         (number? x) true
@@ -183,28 +183,29 @@
     (let [watchable-value (maybe-deref watchable)
           browse-path (parse-browse-path browse-path)
           watchable-value (browse-get-in watchable-value browse-path)
-          prefix-tokens (completion/tokenize-prefix (str prefix))]
-      (-> (cond (or (map? watchable-value) (object? watchable-value))
-                (doall
-                 (for [k (if (object? watchable-value)
-                           (o/getKeys watchable-value)
-                           (keys watchable-value))
-                       :when (and (completion/matches? (str k) prefix-tokens)
-                                  (serializable? k))]
-                   (binding [*print-length* nil
-                             *print-level* nil
-                             *print-meta* nil]
-                     (pr-str k))))
-                (or (coll? watchable-value) (array? watchable-value))
-                (doall
-                 (for [i (range (count watchable-value))
-                       :when (completion/matches? (str i) prefix-tokens)]
-                   (binding [*print-length* nil
-                             *print-level* nil
-                             *print-meta* nil]
-                     (pr-str i))))
-                :else nil)
-          elisp/pr-str))
+          prefix-tokens (completion/tokenize-prefix (str prefix))
+          candidates (cond (or (map? watchable-value) (object? watchable-value))
+                           (doall
+                            (let [m-keys (if (object? watchable-value)
+                                           (o/getKeys watchable-value)
+                                           (keys watchable-value))]
+                              (for [[k index] (zipmap m-keys (iterate #(+ 2 %) 0))
+                                    :when (and (completion/matches? (str k) prefix-tokens))]
+                                (binding [*print-length* nil
+                                          *print-level* nil
+                                          *print-meta* nil]
+                                  [(pr-str k) index]))))
+                           (or (coll? watchable-value) (array? watchable-value))
+                           (doall
+                            (for [i (range (count watchable-value))
+                                  :when (completion/matches? (str i) prefix-tokens)]
+                              (binding [*print-length* nil
+                                        *print-level* nil
+                                        *print-meta* nil]
+                                [(pr-str i) i]))))]
+      (if (empty? (str prefix))
+        (elisp/pr-str (cons ["" nil] candidates))
+        (elisp/pr-str candidates)))
     (let [watchable (maybe-nested-iref var-sym)]
       (if watchable
         (do
@@ -212,11 +213,46 @@
           (recur process-id var-sym buffer-id prefix browse-path))
         (throw (js/Error. :replique-watch/undefined))))))
 
+(declare browsable-key?)
+
+(defn browsable-map-entry? [e]
+  (and (browsable-key? (key e)) (browsable-key? (val e))))
+
+;; objects / arrays are not vaid browsable keys since they do not implement cljs equality.
+;; Iterating over the keys of a map would not be the right thing to do since there could
+;; be multiple objects/arrays with the same value (according to cljs equality)
+(defn browsable-key? [x]
+  (cond (nil? x) true
+        (boolean? x) true
+        (number? x) true
+        (string? x) true
+        (symbol? x) true
+        (keyword? x) true
+        (map? x) (every? browsable-map-entry? x)
+        (coll? x) (every? browsable-key? x)
+        :else false))
+
+(defn browsable-serialized-key? [x-str]
+  (try
+    (let [x (reader/read-string x-str)]
+      ;; check things like (read-string "ee~rr")
+      (if (or (and (symbol? x) (not= x-str (pr-str x)))
+              (and (keyword? x) (not= x-str (pr-str x))))
+        false
+        (browsable-key? x)))
+    (catch js/Error e false)))
+
+(defn can-browse [process-id candidate]
+  (elisp/pr-str (browsable-serialized-key? candidate)))
+
+(browsable-serialized-key? #js {:f 2})
+
 (comment
   (def tt (atom {:e "e"}))
   (reset! tt {(keyword "ee~rr") #js [1 2 3 4]
               #js {:f 2} #js [1 2 3 4]
-              \r 33})
+              \r 33
+              {'eeee "eeee"} true})
 
   (remove-watch tt (keyword "replique.watch" "1"))
   (.-watches tt)

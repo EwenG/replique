@@ -3,7 +3,7 @@
             [replique.utils :as utils]
             [replique.completion :as completion]
             [replique.elisp-printer :as elisp])
-  (:import [clojure.lang IRef IDeref IPending ILookup]
+  (:import [clojure.lang IRef IDeref IPending]
            [java.util Map Collection]))
 
 (def ^:private cljs-repl-env (utils/dynaload 'replique.repl-cljs/repl-env))
@@ -38,15 +38,6 @@
             (recur iref @candidate)) 
           :else iref)))
 
-(comment
-  (type (maybe-nested-iref #'replique.repl-cljs/compiler-env))
-  (.getWatches (maybe-nested-iref #'replique.repl-cljs/compiler-env))
-  (instance? clojure.lang.IDeref @#'replique.repl-cljs/compiler-env)
-  (delay? @#'replique.repl-cljs/compiler-env)
-
-  (remove-watch (maybe-nested-iref #'replique.repl-cljs/compiler-env) ::2)
-  )
-
 (defn add-replique-watch [var-sym buffer-id]
   (let [var (resolve var-sym)
         ref (maybe-nested-iref var)]
@@ -69,9 +60,9 @@
       (swap! watched-refs-values dissoc buffer-id)
       nil)))
 
-;; Like clojure.core/get for ILookup and maps. Get the nth element for collections
+;; Like clojure.core/get for maps. Get the nth element for collections
 (defn browse-get [o k]
-  (cond (or (instance? ILookup o) (instance? Map o))
+  (cond (or (map? o) (instance? Map o))
         (get o k)
         (and (or (coll? o) (instance? Collection  o)))
         (nth (seq o) k)
@@ -109,15 +100,15 @@
   (tooling-msg/with-tooling-response msg
     (refresh-watch msg)))
 
-(declare serializable?)
+#_(declare serializable?)
 
-(defn serializable-map-entry? [e]
+#_(defn serializable-map-entry? [e]
   (and (serializable? (key e)) (serializable? (val e))))
 
-(def ^:const symbols-separators-re #"[\]\[\s,\(\)\{\}\"\n\t~@^`;]")
+#_(def ^:const symbols-separators-re #"[\]\[\s,\(\)\{\}\"\n\t~@^`;]")
 
-;; Not all symbols can be read byt the Clojure LispReader
-(defn serializable-symbol? [sym]
+;; Not all symbols can be read but the Clojure LispReader
+#_(defn serializable-symbol? [sym]
   (let [sym-str (name sym)]
     (not (or (.startsWith sym-str ":")
              (.endsWith sym-str ":")
@@ -129,7 +120,7 @@
              (<= 48 (.codePointAt sym-str 0) 57)
              (re-find symbols-separators-re sym-str)))))
 
-(defn serializable-keyword? [kw]
+#_(defn serializable-keyword? [kw]
   (let [keyword-name (name kw)]
     (not (or (.endsWith keyword-name ":")
              (.contains keyword-name "::")
@@ -137,9 +128,9 @@
              (.endsWith keyword-name "/")
              (re-find symbols-separators-re keyword-name)))))
 
-(defn serializable? [x]
+#_(defn serializable? [x]
   (cond (nil? x) true
-        (instance? Boolean x) true
+        (boolean? x) true
         (number? x) true
         (string? x) true
         (and (symbol? x) (serializable-symbol? x)) true
@@ -148,34 +139,62 @@
         (or (coll? x) (instance? Collection x)) (every? serializable? x)
         :else false))
 
+(declare browsable-key?)
+
+(defn browsable-map-entry? [e]
+  (and (browsable-key? (key e)) (browsable-key? (val e))))
+
+(defn browsable-key? [x]
+  (cond (nil? x) true
+        (boolean? x) true
+        (number? x) true
+        (string? x) true
+        (symbol? x) true
+        (keyword? x) true
+        (or (map? x) (instance? Map x)) (every? browsable-map-entry? x)
+        (or (coll? x) (instance? Collection x)) (every? browsable-key? x)
+        :else false))
+
+;; We can only browse keys that can be read by the clojure/clojurescript reader and that implement
+;; equality by value, because of hashmaps lookups.
+;; This allows keeping the browse path on the client side and thus makes serveral things
+;; easier to implement, like handling a browser refresh for example
+(defn browsable-serialized-key? [x-str]
+  (try
+    (let [x (read-string x-str)]
+      ;; check things like (read-string "ee~rr")
+      (if (or (and (symbol? x) (not= x-str (pr-str x)))
+              (and (keyword? x) (not= x-str (pr-str x))))
+        false
+        (browsable-key? x)))
+    (catch Exception e false)))
+
 (defn browse-candidates [{:keys [buffer-id var-sym prefix browse-path] :as msg}]
   (if-let [ref (get @watched-refs buffer-id)]
     (let [browse-path (parse-browse-path browse-path)
           ref-value (browse-get-in @ref browse-path)
-          prefix-tokens (completion/tokenize-prefix (str prefix))]
-      ;; Only return candidates that can be read by the clojure/clojurescript reader.
-      ;; This allows keeping the browse path on the client side and thus makes serveral things
-      ;; easier to implement, like handling a browser refresh for example
-      {:candidates
-       (cond (or (map? ref-value) (instance? Map ref-value))
-             (doall
-              (for [k (keys ref-value)
-                    :when (and (completion/matches? (str k) prefix-tokens)
-                               (serializable? k))]
-                (binding [*print-length* nil
-                          *print-level* nil
-                          *print-meta* nil]
-                  (pr-str k))))
-             (or (coll? ref-value) (instance? Collection ref-value)
-                 (and (class ref-value) (.isArray (class ref-value))))
-             (doall
-              (for [i (range (count ref-value))
-                    :when (completion/matches? (str i) prefix-tokens)]
-                (binding [*print-length* nil
-                          *print-level* nil
-                          *print-meta* nil]
-                  (pr-str i))))
-             :else nil)})
+          prefix-tokens (completion/tokenize-prefix (str prefix))
+          candidates (cond (or (map? ref-value) (instance? Map ref-value))
+                           (doall
+                            (for [[k index] (zipmap (keys ref-value) (iterate #(+ 2 %) 0))
+                                  :when (and (completion/matches? (str k) prefix-tokens))]
+                              (binding [*print-length* nil
+                                        *print-level* nil
+                                        *print-meta* nil]
+                                [(pr-str k) index])))
+                           (or (coll? ref-value) (instance? Collection ref-value)
+                               (and (class ref-value) (.isArray (class ref-value))))
+                           (doall
+                            (for [i (range (count ref-value))
+                                  :when (completion/matches? (str i) prefix-tokens)]
+                              (binding [*print-length* nil
+                                        *print-level* nil
+                                        *print-meta* nil]
+                                [(pr-str i) i])))
+                           :else nil)]
+      {:candidates (if (empty? (str prefix))
+                     (cons ["" nil] candidates)
+                     candidates)})
     (let [var (resolve var-sym)
           ref (maybe-nested-iref var)]
       (if ref
@@ -189,29 +208,10 @@
   (tooling-msg/with-tooling-response msg
     (browse-candidates msg)))
 
-(comment
-  (.isArray (class (int-array 2)))
-  (.isArray (class nil))
-  (get (int-array 2) 1)
-
-  (instance? java.util.Map (doto (java.util.HashMap.)
-                             (.put "e" 3)))
-  (map key (doto (java.util.HashMap.)
-                     (.put "e" 3)))
-  (coll? "ee")
-  (instance? java.util.Collection (doto (java.util.ArrayList.)
-                                    (.add 3)))
-  (nth (doto (java.util.ArrayList.)
-         (.add 3)) 0)
-  (get (doto (java.util.ArrayList.)
-         (.add 3)) 1)
-  
-  (= (doto (java.util.ArrayList.)
-       (.add 3)) [3])
-
-  (coll? #{"e"})
-  
-  )
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :can-browse?]
+  [{:keys [candidate] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    {:can-browse? (browsable-serialized-key? candidate)}))
 
 (defn add-replique-watch-cljs [repl-env {:keys [process-id var-sym buffer-id] :as msg}]
   (let [{:keys [status value]}
@@ -308,20 +308,47 @@
   (tooling-msg/with-tooling-response msg
     (browse-candidates-cljs @@cljs-repl-env-nashorn msg)))
 
+(defn can-browse-cljs
+  [repl-env {:keys [process-id candidate] :as msg}]
+  (let [{:keys [status value stacktrace] :as ret}
+        (@cljs-evaluate-form
+         repl-env
+         (format "replique.cljs_env.watch.can_browse(%s, %s);"
+                 (pr-str process-id) (pr-str candidate))
+         :timeout-before-submitted 100)]
+    (if-not (= status :success)
+      {:error (or stacktrace value)}
+      {:can-browse? (elisp/->ElispString value)})))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :can-browse?]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (can-browse-cljs @@cljs-repl-env msg)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :can-browse?]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (can-browse-cljs @@cljs-repl-env-nashorn msg)))
+
 (comment
-  (def tt (atom {:e "e" :f "f"}))
+  (def tt (atom {{:e 33} "e" :f "f"}))
   
-  (reset! tt {(symbol "\"ee\"") 33
-              (keyword "e~ee") 33
-              "eee  " 44
-              \e 33
-              Collection 33})
+  (reset! tt {(symbol "ee~rr") 33
+              (doto (java.util.HashMap.) (.put "e" 33)) 44
+              {:e "rr"
+               'tt 44} {:e "f"}})
 
   (get-in @tt [(symbol ":eee")])
   
   '{:type :add-watch, :repl-env :replique/browser, :var-sym replique.cljs-env.watch/tt, :buffer-id 1, :process-id "/home/ewen/clojure/replique/", :correlation-id 3512}
 
+  (doto (java.util.HashMap.) (.put "e" 33))
+  
   )
 
 ;; Not all non-readable symbols/keywords are handled - For example, symbols with spaces / symbols
 ;; that start with a "#" ...
+
+
+
+
