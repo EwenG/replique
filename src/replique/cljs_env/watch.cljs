@@ -116,7 +116,8 @@
   (into '() (map reader/read-string) browse-path))
 
 (defn refresh-watch [process-id update? var-sym buffer-id
-                     print-length print-level browse-path]
+                     print-length print-level print-meta
+                     browse-path]
   (let [watchable (get @watched-refs buffer-id)]
     (if (some? watchable)
       (let [browse-path (parse-browse-path browse-path)]
@@ -124,14 +125,16 @@
           (swap! watched-refs-values assoc buffer-id (maybe-deref watchable)))
         (let [watchable-value (get @watched-refs-values buffer-id)]
           (binding [*print-length* print-length
-                    *print-level* print-level]
+                    *print-level* print-level
+                    *print-meta* print-meta]
             (pr-str (browse-get-in watchable-value browse-path)))))
       (let [watchable (maybe-nested-iref var-sym)]
         (if watchable
           (do
             (add-replique-watch process-id var-sym buffer-id)
             (recur process-id update? var-sym buffer-id
-                   print-length print-level browse-path))
+                   print-length print-level print-meta
+                   browse-path))
           (throw (js/Error. :replique-watch/undefined)))))))
 
 #_(declare serializable?)
@@ -178,10 +181,9 @@
         (or (coll? x) (array? x)) (every? serializable? x)
         :else false))
 
-(defn browse-candidates [process-id var-sym buffer-id prefix browse-path]
-  (if-let [watchable (get @watched-refs buffer-id)]
-    (let [watchable-value (maybe-deref watchable)
-          browse-path (parse-browse-path browse-path)
+(defn browse-candidates [process-id var-sym buffer-id prefix print-meta browse-path]
+  (if-let [watchable-value (get @watched-refs-values buffer-id)]
+    (let [browse-path (parse-browse-path browse-path)
           watchable-value (browse-get-in watchable-value browse-path)
           prefix-tokens (completion/tokenize-prefix (str prefix))
           candidates (cond (or (map? watchable-value) (object? watchable-value))
@@ -189,28 +191,30 @@
                             (let [m-keys (if (object? watchable-value)
                                            (o/getKeys watchable-value)
                                            (keys watchable-value))]
-                              (for [[k index] (zipmap m-keys (iterate #(+ 2 %) 0))
+                              (for [k m-keys
                                     :when (and (completion/matches? (str k) prefix-tokens))]
                                 (binding [*print-length* nil
                                           *print-level* nil
-                                          *print-meta* nil]
-                                  [(pr-str k) index]))))
+                                          *print-meta* print-meta]
+                                  (pr-str k)))))
                            (or (coll? watchable-value) (array? watchable-value))
                            (doall
                             (for [i (range (count watchable-value))
                                   :when (completion/matches? (str i) prefix-tokens)]
                               (binding [*print-length* nil
                                         *print-level* nil
-                                        *print-meta* nil]
-                                [(pr-str i) i]))))]
-      (if (empty? (str prefix))
-        (elisp/pr-str (cons ["" nil] candidates))
-        (elisp/pr-str candidates)))
+                                        *print-meta* print-meta]
+                                (pr-str i)))))]
+      (binding [*print-level* nil
+                *print-length* nil]
+        (if (empty? (str prefix))
+          (elisp/pr-str (cons "" candidates))
+          (elisp/pr-str candidates))))
     (let [watchable (maybe-nested-iref var-sym)]
       (if watchable
         (do
           (add-replique-watch process-id var-sym buffer-id)
-          (recur process-id var-sym buffer-id prefix browse-path))
+          (recur process-id var-sym buffer-id prefix print-meta browse-path))
         (throw (js/Error. :replique-watch/undefined))))))
 
 (declare browsable-key?)
@@ -243,7 +247,9 @@
     (catch js/Error e false)))
 
 (defn can-browse [process-id candidate]
-  (elisp/pr-str (browsable-serialized-key? candidate)))
+  (binding [*print-level* nil
+            *print-length* nil]
+    (elisp/pr-str (browsable-serialized-key? candidate))))
 
 (browsable-serialized-key? #js {:f 2})
 
@@ -251,8 +257,13 @@
   (def tt (atom {:e "e"}))
   (reset! tt {(keyword "ee~rr") #js [1 2 3 4]
               #js {:f 2} #js [1 2 3 4]
+              #js {:f 2} #js [1 2 3 4]
               \r 33
               {'eeee "eeee"} true})
+
+  (reset! tt (with-meta {(with-meta [33] {33 44 "ee" 44}) "e"
+                         #js {:f 2} #js [1 2 3 4]}
+               {:m "m"}))
 
   (remove-watch tt (keyword "replique.watch" "1"))
   (.-watches tt)

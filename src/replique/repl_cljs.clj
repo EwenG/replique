@@ -605,7 +605,9 @@ replique.cljs_env.repl.connect(\"" url "\");
   :cljs)
 
 (defmethod utils/repl-params :replique/cljs [repl-env]
-  (select-keys @repl-params ["cljs.core/*print-length*" "cljs.core/*print-level*"]))
+  (select-keys @repl-params ["cljs.core/*print-length*"
+                             "cljs.core/*print-level*"
+                             "cljs.core/*print-meta*"]))
 
 ;; Customized REPL to allow exiting the REPL with :cljs/quit
 ;; Also always reset the reader even is :source-map-inline is false in order to set the metadata on

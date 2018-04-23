@@ -75,7 +75,9 @@
 (defn parse-browse-path [browse-path]
   (into '() (map read-string) browse-path))
 
-(defn refresh-watch [{:keys [buffer-id update? var-sym print-length print-level browse-path]
+(defn refresh-watch [{:keys [buffer-id update? var-sym
+                             print-length print-level print-meta
+                             browse-path]
                       :as msg}]
   (let [ref (get @watched-refs buffer-id)]
     (if (some? ref)
@@ -84,7 +86,8 @@
           (swap! watched-refs-values assoc buffer-id @ref))
         (let [ref-value (get @watched-refs-values buffer-id)]
           {:var-value (binding [*print-length* print-length
-                                *print-level* print-level]
+                                *print-level* print-level
+                                *print-meta* print-meta]
                         (pr-str (browse-get-in ref-value browse-path)))}))
       (let [var (resolve var-sym)
             ref (maybe-nested-iref var)]
@@ -146,7 +149,7 @@
 
 (defn browsable-key? [x]
   (cond (nil? x) true
-        (boolean? x) true
+        (instance? Boolean x) true
         (number? x) true
         (string? x) true
         (symbol? x) true
@@ -169,19 +172,19 @@
         (browsable-key? x)))
     (catch Exception e false)))
 
-(defn browse-candidates [{:keys [buffer-id var-sym prefix browse-path] :as msg}]
-  (if-let [ref (get @watched-refs buffer-id)]
+(defn browse-candidates [{:keys [buffer-id var-sym prefix print-meta browse-path] :as msg}]
+  (if-let [ref-value (get @watched-refs-values buffer-id)]
     (let [browse-path (parse-browse-path browse-path)
-          ref-value (browse-get-in @ref browse-path)
+          ref-value (browse-get-in ref-value browse-path)
           prefix-tokens (completion/tokenize-prefix (str prefix))
           candidates (cond (or (map? ref-value) (instance? Map ref-value))
                            (doall
-                            (for [[k index] (zipmap (keys ref-value) (iterate #(+ 2 %) 0))
+                            (for [k (keys ref-value)
                                   :when (and (completion/matches? (str k) prefix-tokens))]
                               (binding [*print-length* nil
                                         *print-level* nil
-                                        *print-meta* nil]
-                                [(pr-str k) index])))
+                                        *print-meta* print-meta]
+                                (pr-str k))))
                            (or (coll? ref-value) (instance? Collection ref-value)
                                (and (class ref-value) (.isArray (class ref-value))))
                            (doall
@@ -189,11 +192,10 @@
                                   :when (completion/matches? (str i) prefix-tokens)]
                               (binding [*print-length* nil
                                         *print-level* nil
-                                        *print-meta* nil]
-                                [(pr-str i) i])))
-                           :else nil)]
+                                        *print-meta* print-meta]
+                                (pr-str i)))))]
       {:candidates (if (empty? (str prefix))
-                     (cons ["" nil] candidates)
+                     (cons "" candidates)
                      candidates)})
     (let [var (resolve var-sym)
           ref (maybe-nested-iref var)]
@@ -255,16 +257,19 @@
   `[~@(interpose (symbol ",") browse-path)])
 
 (defn refresh-watch-cljs
-  [repl-env {:keys [process-id update? var-sym buffer-id print-length print-level browse-path]
+  [repl-env {:keys [process-id update? var-sym buffer-id
+                    print-length print-level print-meta
+                    browse-path]
              :as msg}]
   (let [{:keys [status value stacktrace] :as ret}
         (@cljs-evaluate-form
          repl-env
-         (format "replique.cljs_env.watch.refresh_watch(%s, %s, %s, %s, %s, %s, %s);"
+         (format "replique.cljs_env.watch.refresh_watch(%s, %s, %s, %s, %s, %s, %s, %s);"
                  (pr-str process-id) (pr-str (boolean update?)) 
                  (pr-str (@cljs-munged var-sym)) (pr-str buffer-id)
                  (if (nil? print-length) "null" (pr-str print-length))
                  (if (nil? print-level) "null" (pr-str print-level))
+                 (if (nil? print-meta) "null" (pr-str print-meta))
                  (if (nil? browse-path) "null" (pr-str (browse-path->js-array browse-path))))
          :timeout-before-submitted 100)]
     (if-not (= status :success)
@@ -283,15 +288,15 @@
     (refresh-watch-cljs @@cljs-repl-env-nashorn msg)))
 
 (defn browse-candidates-cljs
-  [repl-env {:keys [process-id var-sym buffer-id prefix browse-path] :as msg}]
+  [repl-env {:keys [process-id var-sym buffer-id prefix print-meta browse-path] :as msg}]
   (let [{:keys [status value stacktrace] :as ret}
         (@cljs-evaluate-form
          repl-env
-         (format "replique.cljs_env.watch.browse_candidates(%s, %s, %s, %s, %s);"
+         (format "replique.cljs_env.watch.browse_candidates(%s, %s, %s, %s, %s, %s);"
                  (pr-str process-id) (pr-str (@cljs-munged var-sym)) (pr-str buffer-id)
-                 (pr-str prefix) (if (nil? browse-path)
-                                   "null"
-                                   (pr-str (browse-path->js-array browse-path))))
+                 (pr-str prefix)
+                 (if (nil? print-meta) "null" (pr-str print-meta))
+                 (if (nil? browse-path) "null" (pr-str (browse-path->js-array browse-path))))
          :timeout-before-submitted 100)]
     (if-not (= status :success)
       {:error (or stacktrace value)
@@ -336,19 +341,19 @@
   (reset! tt {(symbol "ee~rr") 33
               (doto (java.util.HashMap.) (.put "e" 33)) 44
               {:e "rr"
-               'tt 44} {:e "f"}})
+               'tt 44} {:e "f"}
+              :fffff/ggggg "e"
+              "rrrrr" 33})
 
   (get-in @tt [(symbol ":eee")])
   
   '{:type :add-watch, :repl-env :replique/browser, :var-sym replique.cljs-env.watch/tt, :buffer-id 1, :process-id "/home/ewen/clojure/replique/", :correlation-id 3512}
 
   (doto (java.util.HashMap.) (.put "e" 33))
-  
+
   )
 
 ;; Not all non-readable symbols/keywords are handled - For example, symbols with spaces / symbols
 ;; that start with a "#" ...
 
-
-
-
+;; init browse position using the current cursor position

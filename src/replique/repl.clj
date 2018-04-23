@@ -133,6 +133,7 @@
 (defmethod utils/repl-params :replique/clj [repl-env]
   {"clojure.core/*print-level*" *print-level*
    "clojure.core/*print-length*" *print-length*
+   "clojure.core/*print-meta*" *print-meta*
    "clojure.core/*warn-on-reflection*" *warn-on-reflection*})
 
 (defn set-source-meta! []
