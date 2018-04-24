@@ -2,7 +2,8 @@
   (:require [replique.tooling-msg :as tooling-msg]
             [replique.utils :as utils]
             [replique.completion :as completion]
-            [replique.elisp-printer :as elisp])
+            [replique.elisp-printer :as elisp]
+            [replique.watch-protocols :as protocols])
   (:import [clojure.lang IRef IDeref IPending]
            [java.util Map Collection]))
 
@@ -12,18 +13,49 @@
 (def ^:private cljs-munged (utils/dynaload 'cljs.compiler/munge))
 
 (defonce watched-refs (atom {}))
-(defonce watched-refs-values (atom {}))
 
-(defn update-watch [buffer-id ref value]
+(defn notification-watcher [buffer-id k ref old-value value]
   (binding [*out* tooling-msg/tooling-out]
     (utils/with-lock tooling-msg/tooling-out-lock
       (tooling-msg/tooling-prn {:type :watch-update
                                 :process-id tooling-msg/process-id
                                 :buffer-id buffer-id}))))
 
-(defn ref-watcher [buffer-id]
-  (fn ref-watcher* [k r o n]
-    (update-watch buffer-id r n)))
+(declare add-recorded-watch-value)
+
+(defn recorder-watcher [buffer-id k ref old-value value]
+  (swap! watched-refs update buffer-id add-recorded-watch-value value))
+
+(deftype WatchedRef [ref values index]
+  protocols/IGetRef
+  (protocols/get-ref [this] ref)
+  IDeref
+  (deref [this] (get values index))
+  protocols/IWatchHandler
+  (protocols/add-watch-handler [this buffer-id]
+    (add-watch ref (keyword "replique.watch" (str buffer-id))
+               (partial notification-watcher buffer-id)))
+  protocols/IMostRecentValue
+  (protocols/most-recent-value [this] (WatchedRef. ref [@ref] 0)))
+
+(deftype RecordedWatchRef [ref values index]
+  protocols/IGetRef
+  (protocols/get-ref [this] ref)
+  IDeref
+  (deref [this] (get values index))
+  protocols/IWatchHandler
+  (protocols/add-watch-handler [this buffer-id]
+    (add-watch ref (keyword "replique.watch" (str buffer-id))
+               (juxt
+                (partial recorder-watcher buffer-id)
+                (partial notification-watcher buffer-id))))
+  protocols/IMostRecentValue
+  (protocols/most-recent-value [this] (RecordedWatchRef. ref values (dec (count values)))))
+
+(defn add-recorded-watch-value [^RecordedWatchRef recorded-watch new-value]
+  (->RecordedWatchRef (.-ref recorded-watch)
+                      (conj (.-values recorded-watch) new-value)
+                      (.-index recorded-watch)))
 
 (defn maybe-nested-iref [x]
   (loop [iref x
@@ -40,9 +72,10 @@
 
 (defn add-replique-watch [var-sym buffer-id]
   (let [var (resolve var-sym)
-        ref (maybe-nested-iref var)]
-    (add-watch ref (keyword "replique.watch" (str buffer-id)) (ref-watcher buffer-id))
-    (swap! watched-refs assoc buffer-id ref)
+        ref (maybe-nested-iref var)
+        watched-ref (->WatchedRef ref [@ref] 0)]
+    (swap! watched-refs assoc buffer-id watched-ref)
+    (protocols/add-watch-handler watched-ref buffer-id)
     {}))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :add-watch]
@@ -54,10 +87,9 @@
   [{:keys [buffer-id] :as msg}]
   (tooling-msg/with-tooling-response msg
     ;; The ref may not be found if the process has been restarted
-    (when-let [ref (get @watched-refs buffer-id)]
-      (remove-watch ref (keyword "replique.watch" (str buffer-id)))
+    (when-let [watched-ref (get @watched-refs buffer-id)]
+      (remove-watch (protocols/get-ref watched-ref) (keyword "replique.watch" (str buffer-id)))
       (swap! watched-refs dissoc buffer-id)
-      (swap! watched-refs-values dissoc buffer-id)
       nil)))
 
 ;; Like clojure.core/get for maps. Get the nth element for collections
@@ -79,12 +111,12 @@
                              print-length print-level print-meta
                              browse-path]
                       :as msg}]
-  (let [ref (get @watched-refs buffer-id)]
-    (if (some? ref)
-      (let [browse-path (parse-browse-path browse-path)]
-        (when update?
-          (swap! watched-refs-values assoc buffer-id @ref))
-        (let [ref-value (get @watched-refs-values buffer-id)]
+  (let [watched-ref (get @watched-refs buffer-id)]
+    (if (some? watched-ref)
+      (let [browse-path (parse-browse-path browse-path)
+            watched-ref (if update? (protocols/most-recent-value watched-ref) watched-ref)]
+        (swap! watched-refs assoc buffer-id watched-ref)
+        (let [ref-value @watched-ref]
           {:var-value (binding [*print-length* print-length
                                 *print-level* print-level
                                 *print-meta* print-meta]
@@ -173,9 +205,9 @@
     (catch Exception e false)))
 
 (defn browse-candidates [{:keys [buffer-id var-sym prefix print-meta browse-path] :as msg}]
-  (if-let [ref-value (get @watched-refs-values buffer-id)]
+  (if-let [watched-ref (get @watched-refs buffer-id)]
     (let [browse-path (parse-browse-path browse-path)
-          ref-value (browse-get-in ref-value browse-path)
+          ref-value (browse-get-in @watched-ref browse-path)
           prefix-tokens (completion/tokenize-prefix (str prefix))
           candidates (cond (or (map? ref-value) (instance? Map ref-value))
                            (doall
@@ -338,12 +370,7 @@
 (comment
   (def tt (atom {{:e 33} "e" :f "f"}))
   
-  (reset! tt {(symbol "ee~rr") 33
-              (doto (java.util.HashMap.) (.put "e" 33)) 44
-              {:e "rr"
-               'tt 44} {:e "f"}
-              :fffff/ggggg "e"
-              "rrrrr" 33})
+  (reset! tt '["eee" rrrr])
 
   (get-in @tt [(symbol ":eee")])
   
@@ -355,5 +382,3 @@
 
 ;; Not all non-readable symbols/keywords are handled - For example, symbols with spaces / symbols
 ;; that start with a "#" ...
-
-;; init browse position using the current cursor position
