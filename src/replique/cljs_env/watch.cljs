@@ -7,9 +7,8 @@
             [goog.string :as s]))
 
 (defonce watched-refs (atom {}))
-(defonce watched-refs-values (atom {}))
 
-(defn update-watch [process-id buffer-id ref value]
+(defn notification-watcher [process-id buffer-id k ref old-value value]
   (repl/send-print-tooling
    (binding [*print-level* nil
              *print-length* nil]
@@ -17,9 +16,58 @@
                     :process-id process-id
                     :buffer-id buffer-id}))))
 
-(defn ref-watcher [process-id buffer-id]
-  (fn ref-watcher* [k r o n]
-    (update-watch process-id buffer-id r n)))
+(declare add-recorded-watch-value)
+
+(defn recorder-watcher [buffer-id k ref old-value value]
+  (swap! watched-refs update buffer-id add-recorded-watch-value value))
+
+(defn maybe-deref [x]
+  (if (satisfies? IDeref x) @x x))
+
+(defprotocol IWatchHandler
+  (add-watch-handler [this process-id buffer-id]))
+
+(defprotocol IMostRecentValue
+  (most-recent-value [this]))
+
+(defprotocol IRecordable
+  (record [this])
+  (stop-recording [this]))
+
+(defprotocol IGetWatchable
+  (get-watchable [this]))
+
+(deftype Watched [watchable values index]
+  IGetWatchable
+  (get-watchable [this] watchable)
+  IDeref
+  (-deref [this] (get values index))
+  IWatchHandler
+  (add-watch-handler [this process-id buffer-id]
+    (add-watch watchable (keyword "replique.watch" (str buffer-id))
+               (partial notification-watcher process-id buffer-id)))
+  IMostRecentValue
+  (most-recent-value [this] (Watched. watchable [(maybe-deref watchable)] 0)))
+
+(deftype RecordedWatched [watchable values index]
+  IGetWatchable
+  (get-watchable [this] watchable)
+  IDeref
+  (-deref [this] (get values index))
+  IWatchHandler
+  (add-watch-handler [this process-id buffer-id]
+    (add-watch watchable (keyword "replique.watch" (str buffer-id))
+               (juxt
+                (partial recorder-watcher buffer-id)
+                (partial notification-watcher buffer-id))))
+  IMostRecentValue
+  (most-recent-value [this] (RecordedWatched. watchable values
+                                              (dec (count values)))))
+
+(defn add-recorded-watch-value [recorded-watch new-value]
+  (->RecordedWatched (.-ref recorded-watch)
+                     (conj (.-values recorded-watch) new-value)
+                     (.-index recorded-watch)))
 
 (defn maybe-nested-iref [x]
   (loop [iref x
@@ -35,75 +83,22 @@
             (recur iref @candidate)) 
           :else iref)))
 
-(defn maybe-deref [x]
-  (if (satisfies? IDeref x) @x x))
-
 (defn add-replique-watch [process-id var-sym buffer-id]
-  (let [watchable (maybe-nested-iref var-sym)]
-    (add-watch watchable
-               (keyword "replique.watch" (str buffer-id))
-               (ref-watcher process-id buffer-id))
-    (swap! watched-refs assoc buffer-id watchable)))
+  (let [watchable (maybe-nested-iref var-sym)
+        watched (->Watched watchable [(maybe-deref watchable)] 0)]
+    (swap! watched-refs assoc buffer-id watched)
+    (add-watch-handler watched process-id buffer-id)))
 
 (defn remove-replique-watch [buffer-id]
   ;; If the js runtime is restarted between add-watch and remove-watch, the watchable object
   ;; may not be found
-  (when-let [watchable (get @watched-refs buffer-id)]
-    (remove-watch watchable (keyword "replique.watch" (str buffer-id)))
-    (swap! watched-refs dissoc buffer-id)
-    (swap! watched-refs-values dissoc buffer-id)))
-
-(declare js-equal)
-
-(defn js-equal-objects [x1 x2]
-  (let [ks (o/getKeys x1)
-        ks-length (.-length ks)]
-    (loop [i 0]
-      (if (>= i ks-length)
-        (let [ks (o/getKeys x2)
-              ks-length (.-length ks)]
-          (loop [i 0]
-            (if (>= i ks-length)
-              true
-              (let [k (aget ks i)]
-                (if (not (o/containsKey x1 k))
-                  false
-                  (recur (inc i)))))))
-        (let [k (aget ks i)]
-          (if (or (not (o/containsKey x2 k))
-                  (not (js-equal (o/get x1 k) (o/get x2 k))))
-            false
-            (recur (inc i))))))))
-
-(defn js-equal-arrays [x1 x2]
-  (let [x1-length (.-length x1)
-        x2-length (.-length x2)]
-    (when (= x1-length x2-length)
-      (loop [i 0]
-        (if (>= i x1-length)
-          true
-          (if (js-equal (aget x1 i) (aget x2 i))
-            (recur (inc i))
-            false))))))
-
-(defn js-equal [x1 x2]
-  (cond (and (object? x1) (object? x2))
-        (js-equal-objects x1 x2)
-        (and (array? x1) (array? x2))
-        (js-equal-arrays x1 x2)
-        :else (= x1 x2)))
-
-;; js objects/array do not implement cljs equality
-(defn browse-get-js [o k]
-  (when (map? o)
-    (when-let [entry (some #(when (js-equal k (key %)) %) o)]
-      (val entry))))
+  (when-let [watched (get @watched-refs buffer-id)]
+    (remove-watch (get-watchable watched) (keyword "replique.watch" (str buffer-id)))
+    (swap! watched-refs dissoc buffer-id)))
 
 (defn browse-get [o k]
   (cond (map? o)
-        (if (or (object? k) (array? k))
-          (browse-get-js o k)
-          (get o k))
+        (get o k)
         (object? o) (o/get o k)
         (array? o) (aget o k)
         (and (coll? o) (seqable? o)) (nth (seq o) k)
@@ -118,12 +113,12 @@
 (defn refresh-watch [process-id update? var-sym buffer-id
                      print-length print-level print-meta
                      browse-path]
-  (let [watchable (get @watched-refs buffer-id)]
-    (if (some? watchable)
-      (let [browse-path (parse-browse-path browse-path)]
-        (when update?
-          (swap! watched-refs-values assoc buffer-id (maybe-deref watchable)))
-        (let [watchable-value (get @watched-refs-values buffer-id)]
+  (let [watched (get @watched-refs buffer-id)]
+    (if (some? watched)
+      (let [browse-path (parse-browse-path browse-path)
+            watched (if update? (most-recent-value watched) watched)]
+        (swap! watched-refs assoc buffer-id watched)
+        (let [watchable-value @watched]
           (binding [*print-length* print-length
                     *print-level* print-level
                     *print-meta* print-meta]
@@ -182,9 +177,9 @@
         :else false))
 
 (defn browse-candidates [process-id var-sym buffer-id prefix print-meta browse-path]
-  (if-let [watchable-value (get @watched-refs-values buffer-id)]
+  (if-let [watched (get @watched-refs buffer-id)]
     (let [browse-path (parse-browse-path browse-path)
-          watchable-value (browse-get-in watchable-value browse-path)
+          watchable-value (browse-get-in @watched browse-path)
           prefix-tokens (completion/tokenize-prefix (str prefix))
           candidates (cond (or (map? watchable-value) (object? watchable-value))
                            (doall
@@ -250,8 +245,6 @@
   (binding [*print-level* nil
             *print-length* nil]
     (elisp/pr-str (browsable-serialized-key? candidate))))
-
-(browsable-serialized-key? #js {:f 2})
 
 (comment
   (def tt (atom {:e "e"}))
