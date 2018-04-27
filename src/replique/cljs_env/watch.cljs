@@ -31,11 +31,16 @@
   (most-recent-value [this]))
 
 (defprotocol IRecordable
-  (record [this])
-  (stop-recording [this]))
+  (start-recording [this process-id buffer-id])
+  (stop-recording [this process-id buffer-id])
+  (record-position [this])
+  (value-at-index [this index]))
 
 (defprotocol IGetWatchable
   (get-watchable [this]))
+
+(declare ->Watched)
+(declare ->RecordedWatched)
 
 (deftype Watched [watchable values index]
   IGetWatchable
@@ -47,7 +52,18 @@
     (add-watch watchable (keyword "replique.watch" (str buffer-id))
                (partial notification-watcher process-id buffer-id)))
   IMostRecentValue
-  (most-recent-value [this] (Watched. watchable [(maybe-deref watchable)] 0)))
+  (most-recent-value [this] (->Watched watchable [(maybe-deref watchable)] 0))
+  IRecordable
+  (start-recording [this process-id buffer-id]
+    (remove-watch watchable (keyword "replique.watch" (str buffer-id)))
+    (let [watched (->RecordedWatched watchable values index)]
+      (add-watch-handler watched process-id buffer-id)
+      watched))
+  (stop-recording [this process-id buffer-id] this)
+  (record-position [this]
+    {:index (inc index) :count (count values)})
+  (value-at-index [this index]
+    (->Watched watchable values (max (min index (dec (count values))) 0))))
 
 (deftype RecordedWatched [watchable values index]
   IGetWatchable
@@ -59,13 +75,24 @@
     (add-watch watchable (keyword "replique.watch" (str buffer-id))
                (juxt
                 (partial recorder-watcher buffer-id)
-                (partial notification-watcher buffer-id))))
+                (partial notification-watcher process-id buffer-id))))
   IMostRecentValue
-  (most-recent-value [this] (RecordedWatched. watchable values
-                                              (dec (count values)))))
+  (most-recent-value [this] (->RecordedWatched watchable values
+                                               (dec (count values))))
+  IRecordable
+  (start-recording [this process-id buffer-id] this)
+  (stop-recording [this process-id buffer-id]
+    (remove-watch watchable (keyword "replique.watch" (str buffer-id)))
+    (let [watched (->Watched watchable values index)]
+      (add-watch-handler watched process-id buffer-id)
+      watched))
+  (record-position [this]
+    {:index (inc index) :count (count values)})
+  (value-at-index [this index]
+    (->RecordedWatched watchable values (max (min index (dec (count values))) 0))))
 
 (defn add-recorded-watch-value [recorded-watch new-value]
-  (->RecordedWatched (.-ref recorded-watch)
+  (->RecordedWatched (.-watchable recorded-watch)
                      (conj (.-values recorded-watch) new-value)
                      (.-index recorded-watch)))
 
@@ -89,6 +116,19 @@
     (swap! watched-refs assoc buffer-id watched)
     (add-watch-handler watched process-id buffer-id)))
 
+(defn add-watch-and-retry
+  ([process-id buffer-id var-sym retry-fn]  
+   (add-watch-and-retry process-id buffer-id var-sym retry-fn nil))
+  ([process-id buffer-id var-sym retry-fn params]
+   (let [watchable (maybe-nested-iref var-sym)]
+     (if watchable
+       (do
+         (add-replique-watch process-id var-sym buffer-id)
+         (if params
+           (retry-fn process-id buffer-id var-sym params)
+           (retry-fn process-id buffer-id var-sym)))
+       (throw (js/Error. :replique-watch/undefined))))))
+
 (defn remove-replique-watch [buffer-id]
   ;; If the js runtime is restarted between add-watch and remove-watch, the watchable object
   ;; may not be found
@@ -110,27 +150,19 @@
 (defn parse-browse-path [browse-path]
   (into '() (map reader/read-string) browse-path))
 
-(defn refresh-watch [process-id update? var-sym buffer-id
-                     print-length print-level print-meta
-                     browse-path]
-  (let [watched (get @watched-refs buffer-id)]
-    (if (some? watched)
-      (let [browse-path (parse-browse-path browse-path)
-            watched (if update? (most-recent-value watched) watched)]
-        (swap! watched-refs assoc buffer-id watched)
-        (let [watchable-value @watched]
-          (binding [*print-length* print-length
-                    *print-level* print-level
-                    *print-meta* print-meta]
-            (pr-str (browse-get-in watchable-value browse-path)))))
-      (let [watchable (maybe-nested-iref var-sym)]
-        (if watchable
-          (do
-            (add-replique-watch process-id var-sym buffer-id)
-            (recur process-id update? var-sym buffer-id
-                   print-length print-level print-meta
-                   browse-path))
-          (throw (js/Error. :replique-watch/undefined)))))))
+(defn refresh-watch [process-id buffer-id var-sym
+                     [update? print-length print-level print-meta
+                      browse-path :as params]]
+  (if-let [watched (get @watched-refs buffer-id)]
+    (let [browse-path (parse-browse-path browse-path)
+          watched (if update? (most-recent-value watched) watched)]
+      (swap! watched-refs assoc buffer-id watched)
+      (let [watchable-value @watched]
+        (binding [*print-length* print-length
+                  *print-level* print-level
+                  *print-meta* print-meta]
+          (pr-str (browse-get-in watchable-value browse-path)))))
+    (add-watch-and-retry process-id buffer-id var-sym refresh-watch params)))
 
 #_(declare serializable?)
 
@@ -176,7 +208,8 @@
         (or (coll? x) (array? x)) (every? serializable? x)
         :else false))
 
-(defn browse-candidates [process-id var-sym buffer-id prefix print-meta browse-path]
+(defn browse-candidates [process-id var-sym buffer-id
+                         [prefix print-meta browse-path :as params]]
   (if-let [watched (get @watched-refs buffer-id)]
     (let [browse-path (parse-browse-path browse-path)
           watchable-value (browse-get-in @watched browse-path)
@@ -205,12 +238,7 @@
         (if (empty? (str prefix))
           (elisp/pr-str (cons "" candidates))
           (elisp/pr-str candidates))))
-    (let [watchable (maybe-nested-iref var-sym)]
-      (if watchable
-        (do
-          (add-replique-watch process-id var-sym buffer-id)
-          (recur process-id var-sym buffer-id prefix print-meta browse-path))
-        (throw (js/Error. :replique-watch/undefined))))))
+    (add-watch-and-retry process-id buffer-id var-sym browse-candidates params)))
 
 (declare browsable-key?)
 
@@ -246,13 +274,38 @@
             *print-length* nil]
     (elisp/pr-str (browsable-serialized-key? candidate))))
 
+(defn do-start-recording [process-id buffer-id var-sym]
+  (if-let [watched (get @watched-refs buffer-id)]
+    (swap! watched-refs update buffer-id #(start-recording % process-id buffer-id))
+    (add-watch-and-retry process-id buffer-id var-sym
+                         do-start-recording)))
+
+(defn do-stop-recording [process-id buffer-id var-sym]
+  (if-let [watched (get @watched-refs buffer-id)]
+    (swap! watched-refs update buffer-id #(stop-recording % process-id buffer-id))
+    (add-watch-and-retry process-id buffer-id var-sym do-stop-recording)))
+
+(defn get-record-position [process-id buffer-id var-sym]
+  (if-let [watched (get @watched-refs buffer-id)]
+    (binding [*print-level* nil
+              *print-length* nil]
+      (elisp/pr-str (record-position watched)))
+    (add-watch-and-retry process-id buffer-id var-sym get-record-position)))
+
+(defn set-record-position [process-id buffer-id var-sym [index :as params]]
+  (if-let [watched (get @watched-refs buffer-id)]
+    (let [watched (value-at-index watched index)]
+      (swap! watched-refs assoc buffer-id watched)
+      (elisp/pr-str (record-position watched)))
+    (add-watch-and-retry process-id buffer-id var-sym set-record-position params)))
+
 (comment
   (def tt (atom {:e "e"}))
   (reset! tt {(keyword "ee~rr") #js [1 2 3 4]
               #js {:f 2} #js [1 2 3 4]
               #js {:f 2} #js [1 2 3 4]
               \r 33
-              {'eeee "eeee"} true})
+              {'eeee "eeee3"} true})
 
   (reset! tt (with-meta {(with-meta [33] {33 44 "ee" 44}) "e"
                          #js {:f 2} #js [1 2 3 4]}

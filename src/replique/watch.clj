@@ -26,6 +26,9 @@
 (defn recorder-watcher [buffer-id k ref old-value value]
   (swap! watched-refs update buffer-id add-recorded-watch-value value))
 
+(declare ->WatchedRef)
+(declare ->RecordedWatchedRef)
+
 (deftype WatchedRef [ref values index]
   protocols/IGetRef
   (protocols/get-ref [this] ref)
@@ -35,10 +38,20 @@
   (protocols/add-watch-handler [this buffer-id]
     (add-watch ref (keyword "replique.watch" (str buffer-id))
                (partial notification-watcher buffer-id)))
-  protocols/IMostRecentValue
-  (protocols/most-recent-value [this] (WatchedRef. ref [@ref] 0)))
+  protocols/IRecordable
+  (prtocols/start-recording [this buffer-id]
+    (remove-watch ref (keyword "replique.watch" (str buffer-id)))
+    (let [watched-ref (->RecordedWatchedRef ref values index)]
+      (protocols/add-watch-handler watched-ref buffer-id)
+      watched-ref))
+  (protocols/stop-recording [this buffer-id] this)
+  (protocols/record-position [this]
+    {:index (inc index) :count (count values)})
+  (protocols/most-recent-value [this] (->WatchedRef ref [@ref] 0))
+  (protocols/value-at-index [this index]
+    (->WatchedRef ref values (max (min index (dec (count values))) 0))))
 
-(deftype RecordedWatchRef [ref values index]
+(deftype RecordedWatchedRef [ref values index]
   protocols/IGetRef
   (protocols/get-ref [this] ref)
   IDeref
@@ -49,13 +62,24 @@
                (juxt
                 (partial recorder-watcher buffer-id)
                 (partial notification-watcher buffer-id))))
-  protocols/IMostRecentValue
-  (protocols/most-recent-value [this] (RecordedWatchRef. ref values (dec (count values)))))
+  protocols/IRecordable
+  (protocols/start-recording [this buffer-id] this)
+  (protocols/stop-recording [this buffer-id]
+    (remove-watch ref (keyword "replique.watch" (str buffer-id)))
+    (let [watched-ref (->WatchedRef ref values index)]
+      (protocols/add-watch-handler watched-ref buffer-id)
+      watched-ref))
+  (protocols/record-position [this]
+    {:index (inc index) :count (count values)})
+  (protocols/most-recent-value [this]
+    (->RecordedWatchedRef ref values (dec (count values))))
+  (protocols/value-at-index [this index]
+    (->RecordedWatchedRef ref values (max (min index (dec (count values))) 0))))
 
-(defn add-recorded-watch-value [^RecordedWatchRef recorded-watch new-value]
-  (->RecordedWatchRef (.-ref recorded-watch)
-                      (conj (.-values recorded-watch) new-value)
-                      (.-index recorded-watch)))
+(defn add-recorded-watch-value [^RecordedWatchedRef recorded-watch new-value]
+  (->RecordedWatchedRef (.-ref recorded-watch)
+                        (conj (.-values recorded-watch) new-value)
+                        (.-index recorded-watch)))
 
 (defn maybe-nested-iref [x]
   (loop [iref x
@@ -77,6 +101,16 @@
     (swap! watched-refs assoc buffer-id watched-ref)
     (protocols/add-watch-handler watched-ref buffer-id)
     {}))
+
+(defn add-watch-and-retry [{:keys [buffer-id var-sym] :as msg} retry-fn]
+  (let [var (resolve var-sym)
+        ref (maybe-nested-iref var)]
+    (if ref
+      (do
+        (add-replique-watch var-sym buffer-id)
+        (retry-fn msg))
+      {:error (IllegalStateException. (str var-sym " is not defined"))
+       :undefined true})))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :add-watch]
   [{:keys [var-sym buffer-id] :as msg}]
@@ -107,28 +141,25 @@
 (defn parse-browse-path [browse-path]
   (into '() (map read-string) browse-path))
 
-(defn refresh-watch [{:keys [buffer-id update? var-sym
+(defn refresh-watch [{:keys [buffer-id update? index
                              print-length print-level print-meta
                              browse-path]
                       :as msg}]
-  (let [watched-ref (get @watched-refs buffer-id)]
-    (if (some? watched-ref)
-      (let [browse-path (parse-browse-path browse-path)
-            watched-ref (if update? (protocols/most-recent-value watched-ref) watched-ref)]
-        (swap! watched-refs assoc buffer-id watched-ref)
-        (let [ref-value @watched-ref]
-          {:var-value (binding [*print-length* print-length
-                                *print-level* print-level
-                                *print-meta* print-meta]
-                        (pr-str (browse-get-in ref-value browse-path)))}))
-      (let [var (resolve var-sym)
-            ref (maybe-nested-iref var)]
-        (if ref
-          (do
-            (add-replique-watch var-sym buffer-id)
-            (recur msg))
-          {:error (IllegalStateException. (str var-sym " is not defined"))
-           :undefined true})))))
+  (if-let [watched-ref (get @watched-refs buffer-id)]
+    (let [browse-path (parse-browse-path browse-path)
+          watched-ref (cond update?
+                            (protocols/most-recent-value watched-ref)
+                            index
+                            (protocols/value-at-index watched-ref index)
+                            :else watched-ref)]
+      (swap! watched-refs assoc buffer-id watched-ref)
+      (let [ref-value @watched-ref]
+        {:var-value (binding [*print-length* print-length
+                              *print-level* print-level
+                              *print-meta* print-meta]
+                      (pr-str (browse-get-in ref-value browse-path)))
+         :record-position (protocols/record-position watched-ref)}))
+    (add-watch-and-retry msg refresh-watch)))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :refresh-watch]
   [msg]
@@ -204,7 +235,7 @@
         (browsable-key? x)))
     (catch Exception e false)))
 
-(defn browse-candidates [{:keys [buffer-id var-sym prefix print-meta browse-path] :as msg}]
+(defn browse-candidates [{:keys [buffer-id prefix print-meta browse-path] :as msg}]
   (if-let [watched-ref (get @watched-refs buffer-id)]
     (let [browse-path (parse-browse-path browse-path)
           ref-value (browse-get-in @watched-ref browse-path)
@@ -229,14 +260,7 @@
       {:candidates (if (empty? (str prefix))
                      (cons "" candidates)
                      candidates)})
-    (let [var (resolve var-sym)
-          ref (maybe-nested-iref var)]
-      (if ref
-        (do
-          (add-replique-watch var-sym buffer-id)
-          (recur msg))
-        {:error (IllegalStateException. (str var-sym " is not defined"))
-         :undefined true}))))
+    (add-watch-and-retry msg browse-candidates)))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :browse-candidates] [msg]
   (tooling-msg/with-tooling-response msg
@@ -296,9 +320,9 @@
   (let [{:keys [status value stacktrace] :as ret}
         (@cljs-evaluate-form
          repl-env
-         (format "replique.cljs_env.watch.refresh_watch(%s, %s, %s, %s, %s, %s, %s, %s);"
-                 (pr-str process-id) (pr-str (boolean update?)) 
-                 (pr-str (@cljs-munged var-sym)) (pr-str buffer-id)
+         (format "replique.cljs_env.watch.refresh_watch(%s, %s, %s, [%s, %s, %s, %s, %s]);"
+                 (pr-str process-id) (pr-str buffer-id) (pr-str (@cljs-munged var-sym))
+                 (pr-str (boolean update?))
                  (if (nil? print-length) "null" (pr-str print-length))
                  (if (nil? print-level) "null" (pr-str print-level))
                  (if (nil? print-meta) "null" (pr-str print-meta))
@@ -324,7 +348,7 @@
   (let [{:keys [status value stacktrace] :as ret}
         (@cljs-evaluate-form
          repl-env
-         (format "replique.cljs_env.watch.browse_candidates(%s, %s, %s, %s, %s, %s);"
+         (format "replique.cljs_env.watch.browse_candidates(%s, %s, %s, [%s, %s, %s]);"
                  (pr-str process-id) (pr-str (@cljs-munged var-sym)) (pr-str buffer-id)
                  (pr-str prefix)
                  (if (nil? print-meta) "null" (pr-str print-meta))
@@ -367,10 +391,143 @@
   (tooling-msg/with-tooling-response msg
     (can-browse-cljs @@cljs-repl-env-nashorn msg)))
 
+(defn do-start-recording [{:keys [buffer-id] :as msg}]
+  (if-let [watched-ref (get @watched-refs buffer-id)]
+    (swap! watched-refs update buffer-id #(protocols/start-recording % buffer-id))
+    (add-watch-and-retry msg do-start-recording)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :start-recording]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (do-start-recording msg)
+    {}))
+
+(defn do-stop-recording [{:keys [buffer-id] :as msg}]
+  (if-let [watched-ref (get @watched-refs buffer-id)]
+    (swap! watched-refs update buffer-id #(protocols/stop-recording % buffer-id))
+    (add-watch-and-retry msg do-stop-recording)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :stop-recording]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (do-stop-recording msg)
+    {}))
+
+(defn start-recording-cljs
+  [repl-env {:keys [process-id buffer-id var-sym] :as msg}]
+  (let [{:keys [status value stacktrace] :as ret}
+        (@cljs-evaluate-form
+         repl-env
+         (format "replique.cljs_env.watch.do_start_recording(%s, %s, %s);"
+                 (pr-str process-id) (pr-str buffer-id) (pr-str (@cljs-munged var-sym)))
+         :timeout-before-submitted 100)]
+    (if-not (= status :success)
+      {:error (or stacktrace value)}
+      {})))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :start-recording]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (start-recording-cljs @@cljs-repl-env msg)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :start-recording]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (start-recording-cljs @@cljs-repl-env-nashorn msg)))
+
+(defn stop-recording-cljs
+  [repl-env {:keys [process-id buffer-id var-sym] :as msg}]
+  (let [{:keys [status value stacktrace] :as ret}
+        (@cljs-evaluate-form
+         repl-env
+         (format "replique.cljs_env.watch.do_stop_recording(%s, %s, %s);"
+                 (pr-str process-id) (pr-str buffer-id) (pr-str (@cljs-munged var-sym)))
+         :timeout-before-submitted 100)]
+    (if-not (= status :success)
+      {:error (or stacktrace value)}
+      {})))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :stop-recording]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (stop-recording-cljs @@cljs-repl-env msg)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :stop-recording]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (stop-recording-cljs @@cljs-repl-env-nashorn msg)))
+
+(defn get-record-position [{:keys [buffer-id] :as msg}]
+  (if-let [watched-ref (get @watched-refs buffer-id)]
+    (protocols/record-position watched-ref)
+    (add-watch-and-retry msg get-record-position)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :record-position]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    {:record-position (get-record-position msg)}))
+
+(defn get-record-position-cljs
+  [repl-env {:keys [process-id buffer-id var-sym] :as msg}]
+  (let [{:keys [status value stacktrace] :as ret}
+        (@cljs-evaluate-form
+         repl-env
+         (format "replique.cljs_env.watch.get_record_position(%s, %s, %s);"
+                 (pr-str process-id) (pr-str buffer-id) (pr-str (@cljs-munged var-sym)))
+         :timeout-before-submitted 100)]
+    (if-not (= status :success)
+      {:error (or stacktrace value)}
+      {:record-position (elisp/->ElispString value)})))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :record-position]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (get-record-position-cljs @@cljs-repl-env msg)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :record-position]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (get-record-position-cljs @@cljs-repl-env-nashorn msg)))
+
+(defn set-record-position [{:keys [buffer-id index] :as msg}]
+  (if-let [watched-ref (get @watched-refs buffer-id)]
+    (let [watched-ref (protocols/value-at-index watched-ref index)]
+      (swap! watched-refs assoc buffer-id watched-ref)
+      (protocols/record-position watched-ref))
+    (add-watch-and-retry msg set-record-position)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :set-record-position]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    {:record-position (set-record-position msg)}))
+
+(defn set-record-position-cljs
+  [repl-env {:keys [process-id buffer-id var-sym index] :as msg}]
+  (let [{:keys [status value stacktrace] :as ret}
+        (@cljs-evaluate-form
+         repl-env
+         (format "replique.cljs_env.watch.set_record_position(%s, %s, %s, [%s]);"
+                 (pr-str process-id) (pr-str buffer-id) (pr-str (@cljs-munged var-sym))
+                 (pr-str index))
+         :timeout-before-submitted 100)]
+    (if-not (= status :success)
+      {:error (or stacktrace value)}
+      {:record-position (elisp/->ElispString value)})))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :set-record-position]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (set-record-position-cljs @@cljs-repl-env msg)))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :set-record-position]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (set-record-position-cljs @@cljs-repl-env-nashorn msg)))
+
 (comment
   (def tt (atom {{:e 33} "e" :f "f"}))
   
-  (reset! tt '["eee" rrrr])
+  (reset! tt '["eee" rrrr7])
 
   (get-in @tt [(symbol ":eee")])
   

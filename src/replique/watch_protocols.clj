@@ -3,12 +3,12 @@
 (defprotocol IWatchHandler
   (add-watch-handler [this buffer-id]))
 
-(defprotocol IMostRecentValue
-  (most-recent-value [this]))
-
 (defprotocol IRecordable
-  (record [this])
-  (stop-recording [this]))
+  (start-recording [this buffer-id])
+  (stop-recording [this buffer-id])
+  (record-position [this])
+  (most-recent-value [this])
+  (value-at-index [this index]))
 
 (defprotocol IGetRef
   (get-ref [this]))
