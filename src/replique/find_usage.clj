@@ -91,9 +91,11 @@
        persistent!))
 
 (defn ns-aliases-symbols [comp-env ns target-ns]
-  (doall (for [[k v] (env/ns-aliases-all comp-env ns)
-               :when (= v target-ns)]
-           k)))
+  (->> (for [[k v] (env/ns-aliases-all comp-env ns)
+             :when (= v target-ns)]
+         [k (symbol (str "::" k))])
+       (apply concat)
+       doall))
 
 (defn symbols-in-namespace-alias [comp-env target-ns symbols ns]
   (assoc! symbols (str ns) (ns-aliases-symbols comp-env ns target-ns)))
