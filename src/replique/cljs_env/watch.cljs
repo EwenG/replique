@@ -3,8 +3,7 @@
             [replique.cljs-env.elisp-printer :as elisp]
             [replique.cljs-env.completion :as completion]
             [cljs.reader :as reader]
-            [goog.object :as o]
-            [goog.string :as s]))
+            [goog.object :as o]))
 
 (defonce watched-refs (atom {}))
 
@@ -31,7 +30,7 @@
   (most-recent-value [this]))
 
 (defprotocol IRecordable
-  (start-recording [this process-id buffer-id])
+  (start-recording [this process-id buffer-id record-size])
   (stop-recording [this process-id buffer-id])
   (record-position [this])
   (value-at-index [this index]))
@@ -41,6 +40,15 @@
 
 (declare ->Watched)
 (declare ->RecordedWatched)
+
+(defn recorded-watched-with-record-size [watchable values index record-size]
+  (if (> (count values) record-size)
+    (let [drop-n (- (count values) record-size)
+          new-values (if (> drop-n index)
+                       (into [(get values index)] (drop (inc drop-n)) values)
+                       (into [] (drop drop-n) values))]
+      (->RecordedWatched watchable new-values (max 0 (- index drop-n)) record-size))
+    (->RecordedWatched watchable values index record-size)))
 
 (deftype Watched [watchable values index]
   IGetWatchable
@@ -54,9 +62,9 @@
   IMostRecentValue
   (most-recent-value [this] (->Watched watchable [(maybe-deref watchable)] 0))
   IRecordable
-  (start-recording [this process-id buffer-id]
+  (start-recording [this process-id buffer-id record-size]
     (remove-watch watchable (keyword "replique.watch" (str buffer-id)))
-    (let [watched (->RecordedWatched watchable values index)]
+    (let [watched (->RecordedWatched watchable values index record-size)]
       (add-watch-handler watched process-id buffer-id)
       watched))
   (stop-recording [this process-id buffer-id] this)
@@ -65,7 +73,7 @@
   (value-at-index [this index]
     (->Watched watchable values (max (min index (dec (count values))) 0))))
 
-(deftype RecordedWatched [watchable values index]
+(deftype RecordedWatched [watchable values index record-size]
   IGetWatchable
   (get-watchable [this] watchable)
   IDeref
@@ -78,9 +86,11 @@
                 (partial notification-watcher process-id buffer-id))))
   IMostRecentValue
   (most-recent-value [this] (->RecordedWatched watchable values
-                                               (dec (count values))))
+                                               (dec (count values))
+                                               record-size))
   IRecordable
-  (start-recording [this process-id buffer-id] this)
+  (start-recording [this process-id buffer-id record-size]
+    (recorded-watched-with-record-size watchable values index record-size))
   (stop-recording [this process-id buffer-id]
     (remove-watch watchable (keyword "replique.watch" (str buffer-id)))
     (let [watched (->Watched watchable values index)]
@@ -89,12 +99,13 @@
   (record-position [this]
     {:index (inc index) :count (count values)})
   (value-at-index [this index]
-    (->RecordedWatched watchable values (max (min index (dec (count values))) 0))))
+    (->RecordedWatched watchable values (max (min index (dec (count values))) 0) record-size)))
 
 (defn add-recorded-watch-value [recorded-watch new-value]
-  (->RecordedWatched (.-watchable recorded-watch)
-                     (conj (.-values recorded-watch) new-value)
-                     (.-index recorded-watch)))
+  (recorded-watched-with-record-size (.-watchable recorded-watch)
+                                     (conj (.-values recorded-watch) new-value)
+                                     (.-index recorded-watch)
+                                     (.-record-size recorded-watch)))
 
 (defn maybe-nested-iref [x]
   (loop [iref x
@@ -274,11 +285,10 @@
             *print-length* nil]
     (elisp/pr-str (browsable-serialized-key? candidate))))
 
-(defn do-start-recording [process-id buffer-id var-sym]
+(defn do-start-recording [process-id buffer-id var-sym [record-size :as params]]
   (if-let [watched (get @watched-refs buffer-id)]
-    (swap! watched-refs update buffer-id #(start-recording % process-id buffer-id))
-    (add-watch-and-retry process-id buffer-id var-sym
-                         do-start-recording)))
+    (swap! watched-refs update buffer-id #(start-recording % process-id buffer-id record-size))
+    (add-watch-and-retry process-id buffer-id var-sym do-start-recording params)))
 
 (defn do-stop-recording [process-id buffer-id var-sym]
   (if-let [watched (get @watched-refs buffer-id)]

@@ -4,7 +4,7 @@
   (add-watch-handler [this buffer-id]))
 
 (defprotocol IRecordable
-  (start-recording [this buffer-id])
+  (start-recording [this buffer-id record-size])
   (stop-recording [this buffer-id])
   (record-position [this])
   (most-recent-value [this])

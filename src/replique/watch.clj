@@ -29,6 +29,15 @@
 (declare ->WatchedRef)
 (declare ->RecordedWatchedRef)
 
+(defn recorded-watched-ref-with-record-size [ref values index record-size]
+  (if (> (count values) record-size)
+    (let [drop-n (- (count values) record-size)
+          new-values (if (> drop-n index)
+                       (into [(get values index)] (drop (inc drop-n)) values)
+                       (into [] (drop drop-n) values))]
+      (->RecordedWatchedRef ref new-values (max 0 (- index drop-n)) record-size))
+    (->RecordedWatchedRef ref values index record-size)))
+
 (deftype WatchedRef [ref values index]
   protocols/IGetRef
   (protocols/get-ref [this] ref)
@@ -39,9 +48,9 @@
     (add-watch ref (keyword "replique.watch" (str buffer-id))
                (partial notification-watcher buffer-id)))
   protocols/IRecordable
-  (prtocols/start-recording [this buffer-id]
+  (prtocols/start-recording [this buffer-id record-size]
     (remove-watch ref (keyword "replique.watch" (str buffer-id)))
-    (let [watched-ref (->RecordedWatchedRef ref values index)]
+    (let [watched-ref (->RecordedWatchedRef ref values index record-size)]
       (protocols/add-watch-handler watched-ref buffer-id)
       watched-ref))
   (protocols/stop-recording [this buffer-id] this)
@@ -51,7 +60,7 @@
   (protocols/value-at-index [this index]
     (->WatchedRef ref values (max (min index (dec (count values))) 0))))
 
-(deftype RecordedWatchedRef [ref values index]
+(deftype RecordedWatchedRef [ref values index record-size]
   protocols/IGetRef
   (protocols/get-ref [this] ref)
   IDeref
@@ -63,7 +72,8 @@
                 (partial recorder-watcher buffer-id)
                 (partial notification-watcher buffer-id))))
   protocols/IRecordable
-  (protocols/start-recording [this buffer-id] this)
+  (protocols/start-recording [this buffer-id record-size]
+    (recorded-watched-ref-with-record-size ref values index record-size))
   (protocols/stop-recording [this buffer-id]
     (remove-watch ref (keyword "replique.watch" (str buffer-id)))
     (let [watched-ref (->WatchedRef ref values index)]
@@ -72,14 +82,15 @@
   (protocols/record-position [this]
     {:index (inc index) :count (count values)})
   (protocols/most-recent-value [this]
-    (->RecordedWatchedRef ref values (dec (count values))))
+    (->RecordedWatchedRef ref values (dec (count values)) record-size))
   (protocols/value-at-index [this index]
-    (->RecordedWatchedRef ref values (max (min index (dec (count values))) 0))))
+    (->RecordedWatchedRef ref values (max (min index (dec (count values))) 0) record-size)))
 
 (defn add-recorded-watch-value [^RecordedWatchedRef recorded-watch new-value]
-  (->RecordedWatchedRef (.-ref recorded-watch)
-                        (conj (.-values recorded-watch) new-value)
-                        (.-index recorded-watch)))
+  (recorded-watched-ref-with-record-size (.-ref recorded-watch)
+                                         (conj (.-values recorded-watch) new-value)
+                                         (.-index recorded-watch)
+                                         (.-record-size recorded-watch)))
 
 (defn maybe-nested-iref [x]
   (loop [iref x
@@ -391,9 +402,9 @@
   (tooling-msg/with-tooling-response msg
     (can-browse-cljs @@cljs-repl-env-nashorn msg)))
 
-(defn do-start-recording [{:keys [buffer-id] :as msg}]
+(defn do-start-recording [{:keys [buffer-id record-size] :as msg}]
   (if-let [watched-ref (get @watched-refs buffer-id)]
-    (swap! watched-refs update buffer-id #(protocols/start-recording % buffer-id))
+    (swap! watched-refs update buffer-id #(protocols/start-recording % buffer-id record-size))
     (add-watch-and-retry msg do-start-recording)))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :start-recording]
@@ -414,12 +425,13 @@
     {}))
 
 (defn start-recording-cljs
-  [repl-env {:keys [process-id buffer-id var-sym] :as msg}]
+  [repl-env {:keys [process-id buffer-id var-sym record-size] :as msg}]
   (let [{:keys [status value stacktrace] :as ret}
         (@cljs-evaluate-form
          repl-env
-         (format "replique.cljs_env.watch.do_start_recording(%s, %s, %s);"
-                 (pr-str process-id) (pr-str buffer-id) (pr-str (@cljs-munged var-sym)))
+         (format "replique.cljs_env.watch.do_start_recording(%s, %s, %s, [%s]);"
+                 (pr-str process-id) (pr-str buffer-id) (pr-str (@cljs-munged var-sym))
+                 (pr-str record-size))
          :timeout-before-submitted 100)]
     (if-not (= status :success)
       {:error (or stacktrace value)}
