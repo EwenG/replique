@@ -360,7 +360,7 @@
         (@cljs-evaluate-form
          repl-env
          (format "replique.cljs_env.watch.browse_candidates(%s, %s, %s, [%s, %s, %s]);"
-                 (pr-str process-id) (pr-str (@cljs-munged var-sym)) (pr-str buffer-id)
+                 (pr-str process-id) (pr-str buffer-id) (pr-str (@cljs-munged var-sym))
                  (pr-str prefix)
                  (if (nil? print-meta) "null" (pr-str print-meta))
                  (if (nil? browse-path) "null" (pr-str (browse-path->js-array browse-path))))

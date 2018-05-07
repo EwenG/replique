@@ -219,7 +219,7 @@
         (or (coll? x) (array? x)) (every? serializable? x)
         :else false))
 
-(defn browse-candidates [process-id var-sym buffer-id
+(defn browse-candidates [process-id buffer-id var-sym
                          [prefix print-meta browse-path :as params]]
   (if-let [watched (get @watched-refs buffer-id)]
     (let [browse-path (parse-browse-path browse-path)
