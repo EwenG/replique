@@ -124,37 +124,40 @@
       (str "Clojure Server " name) server-daemon
       (try
         (loop [client-counter 0]
-          (when (not (.isClosed socket))
-            (try
-              (let [conn (.accept socket)
-                    in (.getInputStream conn)
-                    out (.getOutputStream conn)
-                    client-id (str client-counter)]
-                (let [first-char (.read in)]
-                  ;; If the first char is \G, we assume the input stream contains an HTTP GET
-                  ;; request
-                  ;; If the first char is \P, we assume the input stream contains an HTTP POST
-                  ;; request
-                  (case first-char
-                    ;; \G
-                    71 (let [;; unread the char because it is part of the HTTP request
-                             in (make-http-reader first-char in)]
-                         (accept-connection-http in out accept-http-fn))
-                    ;; \P
-                    80 (let [;; unread the char because it is part of the HTTP request
-                             in (make-http-reader first-char in)]
-                         (accept-connection-http in out accept-http-fn))
-                    (let [in (clojure.lang.LineNumberingPushbackReader.
-                              (java.io.InputStreamReader. in))
-                          out (java.io.BufferedWriter.
-                               (java.io.OutputStreamWriter. out))]
-                      ;; Don't unread the char since the client sent a fake init char
-                      (thread
-                        (str "Clojure Connection " name " " client-id) client-daemon
-                        (accept-connection conn name client-id in out
-                                           (if bind-err out *err*) accept args))))))
-              (catch SocketException _disconnect))
-            (recur (inc client-counter))))
+          (recur
+           (when (not (.isClosed socket))
+             (try
+               (let [conn (.accept socket)
+                     in (.getInputStream conn)
+                     out (.getOutputStream conn)
+                     client-id (str client-counter)]
+                 (let [first-char (.read in)]
+                   ;; If the first char is \G, we assume the input stream contains an HTTP GET
+                   ;; request
+                   ;; If the first char is \P, we assume the input stream contains an HTTP POST
+                   ;; request
+                   (case first-char
+                     ;; \G
+                     71 (let [;; unread the char because it is part of the HTTP request
+                              in (make-http-reader first-char in)]
+                          (accept-connection-http in out accept-http-fn)
+                          client-counter)
+                     ;; \P
+                     80 (let [;; unread the char because it is part of the HTTP request
+                              in (make-http-reader first-char in)]
+                          (accept-connection-http in out accept-http-fn)
+                          client-counter)
+                     (let [in (clojure.lang.LineNumberingPushbackReader.
+                               (java.io.InputStreamReader. in))
+                           out (java.io.BufferedWriter.
+                                (java.io.OutputStreamWriter. out))]
+                       ;; Don't unread the char since the client sent a fake init char
+                       (thread
+                         (str "Clojure Connection " name " " client-id) client-daemon
+                         (accept-connection conn name client-id in out
+                                            (if bind-err out *err*) accept args))
+                       (inc client-counter)))))
+               (catch SocketException _disconnect)))))
         (finally
           (utils/with-lock lock
             (alter-var-root #'servers dissoc name)))))
