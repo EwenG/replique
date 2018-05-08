@@ -123,7 +123,7 @@
     (thread
       (str "Clojure Server " name) server-daemon
       (try
-        (loop [client-counter 1]
+        (loop [client-counter 0]
           (when (not (.isClosed socket))
             (try
               (let [conn (.accept socket)
