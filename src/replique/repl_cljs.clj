@@ -684,15 +684,16 @@ replique.cljs_env.repl.connect(\"" url "\");
                                (replique.cljs/source-logging-push-back-reader
                                 *in* 1 (or path "NO_SOURCE_FILE") (or line 1) (or column 1)))})]
     (when main-namespace (ensure-compiled repl-env main-namespace))
-    (swap! cljs-outs conj *out*)
     (when (not= :started state)
       (println (format "Waiting for browser to connect on port %d ..." (server/server-port))))
-    (binding [utils/*repl-env* :replique/browser]
-      (apply
-       (partial replique.cljs/repl repl-env)
-       (->> (merge (:options @compiler-env) repl-opts {:eval eval-cljs})
-            (apply concat))))
-    (swap! cljs-outs disj *out*)))
+    (swap! cljs-outs conj *out*)
+    (try
+      (binding [utils/*repl-env* :replique/browser]
+        (apply
+         (partial replique.cljs/repl repl-env)
+         (->> (merge (:options @compiler-env) repl-opts {:eval eval-cljs})
+              (apply concat))))
+      (finally (swap! cljs-outs disj *out*)))))
 
 (defn stop-cljs-server []
   (let [{:keys [eval-executor result-executor]} @server/cljs-server]
