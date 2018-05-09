@@ -7,12 +7,12 @@
 
 (defonce watched-refs (atom {}))
 
-(defn notification-watcher [process-id buffer-id k ref old-value value]
+(defn notification-watcher [buffer-id k ref old-value value]
   (repl/send-print-tooling
    (binding [*print-level* nil
              *print-length* nil]
      (elisp/pr-str {:type :watch-update
-                    :process-id process-id
+                    :process-id repl/*process-id*
                     :buffer-id buffer-id}))))
 
 (declare add-recorded-watch-value)
@@ -24,14 +24,14 @@
   (if (satisfies? IDeref x) @x x))
 
 (defprotocol IWatchHandler
-  (add-watch-handler [this process-id buffer-id]))
+  (add-watch-handler [this buffer-id]))
 
 (defprotocol IMostRecentValue
   (most-recent-value [this]))
 
 (defprotocol IRecordable
-  (start-recording [this process-id buffer-id record-size])
-  (stop-recording [this process-id buffer-id])
+  (start-recording [this buffer-id record-size])
+  (stop-recording [this buffer-id])
   (record-position [this])
   (value-at-index [this index]))
 
@@ -56,18 +56,18 @@
   IDeref
   (-deref [this] (get values index))
   IWatchHandler
-  (add-watch-handler [this process-id buffer-id]
+  (add-watch-handler [this buffer-id]
     (add-watch watchable (keyword "replique.watch" (str buffer-id))
-               (partial notification-watcher process-id buffer-id)))
+               (partial notification-watcher buffer-id)))
   IMostRecentValue
   (most-recent-value [this] (->Watched watchable [(maybe-deref watchable)] 0))
   IRecordable
-  (start-recording [this process-id buffer-id record-size]
+  (start-recording [this buffer-id record-size]
     (remove-watch watchable (keyword "replique.watch" (str buffer-id)))
     (let [watched (->RecordedWatched watchable values index record-size)]
-      (add-watch-handler watched process-id buffer-id)
+      (add-watch-handler watched buffer-id)
       watched))
-  (stop-recording [this process-id buffer-id] this)
+  (stop-recording [this buffer-id] this)
   (record-position [this]
     {:index (inc index) :count (count values)})
   (value-at-index [this index]
@@ -79,22 +79,22 @@
   IDeref
   (-deref [this] (get values index))
   IWatchHandler
-  (add-watch-handler [this process-id buffer-id]
+  (add-watch-handler [this buffer-id]
     (add-watch watchable (keyword "replique.watch" (str buffer-id))
                (juxt
                 (partial recorder-watcher buffer-id)
-                (partial notification-watcher process-id buffer-id))))
+                (partial notification-watcher buffer-id))))
   IMostRecentValue
   (most-recent-value [this] (->RecordedWatched watchable values
                                                (dec (count values))
                                                record-size))
   IRecordable
-  (start-recording [this process-id buffer-id record-size]
+  (start-recording [this buffer-id record-size]
     (recorded-watched-with-record-size watchable values index record-size))
-  (stop-recording [this process-id buffer-id]
+  (stop-recording [this buffer-id]
     (remove-watch watchable (keyword "replique.watch" (str buffer-id)))
     (let [watched (->Watched watchable values index)]
-      (add-watch-handler watched process-id buffer-id)
+      (add-watch-handler watched buffer-id)
       watched))
   (record-position [this]
     {:index (inc index) :count (count values)})
@@ -121,23 +121,23 @@
             (recur iref @candidate)) 
           :else iref)))
 
-(defn add-replique-watch [process-id var-sym buffer-id]
+(defn add-replique-watch [var-sym buffer-id]
   (let [watchable (maybe-nested-iref var-sym)
         watched (->Watched watchable [(maybe-deref watchable)] 0)]
     (swap! watched-refs assoc buffer-id watched)
-    (add-watch-handler watched process-id buffer-id)))
+    (add-watch-handler watched buffer-id)))
 
 (defn add-watch-and-retry
-  ([process-id buffer-id var-sym retry-fn]  
-   (add-watch-and-retry process-id buffer-id var-sym retry-fn nil))
-  ([process-id buffer-id var-sym retry-fn params]
+  ([buffer-id var-sym retry-fn]  
+   (add-watch-and-retry buffer-id var-sym retry-fn nil))
+  ([buffer-id var-sym retry-fn params]
    (let [watchable (maybe-nested-iref var-sym)]
      (if watchable
        (do
-         (add-replique-watch process-id var-sym buffer-id)
+         (add-replique-watch var-sym buffer-id)
          (if params
-           (retry-fn process-id buffer-id var-sym params)
-           (retry-fn process-id buffer-id var-sym)))
+           (retry-fn buffer-id var-sym params)
+           (retry-fn buffer-id var-sym)))
        (throw (js/Error. :replique-watch/undefined))))))
 
 (defn remove-replique-watch [buffer-id]
@@ -161,7 +161,7 @@
 (defn parse-browse-path [browse-path]
   (into '() (map reader/read-string) browse-path))
 
-(defn refresh-watch [process-id buffer-id var-sym
+(defn refresh-watch [buffer-id var-sym
                      [update? print-length print-level print-meta
                       browse-path :as params]]
   (if-let [watched (get @watched-refs buffer-id)]
@@ -173,7 +173,7 @@
                   *print-level* print-level
                   *print-meta* print-meta]
           (pr-str (browse-get-in watchable-value browse-path)))))
-    (add-watch-and-retry process-id buffer-id var-sym refresh-watch params)))
+    (add-watch-and-retry buffer-id var-sym refresh-watch params)))
 
 #_(declare serializable?)
 
@@ -219,7 +219,7 @@
         (or (coll? x) (array? x)) (every? serializable? x)
         :else false))
 
-(defn browse-candidates [process-id buffer-id var-sym
+(defn browse-candidates [buffer-id var-sym
                          [prefix print-meta browse-path :as params]]
   (if-let [watched (get @watched-refs buffer-id)]
     (let [browse-path (parse-browse-path browse-path)
@@ -249,7 +249,7 @@
         (if (empty? (str prefix))
           (elisp/pr-str (cons "" candidates))
           (elisp/pr-str candidates))))
-    (add-watch-and-retry process-id buffer-id var-sym browse-candidates params)))
+    (add-watch-and-retry buffer-id var-sym browse-candidates params)))
 
 (declare browsable-key?)
 
@@ -280,34 +280,51 @@
         (browsable-key? x)))
     (catch js/Error e false)))
 
-(defn can-browse [process-id candidate]
+(defn can-browse [candidate]
   (binding [*print-level* nil
             *print-length* nil]
     (elisp/pr-str (browsable-serialized-key? candidate))))
 
-(defn do-start-recording [process-id buffer-id var-sym [record-size :as params]]
+(defn do-start-recording [buffer-id var-sym [record-size :as params]]
   (if-let [watched (get @watched-refs buffer-id)]
-    (swap! watched-refs update buffer-id #(start-recording % process-id buffer-id record-size))
-    (add-watch-and-retry process-id buffer-id var-sym do-start-recording params)))
+    (swap! watched-refs update buffer-id #(start-recording % buffer-id record-size))
+    (add-watch-and-retry buffer-id var-sym do-start-recording params)))
 
-(defn do-stop-recording [process-id buffer-id var-sym]
+(defn do-stop-recording [buffer-id var-sym]
   (if-let [watched (get @watched-refs buffer-id)]
-    (swap! watched-refs update buffer-id #(stop-recording % process-id buffer-id))
-    (add-watch-and-retry process-id buffer-id var-sym do-stop-recording)))
+    (swap! watched-refs update buffer-id #(stop-recording % buffer-id))
+    (add-watch-and-retry buffer-id var-sym do-stop-recording)))
 
-(defn get-record-position [process-id buffer-id var-sym]
+(defn get-record-position [buffer-id var-sym]
   (if-let [watched (get @watched-refs buffer-id)]
     (binding [*print-level* nil
               *print-length* nil]
       (elisp/pr-str (record-position watched)))
-    (add-watch-and-retry process-id buffer-id var-sym get-record-position)))
+    (add-watch-and-retry buffer-id var-sym get-record-position)))
 
-(defn set-record-position [process-id buffer-id var-sym [index :as params]]
+(defn set-record-position [buffer-id var-sym [index :as params]]
   (if-let [watched (get @watched-refs buffer-id)]
     (let [watched (value-at-index watched index)]
       (swap! watched-refs assoc buffer-id watched)
       (elisp/pr-str (record-position watched)))
-    (add-watch-and-retry process-id buffer-id var-sym set-record-position params)))
+    (add-watch-and-retry buffer-id var-sym set-record-position params)))
+
+(defonce printed (atom nil))
+(defonce core-pr-with-opts cljs.core/pr-with-opts)
+
+(defn watched-pr-with-opts
+  ([objs opts]
+   (doseq [obj objs]
+     (reset! printed obj))
+   (core-pr-with-opts objs opts)))
+
+(o/set js/cljs.core "pr_with_opts" watched-pr-with-opts)
+
+(let [buffer-id "var-replique.cljs-env.watch/printed"
+      watched-ref (->RecordedWatched printed [@printed] 0 3)]
+  (when (not (contains? watched-refs buffer-id))
+    (swap! watched-refs assoc buffer-id watched-ref)
+    (add-watch-handler watched-ref buffer-id)))
 
 (comment
   (def tt (atom {:e "e"}))

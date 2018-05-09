@@ -89,6 +89,8 @@
            (prn "e"))))))
   )
 
+(defonce core-pr @#'pr)
+
 (defn shared-tooling-repl
   ([]
    (shared-tooling-repl :edn))
@@ -105,6 +107,9 @@
         (tooling-msg/uncaught-exception thread ex))))
    (try
      (require '[replique.tooling])
+     ;; Make clojure.core/pr dynamic in order to be able to hook into clojure.core/pr in order
+     ;; to record printed objects as data
+     (.setDynamic #'clojure.core/pr true)
      (let [init-fn (fn [] (in-ns 'replique.repl))]
        (clojure.main/repl
         :init init-fn
@@ -159,12 +164,25 @@
          :print (fn [& args] (apply print args) (print-repl-meta))
          :caught (fn [& args] (apply caught args) (print-repl-meta))))
 
+(defn repl-print [x]
+  (binding [pr core-pr]
+    (prn x)))
+
+(defn repl-caught [e]
+  (binding [pr core-pr]
+    (clojure.main/repl-caught e)))
+
+(defn repl-prompt []
+  (binding [pr core-pr]
+    (clojure.main/repl-prompt)))
+
 (defn repl []
   (binding [*file* "NO_SOURCE_PATH"]
     (apply clojure.main/repl (->> {:init (fn [] (in-ns 'user))
-                                   :print prn
-                                   :caught clojure.main/repl-caught
-                                   :read repl-read}
+                                   :print repl-print
+                                   :caught repl-caught
+                                   :read repl-read
+                                   :prompt repl-prompt}
                                   options-with-repl-meta
                                   (apply concat)))))
 
