@@ -492,6 +492,7 @@ replique.cljs_env.repl.connect(\"" url "\");
                  '(set! *print-newline* true)
                  '(when (pos? (count replique.cljs-env.repl/print-queue))
                     (replique.cljs-env.repl/flush-print-queue!))
+                 `(~'set! ~'replique.cljs-env/process-id ~tooling-msg/process-id)
                  (init-core-bindings)]
                 {}))]
       (.submit ^ExecutorService new-eval-executor

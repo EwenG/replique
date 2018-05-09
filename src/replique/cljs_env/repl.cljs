@@ -165,3 +165,5 @@
   (reset! connection {:url url})
   (send-result (eval-connection url) url (wrap-message :ready "ready"))
   url)
+
+(defonce ^:dynamic *process-id* nil)
