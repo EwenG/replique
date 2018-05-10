@@ -176,15 +176,18 @@
   (binding [pr core-pr]
     (clojure.main/repl-prompt)))
 
-(defn repl []
-  (binding [*file* "NO_SOURCE_PATH"]
-    (apply clojure.main/repl (->> {:init (fn [] (in-ns 'user))
-                                   :print repl-print
-                                   :caught repl-caught
-                                   :read repl-read
-                                   :prompt repl-prompt}
-                                  options-with-repl-meta
-                                  (apply concat)))))
+(defn repl
+  ([]
+   (repl repl-print))
+  ([print-result-fn]
+   (binding [*file* "NO_SOURCE_PATH"]
+     (apply clojure.main/repl (->> {:init (fn [] (in-ns 'user))
+                                    :print print-result-fn
+                                    :caught repl-caught
+                                    :read repl-read
+                                    :prompt repl-prompt}
+                                   options-with-repl-meta
+                                   (apply concat))))))
 
 ;; Behavior of the socket REPL on repl closing
 ;; The read fn returns (end of stream), the parent REPL prints the result of the repl command.

@@ -383,6 +383,8 @@ replique.cljs_env.repl.connect(\"" url "\");
   (set! ana/*cljs-ns* ns-name))
 
 ;; Customize cljs.repl/wrap-fn to be able to print the sourcemapped stacktrace of errors
+;; Customize cljs.repl/wrap-fn to add the result of the evaluation to the results
+;; watcher atom
 (defn- wrap-fn [form]
   (cond
     (and (seq? form)
@@ -403,7 +405,9 @@ replique.cljs_env.repl.connect(\"" url "\");
            (set! *1 ret#)
            (if (cljs.core/instance? js/Error ret#)
              ret#
-             (cljs.core/pr-str ret#)))
+             (do
+               (cljs.core/pr-str ret#)
+               (reset! replique.cljs-env.watch/results ret#))))
          (catch :default e#
            (set! *e e#)
            (throw e#))))))

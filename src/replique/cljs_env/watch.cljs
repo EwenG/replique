@@ -311,6 +311,7 @@
 
 (defonce printed (atom nil))
 (defonce core-pr-with-opts cljs.core/pr-with-opts)
+(defonce results (atom nil))
 
 (defn watched-pr-with-opts
   ([objs opts]
@@ -322,6 +323,12 @@
 
 (let [buffer-id "var-replique.cljs-env.watch/printed"
       watched-ref (->RecordedWatched printed [@printed] 0 3)]
+  (when (not (contains? watched-refs buffer-id))
+    (swap! watched-refs assoc buffer-id watched-ref)
+    (add-watch-handler watched-ref buffer-id)))
+
+(let [buffer-id "var-replique.cljs-env.watch/results"
+      watched-ref (->RecordedWatched results [@results] 0 3)]
   (when (not (contains? watched-refs buffer-id))
     (swap! watched-refs assoc buffer-id watched-ref)
     (add-watch-handler watched-ref buffer-id)))

@@ -542,6 +542,7 @@
     (set-record-position-cljs @@cljs-repl-env-nashorn msg)))
 
 (def ^:dynamic *printed* nil)
+(def ^:dynamic *results* nil)
 
 (defn watched-pr
   ([]
@@ -555,18 +556,31 @@
      (reset! *printed* x))
    (apply replique.repl/core-pr x more)))
 
+(defn watched-print-result [x]
+  (.println System/out (pr-str x))
+  (reset! *results* x)
+  (replique.repl/repl-print x))
+
 (defn repl []
   (binding [*printed* (or *printed* (atom nil))
+            *results* (or *results* (atom nil))
             pr watched-pr]
-    (let [buffer-id (str "printed-" (:client replique.server/*session*))
-          watched-ref (protocols/->RecordedWatchedRef *printed* [@*printed*] 0 3)]
-      (swap! watched-refs assoc buffer-id watched-ref)
-      (protocols/add-watch-handler watched-ref buffer-id)
-      (try (replique.repl/repl)
+    (let [printed-buffer-id (str "printed-" (:client replique.server/*session*))
+          printed-watched-ref (protocols/->RecordedWatchedRef *printed* [@*printed*] 0 3)
+          results-buffer-id (str "results-" (:client replique.server/*session*))
+          results-watched-ref (protocols/->RecordedWatchedRef *results* [@*results*] 0 3)]
+      (swap! watched-refs assoc printed-buffer-id printed-watched-ref)
+      (protocols/add-watch-handler printed-watched-ref printed-buffer-id)
+      (swap! watched-refs assoc results-buffer-id results-watched-ref)
+      (protocols/add-watch-handler printed-watched-ref results-buffer-id)
+      (try (replique.repl/repl watched-print-result)
            (finally
-             (remove-watch (protocols/get-ref watched-ref)
-                           (keyword "replique.watch" (str buffer-id)))
-             (swap! watched-refs dissoc buffer-id))))))
+             (remove-watch (protocols/get-ref printed-watched-ref)
+                           (keyword "replique.watch" (str printed-buffer-id)))
+             (swap! watched-refs dissoc printed-buffer-id)
+             (remove-watch (protocols/get-ref results-watched-ref)
+                           (keyword "replique.watch" (str results-buffer-id)))
+             (swap! watched-refs dissoc results-buffer-id))))))
 
 (comment
   (def tt (atom {{:e 33} "e" :f "f"}))
