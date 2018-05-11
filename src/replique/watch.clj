@@ -148,7 +148,8 @@
 (defn browse-get [o k]
   (cond (or (map? o) (instance? Map o))
         (get o k)
-        (and (or (coll? o) (instance? Collection  o)))
+        (and (or (coll? o) (instance? Collection  o))
+             (number? k))
         (nth (seq o) k)
         :else nil))
 
@@ -171,11 +172,14 @@
                             (protocols/value-at-index watched-ref index)
                             :else watched-ref)]
       (swap! watched-refs assoc buffer-id watched-ref)
-      (let [ref-value @watched-ref]
+      (let [ref-value @watched-ref
+            ref (protocols/get-ref watched-ref)
+            ref-value-at-browse-path (browse-get-in ref-value browse-path)]
+        (alter-meta! ref (constantly {:replique.watch/value ref-value-at-browse-path}))
         {:var-value (binding [*print-length* print-length
                               *print-level* print-level
                               *print-meta* print-meta]
-                      (pr-str (browse-get-in ref-value browse-path)))
+                      (pr-str ref-value-at-browse-path))
          :record-size (protocols/record-size watched-ref)}))
     (add-watch-and-retry msg refresh-watch)))
 
@@ -476,13 +480,13 @@
 
 (defn get-record-position [{:keys [buffer-id] :as msg}]
   (if-let [watched-ref (get @watched-refs buffer-id)]
-    (protocols/record-position watched-ref)
+    {:record-position (protocols/record-position watched-ref)}
     (add-watch-and-retry msg get-record-position)))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :record-position]
   [msg]
   (tooling-msg/with-tooling-response msg
-    {:record-position (get-record-position msg)}))
+    (get-record-position msg)))
 
 (defn get-record-position-cljs
   [repl-env {:keys [buffer-id var-sym] :as msg}]
@@ -510,13 +514,13 @@
   (if-let [watched-ref (get @watched-refs buffer-id)]
     (let [watched-ref (protocols/value-at-index watched-ref index)]
       (swap! watched-refs assoc buffer-id watched-ref)
-      (protocols/record-position watched-ref))
+      {:record-position (protocols/record-position watched-ref)})
     (add-watch-and-retry msg set-record-position)))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :set-record-position]
   [msg]
   (tooling-msg/with-tooling-response msg
-    {:record-position (set-record-position msg)}))
+    (set-record-position msg)))
 
 (defn set-record-position-cljs
   [repl-env {:keys [buffer-id var-sym index] :as msg}]
@@ -557,7 +561,6 @@
    (apply replique.repl/core-pr x more)))
 
 (defn watched-print-result [x]
-  (.println System/out (pr-str x))
   (reset! *results* x)
   (replique.repl/repl-print x))
 
@@ -591,6 +594,8 @@
 
   (doto (java.util.HashMap.) (.put "e" 33))
 
+  (:replique.watch/value (meta tt))
+  
   )
 
 ;; Not all non-readable symbols/keywords are handled - For example, symbols with spaces / symbols

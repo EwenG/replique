@@ -151,8 +151,8 @@
   (cond (map? o)
         (get o k)
         (object? o) (o/get o k)
-        (array? o) (aget o k)
-        (and (coll? o) (seqable? o)) (nth (seq o) k)
+        (and (array? o) (number? k)) (aget o k)
+        (and (coll? o) (seqable? o) (number? k)) (nth (seq o) k)
         :else nil))
 
 (defn browse-get-in [m ks]
@@ -168,7 +168,11 @@
     (let [browse-path (parse-browse-path browse-path)
           watched (if update? (most-recent-value watched) watched)]
       (swap! watched-refs assoc buffer-id watched)
-      (let [watchable-value @watched]
+      (let [watchable-value @watched
+            watchable (get-watchable watched)
+            watchable-value-at-browse-path (browse-get-in watchable-value browse-path)]
+        (alter-meta! watchable
+                     (constantly {:replique.watch/value watchable-value-at-browse-path}))
         (binding [*print-length* print-length
                   *print-level* print-level
                   *print-meta* print-meta]
@@ -335,6 +339,7 @@
 
 (comment
   (def tt (atom {:e "e"}))
+  (meta tt)
   (reset! tt {(keyword "ee~rr") #js [1 2 3 4]
               #js {:f 2} #js [1 2 3 4]
               #js {:f 2} #js [1 2 3 4]
