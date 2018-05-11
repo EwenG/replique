@@ -35,6 +35,9 @@
   (record-position [this])
   (value-at-index [this index]))
 
+(defprotocol IRecordSize
+  (record-size [this]))
+
 (defprotocol IGetWatchable
   (get-watchable [this]))
 
@@ -71,7 +74,9 @@
   (record-position [this]
     {:index (inc index) :count (count values)})
   (value-at-index [this index]
-    (->Watched watchable values (max (min index (dec (count values))) 0))))
+    (->Watched watchable values (max (min index (dec (count values))) 0)))
+  IRecordSize
+  (record-size [this] nil))
 
 (deftype RecordedWatched [watchable values index record-size]
   IGetWatchable
@@ -99,7 +104,9 @@
   (record-position [this]
     {:index (inc index) :count (count values)})
   (value-at-index [this index]
-    (->RecordedWatched watchable values (max (min index (dec (count values))) 0) record-size)))
+    (->RecordedWatched watchable values (max (min index (dec (count values))) 0) record-size))
+  IRecordSize
+  (record-size [this] record-size))
 
 (defn add-recorded-watch-value [recorded-watch new-value]
   (recorded-watched-with-record-size (.-watchable recorded-watch)
@@ -176,7 +183,8 @@
         (binding [*print-length* print-length
                   *print-level* print-level
                   *print-meta* print-meta]
-          (pr-str (browse-get-in watchable-value browse-path)))))
+          (elisp/pr-str {:var-value (pr-str (browse-get-in watchable-value browse-path))
+                         :record-size (record-size watched)}))))
     (add-watch-and-retry buffer-id var-sym refresh-watch params)))
 
 #_(declare serializable?)

@@ -176,11 +176,11 @@
             ref (protocols/get-ref watched-ref)
             ref-value-at-browse-path (browse-get-in ref-value browse-path)]
         (alter-meta! ref (constantly {:replique.watch/value ref-value-at-browse-path}))
-        {:var-value (binding [*print-length* print-length
-                              *print-level* print-level
-                              *print-meta* print-meta]
-                      (pr-str ref-value-at-browse-path))
-         :record-size (protocols/record-size watched-ref)}))
+        {:refresh-watch {:var-value (binding [*print-length* print-length
+                                              *print-level* print-level
+                                              *print-meta* print-meta]
+                                      (pr-str ref-value-at-browse-path))
+                         :record-size (protocols/record-size watched-ref)}}))
     (add-watch-and-retry msg refresh-watch)))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/clj :refresh-watch]
@@ -353,7 +353,7 @@
     (if-not (= status :success)
       {:error (or stacktrace value)
        :undefined (.contains ^String value (str :replique-watch/undefined))}
-      {:var-value value})))
+      {:refresh-watch (elisp/->ElispString value)})))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/browser :refresh-watch]
   [msg]
