@@ -575,7 +575,7 @@
       (swap! watched-refs assoc printed-buffer-id printed-watched-ref)
       (protocols/add-watch-handler printed-watched-ref printed-buffer-id)
       (swap! watched-refs assoc results-buffer-id results-watched-ref)
-      (protocols/add-watch-handler printed-watched-ref results-buffer-id)
+      (protocols/add-watch-handler results-watched-ref results-buffer-id)
       (try (replique.repl/repl watched-print-result)
            (finally
              (remove-watch (protocols/get-ref printed-watched-ref)
