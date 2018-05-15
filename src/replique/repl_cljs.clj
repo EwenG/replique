@@ -406,8 +406,8 @@ replique.cljs_env.repl.connect(\"" url "\");
            (if (cljs.core/instance? js/Error ret#)
              ret#
              (do
-               (cljs.core/pr-str ret#)
-               (reset! replique.cljs-env.watch/results ret#))))
+               (reset! replique.cljs-env.watch/results ret#)
+               (cljs.core/pr-str ret#))))
          (catch :default e#
            (set! *e e#)
            (throw e#))))))
