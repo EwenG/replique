@@ -96,14 +96,14 @@
             (if (instance? js/Error eval-result)
               {:status :success
                :ua-product (get-ua-product)
-               :value (pr-str eval-result)
+               :value (str eval-result)
                :stacktrace
                (if (.hasOwnProperty eval-result "stack")
                  (.-stack eval-result)
                  "No stacktrace available.")
                :params repl-params}
               {:status :success
-               :value (pr-str eval-result)
+               :value (str eval-result)
                :params repl-params}))
           (catch :default e
             {:status :exception
