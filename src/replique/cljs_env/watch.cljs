@@ -331,19 +331,20 @@
      (reset! printed obj))
    (core-pr-with-opts objs opts)))
 
-(o/set js/cljs.core "pr_with_opts" watched-pr-with-opts)
+(defn init []
+  (o/set js/cljs.core "pr_with_opts" watched-pr-with-opts)
 
-(let [buffer-id "var-replique.cljs-env.watch/printed"
-      watched-ref (->RecordedWatched printed [@printed] 0 3)]
-  (when (not (contains? watched-refs buffer-id))
-    (swap! watched-refs assoc buffer-id watched-ref)
-    (add-watch-handler watched-ref buffer-id)))
+  (let [buffer-id "var-replique.cljs-env.watch/printed"
+        watched-ref (->RecordedWatched printed [@printed] 0 3)]
+    (when (not (contains? watched-refs buffer-id))
+      (swap! watched-refs assoc buffer-id watched-ref)
+      (add-watch-handler watched-ref buffer-id)))
 
-(let [buffer-id "var-replique.cljs-env.watch/results"
-      watched-ref (->RecordedWatched results [@results] 0 3)]
-  (when (not (contains? watched-refs buffer-id))
-    (swap! watched-refs assoc buffer-id watched-ref)
-    (add-watch-handler watched-ref buffer-id)))
+  (let [buffer-id "var-replique.cljs-env.watch/results"
+        watched-ref (->RecordedWatched results [@results] 0 3)]
+    (when (not (contains? watched-refs buffer-id))
+      (swap! watched-refs assoc buffer-id watched-ref)
+      (add-watch-handler watched-ref buffer-id))))
 
 (comment
   (def tt (atom {:e "e"}))
