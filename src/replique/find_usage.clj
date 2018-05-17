@@ -77,9 +77,14 @@
   (try (env/ns-resolve comp-env ns sym)
        (catch ClassNotFoundException e nil)))
 
+(defn maybe-class->symbol [c]
+  (if (instance? Class c)
+    (symbol (.getName ^Class c))
+    c))
+
 (defn ns-imports-symbols [comp-env ns sym]
   (doall (for [[k v] (env/ns-imports comp-env ns)
-               :when (= v sym)]
+               :when (= (maybe-class->symbol v) sym)]
            k)))
 
 (defn symbols-in-namespace-imports [comp-env sym symbols ns]
