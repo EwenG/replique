@@ -5,7 +5,7 @@
            [clojure.core Eduction]))
 
 (defn escape-symbol [symbol-str]
-  (.replaceAll symbol-str "(?=[\\\\?\\[\\]\\(\\)\\{\\}\\+\\-#;\\.])"  "\\\\"))
+  (.replaceAll symbol-str "(?=[\\\\?\\[\\]\\(\\)\\{\\}\\+\\-#;\\.\\'])"  "\\\\"))
 
 (defn print-more-level [w]
   (.write w "\"~+level\""))

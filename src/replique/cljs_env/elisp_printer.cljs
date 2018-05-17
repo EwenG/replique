@@ -19,7 +19,7 @@
   (-append [_ c] (.append sb c)))
 
 (defn escape-symbol [symbol-str]
-  (s/replace symbol-str #"(?=[\\?\[\]\(\)\{\}\+\-#;\.])" "\\"))
+  (s/replace symbol-str #"(?=[\\?\[\]\(\)\{\}\+\-#;\.\'])" "\\"))
 
 (defn print-more-level [w]
   (-write w "\"~+level\""))
