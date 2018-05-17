@@ -327,8 +327,9 @@
 
 (defn watched-pr-with-opts
   ([objs opts]
-   (doseq [obj objs]
-     (reset! printed obj))
+   (when (= *print-fn* replique.cljs-env.repl/repl-print)
+     (doseq [obj objs]
+       (reset! printed obj)))
    (core-pr-with-opts objs opts)))
 
 (defn init []

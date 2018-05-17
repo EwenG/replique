@@ -548,17 +548,20 @@
 (def ^:dynamic *printed* nil)
 (def ^:dynamic *results* nil)
 
-(defn watched-pr
-  ([]
-   (replique.repl/core-pr))
-  ([x]
-   (reset! *printed* x)
-   (replique.repl/core-pr x))
-  ([x & more]
-   (reset! *printed* x)
-   (doseq [x more]
-     (reset! *printed* x))
-   (apply replique.repl/core-pr x more)))
+(defn make-watched-pr [out]
+  (fn watched-pr
+    ([]
+     (replique.repl/core-pr))
+    ([x]
+     (when (identical? *out* out)
+       (reset! *printed* x))
+     (replique.repl/core-pr x))
+    ([x & more]
+     (when (identical? *out* out)
+       (reset! *printed* x)
+       (doseq [x more]
+         (reset! *printed* x)))
+     (apply replique.repl/core-pr x more))))
 
 (defn watched-print-result [x]
   (reset! *results* x)
@@ -567,7 +570,7 @@
 (defn repl []
   (binding [*printed* (or *printed* (atom nil))
             *results* (or *results* (atom nil))
-            pr watched-pr]
+            pr (make-watched-pr *out*)]
     (let [printed-buffer-id (str "printed-" (:client replique.server/*session*))
           printed-watched-ref (protocols/->RecordedWatchedRef *printed* [@*printed*] 0 3)
           results-buffer-id (str "results-" (:client replique.server/*session*))
@@ -595,7 +598,7 @@
   (doto (java.util.HashMap.) (.put "e" 33))
 
   (:replique.watch/value (meta tt))
-  
+
   )
 
 ;; Not all non-readable symbols/keywords are handled - For example, symbols with spaces / symbols
