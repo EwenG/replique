@@ -140,7 +140,9 @@
   (tooling-msg/with-tooling-response msg
     ;; The ref may not be found if the process has been restarted
     (when-let [watched-ref (get @watched-refs buffer-id)]
-      (remove-watch (protocols/get-ref watched-ref) (keyword "replique.watch" (str buffer-id)))
+      (let [ref (protocols/get-ref watched-ref)]
+        (remove-watch ref (keyword "replique.watch" (str buffer-id)))
+        (alter-meta! ref dissoc :replique.watch/value))
       (swap! watched-refs dissoc buffer-id)
       nil)))
 
@@ -175,7 +177,7 @@
       (let [ref-value @watched-ref
             ref (protocols/get-ref watched-ref)
             ref-value-at-browse-path (browse-get-in ref-value browse-path)]
-        (alter-meta! ref (constantly {:replique.watch/value ref-value-at-browse-path}))
+        (alter-meta! ref assoc :replique.watch/value ref-value-at-browse-path)
         {:refresh-watch {:var-value (binding [*print-length* print-length
                                               *print-level* print-level
                                               *print-meta* print-meta]
@@ -590,7 +592,7 @@
 
 (comment
   (def tt (atom {{:e 33} "e" :f "f"}))
-  
+
   (reset! tt '["eee" rrrr123])
   
   (get-in @tt [(symbol ":eee")])

@@ -151,7 +151,9 @@
   ;; If the js runtime is restarted between add-watch and remove-watch, the watchable object
   ;; may not be found
   (when-let [watched (get @watched-refs buffer-id)]
-    (remove-watch (get-watchable watched) (keyword "replique.watch" (str buffer-id)))
+    (let [watchable (get-watchable watched)]
+      (remove-watch watchable (keyword "replique.watch" (str buffer-id)))
+      (alter-meta! watchable dissoc :replique.watch/value))
     (swap! watched-refs dissoc buffer-id)))
 
 (defn browse-get [o k]
@@ -178,8 +180,7 @@
       (let [watchable-value @watched
             watchable (get-watchable watched)
             watchable-value-at-browse-path (browse-get-in watchable-value browse-path)]
-        (alter-meta! watchable
-                     (constantly {:replique.watch/value watchable-value-at-browse-path}))
+        (alter-meta! watchable assoc :replique.watch/value watchable-value-at-browse-path)
         (binding [*print-length* print-length
                   *print-level* print-level
                   *print-meta* print-meta]
