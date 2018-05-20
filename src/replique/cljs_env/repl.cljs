@@ -18,31 +18,20 @@
   []
   (XhrIo. (CorsXmlHttpFactory.)))
 
-(def *timeout* 10000)
-
 (defonce print-queue (array))
+(defonce flushing-print-queue? (atom false))
 
 (defn send-result [conn url data]
   (.setTimeoutInterval conn 0)
   (.send conn url "POST" data nil))
 
 (defn send-print
-  "Send data to be printed in the REPL. If there is an error, try again
-  up to 10 times."
-  ([url data]
-   (send-print url data 0))
-  ([url data n]
-   (let [conn (xhr-connection)]
-     (.listen conn goog.net.EventType/ERROR
-              (fn [_]
-                (if (< n 10)
-                  (send-print url data (inc n))
-                  (.log js/console
-                        (str "Could not send " data
-                             " after " n " attempts."))))
-              false)
-     (.setTimeoutInterval conn 0)
-     (.send conn url "POST" data nil))))
+  "Send data to be printed in the REPL."
+  [url data callback]
+  (let [conn (xhr-connection)]
+    (.listen conn goog.net.EventType/COMPLETE callback false)
+    (.setTimeoutInterval conn 0)
+    (.send conn url "POST" data nil)))
 
 (defn wrap-message
   ([t data]
@@ -55,23 +44,23 @@
      (pr-str {:type t :content data :session session}))))
 
 (defn flush-print-queue! []
-  (doseq [str print-queue]
-    (send-print (:url @connection) (wrap-message :print str (:session @connection))))
-  (garray/clear print-queue))
+  (if-let [x (.shift print-queue)]
+    (send-print (:url @connection) x flush-print-queue!)
+    (reset! flushing-print-queue? false)))
 
 (defn repl-print [data]
   (if (string? data)
-    (.push print-queue data)
-    (.push print-queue (pr-str data)))
-  (flush-print-queue!))
+    (.push print-queue (wrap-message :print data (:session @connection)))
+    (.push print-queue (wrap-message :print (pr-str data) (:session @connection))))
+  (when-not @flushing-print-queue?
+    (reset! flushing-print-queue? true)
+    (flush-print-queue!)))
 
 (defn send-print-tooling [s]
-  (let [conn (xhr-connection)]
-    (.send conn
-           (:url @connection)
-           "POST"
-           (wrap-message :print-tooling s (:session @connection))
-           nil)))
+  (.push print-queue (wrap-message :print-tooling s (:session @connection)))
+  (when-not @flushing-print-queue?
+    (reset! flushing-print-queue? true)
+    (flush-print-queue!)))
 
 (defn get-ua-product []
   (cond
