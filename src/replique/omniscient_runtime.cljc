@@ -18,6 +18,9 @@
     (assoc m k (keys v))
     m))
 
+(def ^:dynamic *captured-envs* nil)
+(defonce captured-env (atom nil))
+
 (comment
 
   (#?(:clj require :cljs require-macros) '[replique.omniscient :as omniscient])
@@ -38,3 +41,25 @@
   (omniscient/with-env @captured
     rrrr)
   )
+
+(comment
+  (defn rrr2 [x y]
+    (replique.omniscient/capture-env)
+    y)
+
+  (defn rrr []
+    (replique.omniscient/capture-env (rrr2 1 2)))
+
+  (dotimes [x 10000]
+    (rrr))
+
+  (let [rrr "rrr"]
+    (replique.omniscient/capture-env 33))
+
+  
+  
+  (replique.omniscient/with-env
+    y)
+  )
+
+;; autocompletion for cljs macro namespaces
