@@ -60,11 +60,11 @@
       (str file ":" line ":" column)
       (str *file* ":" line ":" column))))
 
-(defmacro capture-env [& body]
-  `(let [captured-env# ~{:locals (locals-map (env->locals &env))
+(defn capture-env [env form body]
+  `(let [captured-env# ~{:locals (locals-map (env->locals env))
                          ;; exclude dynamic vars that are used by the REPL/system
-                         :bindings (dynamic-bindings &env)
-                         :position (position &env &form)}
+                         :bindings (dynamic-bindings env)
+                         :position (position env form)}
          [result# captured-envs#] (binding [replique.omniscient-runtime/*captured-envs* []]
                                     [(do ~@body) replique.omniscient-runtime/*captured-envs*])]
      (cond (some? replique.omniscient-runtime/*captured-envs*)
@@ -94,9 +94,9 @@
 (defn bindings-reducer [captured-env acc binding-sym]
   (conj acc binding-sym `(get-in ~captured-env [:bindings (quote ~binding-sym)])))
 
-(defmacro with-env [& body]
+(defn with-env [env body]
   (let [captured-env `(:replique.watch/value (meta replique.omniscient-runtime/captured-env))
-        syms (get-binding-syms &env captured-env)
+        syms (get-binding-syms env captured-env)
         locals-syms (:locals syms)
         binding-syms (:bindings syms)]
     `(binding ~(reduce (partial bindings-reducer captured-env) [] binding-syms)
@@ -105,15 +105,15 @@
 
 (comment
   (defn rrr2 [x y]
-    (capture-env)
+    (replique.interactive/capture-env)
     y)
 
   (defn rrr []
-    (capture-env (rrr2 1 2)))
+    (replique.interactive/capture-env (rrr2 1 2)))
   
-  (capture-env (rrr))
-  (capture-env 33)
-
-  (with-env
+  (replique.interactive/capture-env (rrr))
+  (replique.interactive/capture-env 33)
+  
+  (replique.interactive/with-env
     y)
   )

@@ -5,7 +5,8 @@
             [replique.utils :as utils]
             [replique.server :as server]
             [replique.environment :as env]
-            [clojure.java.io :as io])
+            [clojure.java.io :as io]
+            [replique.omniscient :as omniscient])
   (:import [java.net URL]
            [java.io File]))
 
@@ -188,6 +189,12 @@
                 (doseq [[m-s m-qualified-sym] (:rename-macros n)
                         :when (= m-qualified-sym var-sym)]
                   (env/ns-unmap comp-env n m-s)))))))))
+
+(defmacro capture-env [& body]
+  (omniscient/capture-env &env &form body))
+
+(defmacro with-env [& body]
+  (omniscient/with-env &env body))
 
 #_(defmacro install-node-deps! []
   (boolean (@cljs-install-node-deps!)))

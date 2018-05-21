@@ -44,22 +44,19 @@
 
 (comment
   (defn rrr2 [x y]
-    (replique.omniscient/capture-env)
+    (replique.interactive/capture-env)
     y)
 
   (defn rrr []
-    (replique.omniscient/capture-env (rrr2 1 2)))
+    (replique.interactive/capture-env (rrr2 1 2)))
 
   (dotimes [x 10000]
     (rrr))
 
   (let [rrr "rrr"]
-    (replique.omniscient/capture-env 33))
+    (replique.interactive/capture-env 33))
+  
+  (replique.interactive/with-env
+    rrr)
 
-  
-  
-  (replique.omniscient/with-env
-    y)
   )
-
-;; autocompletion for cljs macro namespaces
