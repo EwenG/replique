@@ -1,4 +1,5 @@
-(ns replique.omniscient-runtime)
+(ns replique.omniscient-runtime
+  (:require [replique.cljs-env.elisp-printer :as elisp])))
 
 #?(:clj
    (defn var->sym [v]
@@ -20,6 +21,36 @@
 
 (def ^:dynamic *captured-envs* nil)
 (defonce captured-env (atom nil))
+
+#?(:cljs
+   (defn get-binding-syms []
+     (binding [*print-length* nil
+               *print-level* nil]
+       (pr-str
+        (reduce-kv get-binding-syms-reducer {} (:replique.watch/value (meta captured-env)))))))
+
+#?(:clj
+   (defn get-binding-syms []
+     (reduce-kv get-binding-syms-reducer {} (:replique.watch/value (meta captured-env)))))
+
+#?(:cljs
+   (defn get-locals []
+     (binding [*print-length* nil
+               *print-level* nil]
+       (elisp/pr-str
+        (-> captured-env
+            meta
+            :replique.watch/value
+            :locals
+            keys)))))
+
+#?(:clj
+   (defn get-locals []
+     (-> captured-env
+         meta
+         :replique.watch/value
+         :locals
+         keys)))
 
 (comment
 

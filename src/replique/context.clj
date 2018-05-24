@@ -66,6 +66,8 @@
 
                         'clojure.core/letfn [:binding-context :letfn-like]
 
+                        'replique.interactive/with-env [:binding-context :with-env-like]
+
                         'clojure.core/require [:dependency-context :require-like]
 
                         'clojure.core/use [:dependency-context :use-like]
@@ -106,6 +108,8 @@
                          'cljs.core/doseq [:binding-context :for-like]
 
                          'cljs.core/letfn [:binding-context :letfn-like]
+
+                         'replique.interactive/with-env [:binding-context :with-env-like]
 
                          'cljs.core/require [:dependency-context :require-like]
 
@@ -173,8 +177,8 @@
           {:binding-context (persistent! binding-context)
            :dependency-context (persistent! dependency-context)})))))
 
-(def ns-context-clj {:ns-context {"ns" :ns-like
-                                  "clojure.core/ns" :ns-like}})
+(def ns-context-clj {"ns" :ns-like
+                     "clojure.core/ns" :ns-like})
 
 (comment
   (require '[replique.environment :as env])

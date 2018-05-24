@@ -243,18 +243,31 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
   [{:keys [ns repl-env] :as msg}]
   (tooling-msg/with-tooling-response msg
     (when ns
-      (merge (context/context-forms
+      (assoc (context/context-forms
               nil repl-env ns
               context/context-forms-clj)
-             context/ns-context-clj))))
+             :ns-context context/ns-context-clj
+             :env-locals (omniscient/get-locals-for-tooling-clj)))))
 
-(defmethod tooling-msg/tooling-msg-handle [:replique/cljs :context]
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :context]
   [{:keys [ns repl-env] :as msg}]
   (tooling-msg/with-tooling-response msg
     (when ns
-      (context/context-forms
-       (->CljsCompilerEnv @@cljs-compiler-env) repl-env ns
-       context/context-forms-cljs))))
+      (assoc (context/context-forms
+              (->CljsCompilerEnv @@cljs-compiler-env) repl-env ns
+              context/context-forms-cljs)
+             :env-locals (omniscient/get-locals-for-tooling-cljs
+                          @@cljs-repl-env)))))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :context]
+  [{:keys [ns repl-env] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (when ns
+      (assoc (context/context-forms
+              (->CljsCompilerEnv @@cljs-compiler-env) repl-env ns
+              context/context-forms-cljs)
+             :env-locals (omniscient/get-locals-for-tooling-cljs
+                          @@cljs-repl-env-nashorn)))))
 
 (comment
   (tooling-msg/tooling-msg-handle {:repl-env :replique/clj
