@@ -106,11 +106,12 @@
       (uncaughtException [_ thread ex]
         (tooling-msg/uncaught-exception thread ex))))
    (try
-     (require '[replique.tooling])
      ;; Make clojure.core/pr dynamic in order to be able to hook into clojure.core/pr in order
      ;; to record printed objects as data
      (.setDynamic #'clojure.core/pr true)
-     (let [init-fn (fn [] (in-ns 'replique.repl))]
+     (let [init-fn (fn []
+                     (in-ns 'replique.repl)
+                     (require '[replique.tooling]))]
        (clojure.main/repl
         :init init-fn
         :prompt #()
