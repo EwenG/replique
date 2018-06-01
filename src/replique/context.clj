@@ -175,7 +175,8 @@
                   (recur binding-context dependency-context (rest context-forms))))
               (recur binding-context dependency-context (rest context-forms))))
           {:binding-context (persistent! binding-context)
-           :dependency-context (persistent! dependency-context)})))))
+           :dependency-context (persistent! dependency-context)
+           :repl-type (utils/repl-type repl-env)})))))
 
 (def ns-context-clj {"ns" :ns-like
                      "clojure.core/ns" :ns-like})
