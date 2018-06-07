@@ -246,28 +246,38 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
       (assoc (context/context-forms
               nil repl-env ns
               context/context-forms-clj)
-             :ns-context context/ns-context-clj
-             :env-locals (omniscient/get-locals-for-tooling-clj)))))
+             :ns-context context/ns-context-clj))))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/browser :context]
   [{:keys [ns repl-env] :as msg}]
   (tooling-msg/with-tooling-response msg
     (when ns
-      (assoc (context/context-forms
-              (->CljsCompilerEnv @@cljs-compiler-env) repl-env ns
-              context/context-forms-cljs)
-             :env-locals (omniscient/get-locals-for-tooling-cljs
-                          @@cljs-repl-env)))))
+      (context/context-forms
+       (->CljsCompilerEnv @@cljs-compiler-env) repl-env ns
+       context/context-forms-cljs))))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :context]
   [{:keys [ns repl-env] :as msg}]
   (tooling-msg/with-tooling-response msg
     (when ns
-      (assoc (context/context-forms
-              (->CljsCompilerEnv @@cljs-compiler-env) repl-env ns
-              context/context-forms-cljs)
-             :env-locals (omniscient/get-locals-for-tooling-cljs
-                          @@cljs-repl-env-nashorn)))))
+      (context/context-forms
+       (->CljsCompilerEnv @@cljs-compiler-env) repl-env ns
+       context/context-forms-cljs))))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :captured-env-locals]
+  [{:keys [ns repl-env captured-env] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (when ns
+      {:captured-env-locals (omniscient/captured-env-locals nil ns captured-env)})))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/browser :captured-env-locals]
+  [{:keys [ns repl-env captured-env] :as msg}]
+  (tooling-msg/with-tooling-response msg
+    (when ns
+      {:captured-env-locals (omniscient/captured-env-locals-cljs
+                             (->CljsCompilerEnv @@cljs-compiler-env)
+                             @@cljs-repl-env
+                             ns captured-env)})))
 
 (comment
   (tooling-msg/tooling-msg-handle {:repl-env :replique/clj

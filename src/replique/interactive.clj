@@ -190,11 +190,14 @@
                         :when (= m-qualified-sym var-sym)]
                   (env/ns-unmap comp-env n m-s)))))))))
 
-(defmacro capture-env [& body]
-  (omniscient/capture-env &env &form body))
+(defmacro capture-env [capture-atom & body]
+  (omniscient/capture-env &env &form capture-atom body))
 
-(defmacro with-env [& body]
-  (omniscient/with-env &env body))
+(defmacro capture-child-env [& body]
+  (omniscient/capture-child-env &env &form body))
+
+(defmacro with-env [captured-env-var & body]
+  (omniscient/with-env &env captured-env-var body))
 
 #_(defmacro install-node-deps! []
   (boolean (@cljs-install-node-deps!)))

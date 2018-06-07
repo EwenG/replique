@@ -1,5 +1,6 @@
 (ns replique.omniscient-runtime
-  (:require [replique.cljs-env.elisp-printer :as elisp])))
+  (:require [replique.cljs-env.elisp-printer :as elisp])
+  #?(:clj (:import [clojure.lang IDeref])))
 
 #?(:clj
    (defn var->sym [v]
@@ -20,74 +21,59 @@
     m))
 
 (def ^:dynamic *captured-envs* nil)
-(defonce captured-env (atom nil))
+
+(defn capture-env-var-value [capture-atom]
+  (let [captured-env-val (-> capture-atom meta :replique.watch/value)
+        captured-env-val (if (nil? captured-env-val)
+                           (deref capture-atom)
+                           captured-env-val)]
+    captured-env-val))
 
 #?(:cljs
-   (defn get-binding-syms []
+   (defn get-binding-syms [capture-atom]
      (binding [*print-length* nil
                *print-level* nil]
-       (pr-str
-        (reduce-kv get-binding-syms-reducer {} (:replique.watch/value (meta captured-env)))))))
+       (let [captured-env-val (capture-env-var-value capture-atom)]
+         (pr-str
+          (reduce-kv get-binding-syms-reducer {} captured-env-val))))))
 
 #?(:clj
-   (defn get-binding-syms []
-     (reduce-kv get-binding-syms-reducer {} (:replique.watch/value (meta captured-env)))))
+   (defn get-binding-syms [capture-atom]
+     (let [captured-env-val (capture-env-var-value (eval capture-atom))]
+       (reduce-kv get-binding-syms-reducer {} captured-env-val))))
 
 #?(:cljs
-   (defn get-locals []
+   (defn get-locals [captured-env]
      (binding [*print-length* nil
                *print-level* nil]
-       (elisp/pr-str
-        (-> captured-env
-            meta
-            :replique.watch/value
-            :locals
-            keys)))))
+       (let [captured-env-val (-> captured-env meta :replique.watch/value)
+             captured-env-val (if (and captured-env
+                                       (nil? captured-env-val)
+                                       (satisfies? IDeref captured-env))
+                                @captured-env
+                                captured-env-val)]
+         (elisp/pr-str
+          (-> captured-env-val :locals keys))))))
 
 #?(:clj
-   (defn get-locals []
-     (-> captured-env
-         meta
-         :replique.watch/value
-         :locals
-         keys)))
+   (defn get-locals [captured-env]
+     (let [captured-env-val (-> captured-env meta :replique.watch/value)
+           captured-env-val (if (and captured-env
+                                     (nil? captured-env-val)
+                                     (instance? IDeref captured-env))
+                              @captured-env
+                              captured-env-val)]
+       (-> captured-env-val :locals keys))))
 
 (comment
 
-  (#?(:clj require :cljs require-macros) '[replique.omniscient :as omniscient])
-
-  (defonce captured (atom nil))
-
-  (def ^:dynamic *dd* [1 2])
-
-  (binding [*dd* {:e "e"}]
-    (let [[rrrr {rrr :ttt} :as fff] [1 2]]
-      (reset! captured (omniscient/capture-env))))
-
-  (fn [eee]
-    (let [[eee rrrr {rrr :ttt} & tttt :as fff] '{"rrrr" 55}]
-      (omniscient/capture-env)
-      nil))
-
-  (omniscient/with-env @captured
-    rrrr)
-  )
-
-(comment
-  (defn rrr2 [x y]
-    (replique.interactive/capture-env)
-    y)
-
-  (defn rrr []
-    (replique.interactive/capture-env (rrr2 1 2)))
-
-  (dotimes [x 10000]
-    (rrr))
-
-  (let [rrr "rrr"]
-    (replique.interactive/capture-env 33))
+  (defonce env (atom nil))
   
-  (replique.interactive/with-env
-    rrr)
+  (let [[eee rrrr {rrr :ttt} & tttt :as fff] '{"rrrr" 55}]
+    (replique.interactive/capture-env env)
+    nil)
 
+  (replique.interactive/with-env env
+    eee)
   )
+

@@ -2,11 +2,14 @@
   (:require [replique.utils :as utils]
             [replique.environment :as env]
             [replique.omniscient-runtime]
-            [replique.elisp-printer :as elisp]))
+            [replique.elisp-printer :as elisp]
+            [replique.meta]
+            [replique.watch :as watch]))
 
 (def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
 (def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
 (def ^:private cljs-evaluate-form (utils/dynaload 'replique.repl-cljs/-evaluate-form))
+(def ^:private cljs-munged (utils/dynaload 'cljs.compiler/munge))
 
 ;; clojure.core/*data-readers* clojure.core/*default-data-reader-fn*
 
@@ -56,77 +59,102 @@
     (dynamic-bindings-cljs (env/->CljsCompilerEnv @@cljs-compiler-env) (:ns env))
     (dynamic-bindings-clj)))
 
-(defn position [env form]
-  (let [{:keys [line column file]} (meta form)]
-    (if (utils/cljs-env? env)
-      (str file ":" line ":" column)
-      (str *file* ":" line ":" column))))
+(defn safe-ns-resolve [comp-env ns sym]
+  (try (env/ns-resolve comp-env ns sym)
+       (catch ClassNotFoundException e nil)))
 
-(defn capture-env [env form body]
-  `(let [captured-env# ~{:locals (locals-map (env->locals env))
-                         ;; exclude dynamic vars that are used by the REPL/system
-                         :bindings (dynamic-bindings env)
-                         :position (position env form)}
-         [result# captured-envs#] (binding [replique.omniscient-runtime/*captured-envs* []]
-                                    [(do ~@body) replique.omniscient-runtime/*captured-envs*])]
-     (cond (some? replique.omniscient-runtime/*captured-envs*)
+(defn capture-env [env form capture-atom body]
+  (let [{:keys [file line column] :or {file *file*}} (meta form)
+        position-str (str file ":" line ":" column)]
+    `(let [captured-env# ~{:locals (locals-map (env->locals env))
+                           ;; exclude dynamic vars that are used by the REPL/system
+                           :bindings (dynamic-bindings env)
+                           :position position-str}
+           [result# captured-envs#] (binding [replique.omniscient-runtime/*captured-envs* []]
+                                          [(do ~@body)
+                                           replique.omniscient-runtime/*captured-envs*])]
+       (let [captured-env# (if (seq captured-envs#)
+                             (assoc captured-env# :child-envs captured-envs#)
+                             captured-env#)]
+         (reset! ~capture-atom captured-env#))
+       result#)))
+
+(defn capture-child-env [env form body]
+  (let [{:keys [file line column] :or {file *file*}} (meta form)
+        position-str (str file ":" line ":" column)]
+    `(let [captured-env# ~{:locals (locals-map (env->locals env))
+                           ;; exclude dynamic vars that are used by the REPL/system
+                           :bindings (dynamic-bindings env)
+                           :position position-str}
+           [result# captured-envs#] (binding [replique.omniscient-runtime/*captured-envs* []]
+                                          [(do ~@body)
+                                           replique.omniscient-runtime/*captured-envs*])]
+       (when (some? replique.omniscient-runtime/*captured-envs*)
+         (let [captured-env# (if (seq captured-envs#)
+                               (assoc captured-env# :child-envs captured-envs#)
+                               captured-env#)]
            (set! replique.omniscient-runtime/*captured-envs*
-                 (conj replique.omniscient-runtime/*captured-envs*
-                       (assoc captured-env# :child-envs captured-envs#)))
-           (seq captured-envs#)
-           (reset! replique.omniscient-runtime/captured-env
-                   (assoc captured-env# :child-envs captured-envs#))
-           :else (reset! replique.omniscient-runtime/captured-env captured-env#))
-     result#))
+                 (conj replique.omniscient-runtime/*captured-envs* captured-env#))))
+       result#)))
 
-(defn get-binding-syms [env]
+(defn get-binding-syms [env capture-atom]
   (if (utils/cljs-env? env)
     (let [res (@cljs-eval-cljs-form (:repl-env env)
-               `(replique.omniscient-runtime/get-binding-syms))]
+               `(replique.omniscient-runtime/get-binding-syms ~capture-atom))]
       (read-string (read-string res)))
-    (replique.omniscient-runtime/get-binding-syms)))
+    (replique.omniscient-runtime/get-binding-syms capture-atom)))
 
-(defn locals-reducer [acc local-sym]
-  (conj acc local-sym
-        `(get-in (:replique.watch/value (meta replique.omniscient-runtime/captured-env))
-                 [:locals (quote ~local-sym)])))
-
-(defn bindings-reducer [acc binding-sym]
+(defn bindings-reducer [capture-atom acc binding-sym]
   (conj acc binding-sym
-        `(get-in (:replique.watch/value (meta replique.omniscient-runtime/captured-env))
-                 [:bindings (quote ~binding-sym)])))
+        `(-> (replique.omniscient-runtime/capture-env-var-value ~capture-atom)
+             :bindings (get (quote ~binding-sym)))))
 
-(defn with-env [env body]
-  (let [captured-env `(:replique.watch/value (meta replique.omniscient-runtime/captured-env))
-        syms (get-binding-syms env captured-env)
-        locals-syms (:locals syms)
-        binding-syms (:bindings syms)]
-    `(binding ~(reduce (partial bindings-reducer captured-env) [] binding-syms)
-       (let ~(reduce (partial locals-reducer captured-env) [] locals-syms)
-         ~@body))))
+(defn locals-reducer [capture-atom acc local-sym]
+  (conj acc local-sym
+        `(-> (replique.omniscient-runtime/capture-env-var-value ~capture-atom)
+             :locals (get (quote ~local-sym)))))
 
-(defn get-locals-for-tooling-clj []
-  (replique.omniscient-runtime/get-locals))
+(defn with-env [env capture-atom body]
+  ;; :repl-env may be nil when compiling files
+  (when-not (and (utils/cljs-env? env) (nil? (:repl-env env)))
+    (let [syms (get-binding-syms env capture-atom)
+          locals-syms (:locals syms)
+          binding-syms (:bindings syms)]
+      `(binding ~(reduce (partial bindings-reducer capture-atom)
+                         [] binding-syms)
+         (let ~(reduce (partial locals-reducer capture-atom)
+                       [] locals-syms)
+           ~@body)))))
 
-(defn get-locals-for-tooling-cljs [repl-env]
-  (let [{:keys [status value]} (@cljs-evaluate-form
-                                repl-env
-                                "replique.omniscient_runtime.get_locals();"
-                                :timeout-before-submitted 100)]
-    (when (= :success status)
-      (elisp/->ElispString value))))
+(defn captured-env-locals [comp-env ns captured-env]
+  (let [ns (or (and ns (env/find-ns comp-env (symbol ns)))
+               (env/find-ns comp-env (env/default-ns comp-env)))
+        resolved (when capture-env
+                   (safe-ns-resolve comp-env ns (symbol captured-env)))]
+    (when resolved
+      (replique.omniscient-runtime/get-locals @resolved))))
+
+(defn captured-env-locals-cljs [comp-env repl-env ns captured-env]
+  (let [ns (or (and ns (env/find-ns comp-env (symbol ns)))
+               (env/find-ns comp-env (env/default-ns comp-env)))
+        resolved (when capture-env
+                   (safe-ns-resolve comp-env ns (symbol captured-env)))]
+    (when (:name resolved)
+      (let [{:keys [status value]} (@cljs-evaluate-form
+                                    repl-env
+                                    (format "replique.omniscient_runtime.get_locals(%s);"
+                                            (@cljs-munged (str (:name resolved))))
+                                    :timeout-before-submitted 100)]
+        (when (= :success status)
+          (elisp/->ElispString value))))))
 
 (comment
-  (defn rrr2 [x y]
-    (replique.interactive/capture-env)
-    y)
-
-  (defn rrr []
-    (replique.interactive/capture-env (rrr2 1 2)))
+  (def env (atom nil))
   
-  (replique.interactive/capture-env (rrr))
-  (replique.interactive/capture-env 33)
+  (let [eeee 44]
+    (replique.interactive/capture-env env
+     44))
   
-  (replique.interactive/with-env
-    y)
+  (replique.interactive/with-env env
+    eeee)
   )
