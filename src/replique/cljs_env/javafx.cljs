@@ -1,5 +1,8 @@
 (ns replique.cljs-env.javafx
-  (:require [replique.omniscient-runtime]))
+  (:require [replique.omniscient-runtime]
+            [replique.cljs-env.completion]
+            [replique.cljs-env.watch]
+            [replique.omniscient-runtime]))
 
 (defn list-css-urls []
   (when-let [scene (.getScene js/muancefx.core.stage)]
