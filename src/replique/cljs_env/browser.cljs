@@ -6,6 +6,7 @@
             [replique.omniscient-runtime]
             [replique.cljs-env.completion]
             [replique.cljs-env.watch]
+            [replique.omniscient-runtime]
             [goog.object :as o])
   (:require-macros [replique.interactive]))
 
