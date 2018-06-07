@@ -41,19 +41,23 @@
 (defprotocol IGetWatchable
   (get-watchable [this]))
 
+(extend-type nil
+  IGetWatchable
+  (get-watchable [this] nil))
+
 (declare ->Watched)
 (declare ->RecordedWatched)
 
-(defn recorded-watched-with-record-size [watchable values index record-size]
+(defn recorded-watched-with-record-size [watchable values index record-size meta]
   (if (> (count values) record-size)
     (let [drop-n (- (count values) record-size)
           new-values (if (> drop-n index)
                        (into [(get values index)] (drop (inc drop-n)) values)
                        (into [] (drop drop-n) values))]
-      (->RecordedWatched watchable new-values (max 0 (- index drop-n)) record-size))
-    (->RecordedWatched watchable values index record-size)))
+      (->RecordedWatched watchable new-values (max 0 (- index drop-n)) record-size meta))
+    (->RecordedWatched watchable values index record-size meta)))
 
-(deftype Watched [watchable values index]
+(deftype Watched [watchable values index meta]
   IGetWatchable
   (get-watchable [this] watchable)
   IDeref
@@ -63,22 +67,26 @@
     (add-watch watchable (keyword "replique.watch" (str buffer-id))
                (partial notification-watcher buffer-id)))
   IMostRecentValue
-  (most-recent-value [this] (->Watched watchable [(maybe-deref watchable)] 0))
+  (most-recent-value [this] (->Watched watchable [(maybe-deref watchable)] 0 meta))
   IRecordable
   (start-recording [this buffer-id record-size]
     (remove-watch watchable (keyword "replique.watch" (str buffer-id)))
-    (let [watched (->RecordedWatched watchable values index record-size)]
+    (let [watched (->RecordedWatched watchable values index record-size meta)]
       (add-watch-handler watched buffer-id)
       watched))
   (stop-recording [this buffer-id] this)
   (record-position [this]
     {:index (inc index) :count (count values)})
   (value-at-index [this index]
-    (->Watched watchable values (max (min index (dec (count values))) 0)))
+    (->Watched watchable values (max (min index (dec (count values))) 0) meta))
   IRecordSize
-  (record-size [this] nil))
+  (record-size [this] nil)
+  IWithMeta
+  (-with-meta [this meta] (->Watched watchable values index meta))
+  IMeta
+  (-meta [this] meta))
 
-(deftype RecordedWatched [watchable values index record-size]
+(deftype RecordedWatched [watchable values index record-size meta]
   IGetWatchable
   (get-watchable [this] watchable)
   IDeref
@@ -92,27 +100,34 @@
   IMostRecentValue
   (most-recent-value [this] (->RecordedWatched watchable values
                                                (dec (count values))
-                                               record-size))
+                                               record-size
+                                               meta))
   IRecordable
   (start-recording [this buffer-id record-size]
-    (recorded-watched-with-record-size watchable values index record-size))
+    (recorded-watched-with-record-size watchable values index record-size meta))
   (stop-recording [this buffer-id]
     (remove-watch watchable (keyword "replique.watch" (str buffer-id)))
-    (let [watched (->Watched watchable values index)]
+    (let [watched (->Watched watchable values index meta)]
       (add-watch-handler watched buffer-id)
       watched))
   (record-position [this]
     {:index (inc index) :count (count values)})
   (value-at-index [this index]
-    (->RecordedWatched watchable values (max (min index (dec (count values))) 0) record-size))
+    (->RecordedWatched
+     watchable values (max (min index (dec (count values))) 0) record-size meta))
   IRecordSize
-  (record-size [this] record-size))
+  (record-size [this] record-size)
+  IWithMeta
+  (-with-meta [this meta] (->RecordedWatched watchable values index record-size meta))
+  IMeta
+  (-meta [this] meta))
 
 (defn add-recorded-watch-value [recorded-watch new-value]
   (recorded-watched-with-record-size (.-watchable recorded-watch)
                                      (conj (.-values recorded-watch) new-value)
                                      (.-index recorded-watch)
-                                     (.-record-size recorded-watch)))
+                                     (.-record-size recorded-watch)
+                                     (.-meta recorded-watch)))
 
 (defn maybe-nested-iref [x]
   (loop [iref x
@@ -130,7 +145,7 @@
 
 (defn add-replique-watch [var-sym buffer-id]
   (let [watchable (maybe-nested-iref var-sym)
-        watched (->Watched watchable [(maybe-deref watchable)] 0)]
+        watched (->Watched watchable [(maybe-deref watchable)] 0 nil)]
     (swap! watched-refs assoc buffer-id watched)
     (add-watch-handler watched buffer-id)))
 
@@ -335,15 +350,14 @@
 
 (defn init []
   (o/set js/cljs.core "pr_with_opts" watched-pr-with-opts)
-
   (let [buffer-id "var-replique.cljs-env.watch/printed"
-        watched-ref (->RecordedWatched printed [@printed] 0 3)]
+        watched-ref (->RecordedWatched printed [@printed] 0 3 nil)]
     (when (not (contains? watched-refs buffer-id))
       (swap! watched-refs assoc buffer-id watched-ref)
       (add-watch-handler watched-ref buffer-id)))
 
   (let [buffer-id "var-replique.cljs-env.watch/results"
-        watched-ref (->RecordedWatched results [@results] 0 3)]
+        watched-ref (->RecordedWatched results [@results] 0 3 nil)]
     (when (not (contains? watched-refs buffer-id))
       (swap! watched-refs assoc buffer-id watched-ref)
       (add-watch-handler watched-ref buffer-id))))

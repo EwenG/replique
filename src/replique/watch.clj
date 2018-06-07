@@ -10,7 +10,7 @@
 
 (def ^:private cljs-repl-env (utils/dynaload 'replique.repl-cljs/repl-env))
 (def ^:private cljs-repl-env-nashorn (utils/dynaload 'replique.nashorn/repl-env))
-(def ^:private cljs-evaluate-form (utils/dynaload 'replique.repl-cljs/evaluate-form))
+(def ^:private cljs-evaluate-form (utils/dynaload 'replique.repl-cljs/-evaluate-form))
 (def ^:private cljs-munged (utils/dynaload 'cljs.compiler/munge))
 
 (defonce watched-refs (atom {}))
@@ -24,14 +24,14 @@
 
 (declare recorder-watcher)
 
-(defn recorded-watched-ref-with-record-size [ref values index record-size]
+(defn recorded-watched-ref-with-record-size [ref values index record-size meta]
   (if (> (count values) record-size)
     (let [drop-n (- (count values) record-size)
           new-values (if (> drop-n index)
                        (into [(get values index)] (drop (inc drop-n)) values)
                        (into [] (drop drop-n) values))]
-      (protocols/->RecordedWatchedRef ref new-values (max 0 (- index drop-n)) record-size))
-    (protocols/->RecordedWatchedRef ref values index record-size)))
+      (protocols/->RecordedWatchedRef ref new-values (max 0 (- index drop-n)) record-size meta))
+    (protocols/->RecordedWatchedRef ref values index record-size meta)))
 
 (extend-type WatchedRef
   protocols/IGetRef
@@ -44,16 +44,19 @@
   (prtocols/start-recording [this buffer-id record-size]
     (remove-watch (.-ref this) (keyword "replique.watch" (str buffer-id)))
     (let [watched-ref (protocols/->RecordedWatchedRef (.-ref this) (.-values this)
-                                                      (.-index this) record-size)]
+                                                      (.-index this) record-size
+                                                      (.-meta this))]
       (protocols/add-watch-handler watched-ref buffer-id)
       watched-ref))
   (protocols/stop-recording [this buffer-id] this)
   (protocols/record-position [this]
     {:index (inc (.-index this)) :count (count (.-values this))})
-  (protocols/most-recent-value [this] (protocols/->WatchedRef (.-ref this) [@(.-ref this)] 0))
+  (protocols/most-recent-value [this]
+    (protocols/->WatchedRef (.-ref this) [@(.-ref this)] 0 (.-meta this)))
   (protocols/value-at-index [this index]
     (protocols/->WatchedRef (.-ref this) (.-values this)
-                            (max (min index (dec (count (.-values this)))) 0)))
+                            (max (min index (dec (count (.-values this)))) 0)
+                            (.-meta this)))
   protocols/IRecordSize
   (protocols/record-size [this] nil))
 
@@ -69,21 +72,25 @@
   protocols/IRecordable
   (protocols/start-recording [this buffer-id record-size]
     (recorded-watched-ref-with-record-size (.-ref this) (.-values this)
-                                           (.-index this) record-size))
+                                           (.-index this) record-size
+                                           (.-meta this)))
   (protocols/stop-recording [this buffer-id]
     (remove-watch ref (keyword "replique.watch" (str buffer-id)))
-    (let [watched-ref (protocols/->WatchedRef (.-ref this) (.-values this) (.-index this))]
+    (let [watched-ref (protocols/->WatchedRef (.-ref this) (.-values this) (.-index this)
+                                              (.-meta this))]
       (protocols/add-watch-handler watched-ref buffer-id)
       watched-ref))
   (protocols/record-position [this]
     {:index (inc (.-index this)) :count (count (.-values this))})
   (protocols/most-recent-value [this]
     (protocols/->RecordedWatchedRef (.-ref this) (.-values this) (dec (count (.-values this)))
-                                    (.-record-size this)))
+                                    (.-record-size this)
+                                    (.-meta this)))
   (protocols/value-at-index [this index]
     (protocols/->RecordedWatchedRef (.-ref this) (.-values this)
                                     (max (min index (dec (count (.-values this)))) 0)
-                                    (.-record-size this)))
+                                    (.-record-size this)
+                                    (.-meta this)))
   protocols/IRecordSize
   (protocols/record-size [this] (.-record-size this)))
 
@@ -91,7 +98,8 @@
   (recorded-watched-ref-with-record-size (.-ref recorded-watch)
                                          (conj (.-values recorded-watch) new-value)
                                          (.-index recorded-watch)
-                                         (.-record-size recorded-watch)))
+                                         (.-record-size recorded-watch)
+                                         (.-meta recorded-watch)))
 
 (defn recorder-watcher [buffer-id k ref old-value value]
   (swap! watched-refs update buffer-id add-recorded-watch-value value))
@@ -112,7 +120,7 @@
 (defn add-replique-watch [var-sym buffer-id]
   (let [var (resolve var-sym)
         ref (maybe-nested-iref var)
-        watched-ref (protocols/->WatchedRef ref [@ref] 0)]
+        watched-ref (protocols/->WatchedRef ref [@ref] 0 nil)]
     (swap! watched-refs assoc buffer-id watched-ref)
     (protocols/add-watch-handler watched-ref buffer-id)
     {}))
@@ -309,10 +317,6 @@
 (defmethod tooling-msg/tooling-msg-handle [:replique/browser :add-watch] [msg]
   (tooling-msg/with-tooling-response msg
     (add-replique-watch-cljs @@cljs-repl-env msg)))
-
-(defmethod tooling-msg/tooling-msg-handle [:replique/nashorn :add-watch] [msg]
-  (tooling-msg/with-tooling-response msg
-    (add-replique-watch-cljs @@cljs-repl-env-nashorn msg)))
 
 (defn remove-watch-cljs [repl-env {:keys [buffer-id] :as msg}]
   (let [{:keys [status value]}
@@ -574,9 +578,9 @@
             *results* (or *results* (atom nil))
             pr (make-watched-pr *out*)]
     (let [printed-buffer-id (str "printed-" (:client replique.server/*session*))
-          printed-watched-ref (protocols/->RecordedWatchedRef *printed* [@*printed*] 0 3)
+          printed-watched-ref (protocols/->RecordedWatchedRef *printed* [@*printed*] 0 3 nil)
           results-buffer-id (str "results-" (:client replique.server/*session*))
-          results-watched-ref (protocols/->RecordedWatchedRef *results* [@*results*] 0 3)]
+          results-watched-ref (protocols/->RecordedWatchedRef *results* [@*results*] 0 3 nil)]
       (swap! watched-refs assoc printed-buffer-id printed-watched-ref)
       (protocols/add-watch-handler printed-watched-ref printed-buffer-id)
       (swap! watched-refs assoc results-buffer-id results-watched-ref)
