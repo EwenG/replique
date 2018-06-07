@@ -1,5 +1,5 @@
 (ns replique.watch-protocols
-  (:import [clojure.lang IDeref]))
+  (:import [clojure.lang IDeref IObj IMeta]))
 
 (defprotocol IWatchHandler
   (add-watch-handler [this buffer-id]))
@@ -17,10 +17,26 @@
 (defprotocol IGetRef
   (get-ref [this]))
 
-(deftype WatchedRef [ref values index]
-  IDeref
-  (deref [this] (get values index)))
+(declare ->WatchedRef)
 
-(deftype RecordedWatchedRef [ref values index record-size]
+(deftype WatchedRef [ref values index meta]
   IDeref
-  (deref [this] (get values index)))
+  (deref [this] (get values index))
+  IObj
+  (withMeta [this meta] (->WatchedRef ref values index meta))
+  IMeta
+  (meta [this] meta))
+
+(declare ->RecordedWatchedRef)
+
+(deftype RecordedWatchedRef [ref values index record-size meta]
+  IDeref
+  (deref [this] (get values index))
+  IObj
+  (withMeta [this meta] (->RecordedWatchedRef ref values index record-size meta))
+  IMeta
+  (meta [this] meta))
+
+(extend-type nil
+  IGetRef
+  (get-ref [this] nil))
