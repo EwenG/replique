@@ -1,4 +1,4 @@
-# Version 0.0.11
+# Version 0.0.12
 
 - Add the possibility to ensure that a cljs namespace and its dependencies are loaded in the cljs analysis env when starting a cljs REPL 
 - Add a find-usage feature
@@ -7,6 +7,8 @@
 - Support for Clojurescript 1.10.238
 - Autocompletion of system classes for jdk9+
 - Fix auto completion in import contexts
+
+# Version 0.0.11 - Corrupted release - see 0.0.12
 
 # Version 0.0.10
 
