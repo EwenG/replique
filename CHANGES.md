@@ -1,3 +1,5 @@
+# Version 0.0.14
+
 # Version 0.0.13 
 
 - Add the possibility to ensure that a cljs namespace and its dependencies are loaded in the cljs analysis env when starting a cljs REPL 
