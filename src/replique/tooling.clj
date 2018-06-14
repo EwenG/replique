@@ -320,3 +320,11 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
     {:paths (->> (classpath/paths false)
                  (into '() (map str))
                  reverse)}))
+
+(def ^:private logback-reload (utils/dynaload 'replique.logback/logback-reload))
+
+(defmethod tooling-msg/tooling-msg-handle [:replique/clj :logback-reload]
+  [msg]
+  (tooling-msg/with-tooling-response msg
+    (@logback-reload)
+    {}))
