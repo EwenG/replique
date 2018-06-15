@@ -1,3 +1,5 @@
+# Version 0.0.15
+
 # Version 0.0.14
 
 - Add the possibility to reload logback configurations
