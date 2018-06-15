@@ -14,9 +14,11 @@
 
    [cljs.repl :refer [repl-caught repl-quit-prompt repl-read repl-prompt known-repl-opts
                       -repl-options read-source-map *cljs-verbose* *repl-opts*
-                      default-special-fns -setup evaluate-form analyze-source err-out
+                      default-special-fns -setup evaluate-form analyze-source
                       -tear-down]])
   (:import [java.io File FileWriter PrintWriter Closeable]))
+
+(def err-out @#'cljs.repl/err-out)
 
 ;;Patch cljs.closure/output-main-file in order to:
 ;; - Avoid the need to provide an :asset-path option. :asset-path is
