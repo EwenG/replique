@@ -46,8 +46,6 @@
 
 (defonce cljs-outs (atom #{}))
 (def ^:dynamic *stopped-eval-executor?* false)
-(defonce cljs-core-bindings #{#'*assert* #'*print-length* #'*print-meta* #'*print-level*
-                              #'*flush-on-newline* #'*print-readably* #'*print-dup*})
 
 ;; Used to send runtime REPL params to the Replique client (*print-length*, *print-level* ...)
 ;; Also used to reset set! these values when the js runtime reconnects to the REPL
