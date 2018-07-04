@@ -18,6 +18,7 @@
 (def ^:private cljs-set-repl-verbose (utils/dynaload 'replique.repl-cljs/set-repl-verbose))
 (def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
 (def ^:private cljs-munge (utils/dynaload 'cljs.compiler/munge))
+(def ^:private logback-reload* (utils/dynaload 'replique.logback/logback-reload))
 
 #_(def ^:private cljs-install-node-deps!
   (utils/dynaload 'replique.repl-cljs/install-node-deps!))
@@ -199,5 +200,8 @@
 (defmacro with-env [captured-env-var & body]
   (omniscient/with-env &env captured-env-var body))
 
+(defn logback-reload []
+  (@logback-reload*))
+
 #_(defmacro install-node-deps! []
-  (boolean (@cljs-install-node-deps!)))
+    (boolean (@cljs-install-node-deps!)))
