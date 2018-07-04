@@ -160,7 +160,7 @@
         (get o k)
         (and (or (coll? o) (instance? Collection  o))
              (number? k))
-        (nth (seq o) k)
+        (nth (seq o) k nil)
         :else nil))
 
 ;; like clojure.core/get-in but uses browse-get instead of get

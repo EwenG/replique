@@ -172,11 +172,10 @@
     (swap! watched-refs dissoc buffer-id)))
 
 (defn browse-get [o k]
-  (cond (map? o)
-        (get o k)
+  (cond (map? o) (get o k)
         (object? o) (o/get o k)
         (and (array? o) (number? k)) (aget o k)
-        (and (coll? o) (seqable? o) (number? k)) (nth (seq o) k)
+        (and (coll? o) (seqable? o) (number? k)) (nth (seq o) k nil)
         :else nil))
 
 (defn browse-get-in [m ks]
