@@ -21,9 +21,10 @@
               class)))))
 
 (defn resolve-class [ns class]
-  (let [maybe-class (try (ns-resolve ns class)
-                         (catch ClassNotFoundException ex nil))]
-    (when (class? maybe-class) maybe-class)))
+  (when (not= (str class) "")
+    (let [maybe-class (try (ns-resolve ns class)
+                           (catch ClassNotFoundException ex nil))]
+      (when (class? maybe-class) maybe-class))))
 
 (defn try-get-meta-class [comp-env ns meta-str]
   (when-let [meta (try (read-string meta-str)
