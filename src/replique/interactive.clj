@@ -3,7 +3,7 @@
   (:refer-clojure :exclude [load-file load])
   (:require [replique.repl]
             [replique.utils :as utils]
-            [replique.server :as server]
+            [clojure.core.server :as server]
             [replique.environment :as env]
             [clojure.java.io :as io]
             [replique.omniscient :as omniscient])
@@ -46,7 +46,7 @@
 
 (def repl-port
   "Returns the port the REPL is listening on"
-  server/server-port)
+  utils/server-port)
 
 ;; At the moment, load file does not intern macros in the cljs-env, making dynamically loaded
 ;; macros unavailable to autocompletion/repliquedoc
@@ -142,7 +142,7 @@
 
   (defn remote-repl-accept []
     (clojure.main/repl :prompt (fn [] (printf "<remote> %s=> " (ns-name *ns*)))
-                       :read clojure.core.server/repl-read))
+                       :read server/repl-read))
 
   
 

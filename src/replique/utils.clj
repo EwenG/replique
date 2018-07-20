@@ -1,13 +1,26 @@
 (ns replique.utils
   (:refer-clojure :exclude [delay])
+  (:require [clojure.core.server :as server])
   (:import [java.util.concurrent.locks ReentrantLock]
-           [java.net URL]))
+           [java.net URL]
+           [java.net ServerSocket]))
 
 (defonce process-out nil)
 (defonce process-err nil)
-(defonce project-map nil)
-(defonce version nil)
-(defonce cljs-compile-path nil)
+(defonce version "0.0.15-SNAPSHOT")
+(defonce host "localhost")
+(defonce port 0)
+(defonce http-host "localhost")
+(defonce http-port 0)
+(defonce cljs-compile-path "target/cljs")
+
+(defn server-port []
+  (let [ss (-> @#'server/servers (get :replique) :socket)]
+    (.getLocalPort ^ServerSocket ss)))
+
+(defn server-host []
+  (let [ss (-> @#'server/servers (get :replique) :socket)]
+    (.getHostName (.getInetAddress ^ServerSocket ss))))
 
 (defmacro with-1.9+ [& body]
   (let [{:keys [major minor]} *clojure-version*]

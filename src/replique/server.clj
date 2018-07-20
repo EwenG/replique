@@ -61,7 +61,7 @@
         (alter-var-root #'servers update-in [name :sessions] dissoc client-id))
       (.close conn))))
 
-;; The caller is resposible for catching exceptions
+;; The caller is responsible for catching exceptions
 (defn send-response [out {:keys [status body content-type encoding]}]
   (http/send-and-close out status body content-type encoding))
 
@@ -162,8 +162,4 @@
           (utils/with-lock lock
             (alter-var-root #'servers dissoc name)))))
     socket))
-
-(defn server-port []
-  (let [ss (-> servers (get :replique) :socket)]
-    (.getLocalPort ^ServerSocket ss)))
 

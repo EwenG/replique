@@ -1,11 +1,14 @@
 (ns replique.repl
   (:require [replique.utils :as utils]
             [replique.tooling-msg :as tooling-msg]
-            [replique.server :as server]
+            [clojure.core.server :as server]
+            [replique.http-server :as http-server]
             [replique.source-meta]
             [clojure.stacktrace :refer [print-stack-trace]])
   (:import [clojure.lang LineNumberingPushbackReader Compiler]
-           [java.net URL]))
+           [java.net URL]
+           [java.io File Reader PushbackReader]
+           [java.nio.file Paths]))
 
 (def ^:private dispatch-request
   (utils/dynaload 'replique.repl-cljs/dispatch-request))
@@ -15,10 +18,6 @@
        (catch Exception e
          (tooling-msg/uncaught-exception (Thread/currentThread) e)
          {:status 500 :body (.getMessage e)})))
-
-(comment
-  (server/server-port)
-  )
 
 (defn tooling-repl []
   (clojure.main/repl
@@ -48,33 +47,55 @@
                                     :ns (utils/repl-ns utils/*repl-env*)
                                     :params params}))))))
 
-(defn start-repl-process [project-map {:keys [process-id host port cljs-compile-path version]}]
+(defn start-repl-process [{:keys [host port process-id
+                                  http-host http-port]}]
   (try
-    ;; clojure.main/repl set the context class loader BEFORE the clojure.lang.Compiler/LOADER
+    ;; Leiningen specific --- Not needed anymore - kept here for information
+    ;; clojure.main/repl sets the context class loader BEFORE the clojure.lang.Compiler/LOADER
     ;; var is bound. Thus when the clojure.lang.Compiler/LOADER var is bound, it shares a same
     ;; DynamicClassLoader ancestor than the context class loader.
     ;; Leiningen starts the process with an init script (clojure.main/repl is NOT directly used by
     ;; leiningen). When starting the process with an init script, the clojure.lang.Compiler/LOADER
     ;; var is bound BEFORE the context class loader is bound. In order for them to share a same
     ;; ancestor, we set the contextClassLoader here
-    (.setContextClassLoader (Thread/currentThread) (deref Compiler/LOADER))
+    #_(.setContextClassLoader (Thread/currentThread) (deref Compiler/LOADER))
     (alter-var-root #'utils/process-out (constantly *out*))
     (alter-var-root #'utils/process-err (constantly *err*))
-    (alter-var-root #'utils/project-map (constantly project-map))
+    (alter-var-root #'utils/host (constantly host))
+    (alter-var-root #'utils/port (constantly port))
+    (alter-var-root #'utils/http-host (constantly http-host))
+    (alter-var-root #'utils/http-port (constantly http-port))
     (alter-var-root #'tooling-msg/process-id (constantly process-id))
-    (alter-var-root #'utils/cljs-compile-path (constantly cljs-compile-path))
-    (alter-var-root #'utils/version (constantly version))
-    ;; Let leiningen :global-vars option propagate to other REPLs
+    (let [user-init-script (File. (System/getProperty "user.home") ".replique/init.clj")
+          project-init-script (File. (System/getProperty "user.dir") ".replique/init.clj")]
+      (when (.exists user-init-script)
+        (load-file (.getAbsolutePath user-init-script)))
+      (when (.exists project-init-script)
+        (load-file (.getAbsolutePath project-init-script))))
+    ;; Make the cljs-compile-path absolute
+    (let [cljs-compile-path (Paths/get utils/cljs-compile-path (make-array String 0))]
+      (when-not (.isAbsolute cljs-compile-path)
+        (let [absolute-path (Paths/get (System/getProperty "user.dir")
+                                       (into-array String [utils/cljs-compile-path]))]
+          (alter-var-root #'utils/cljs-compile-path (constantly (str absolute-path))))))
+    ;; Propagate bindings to other REPLS
     ;; The tooling REPL printing is a custom one and thus is not affected by those bindings,
     ;; and it must not !!
     (alter-var-root #'tooling-repl bound-fn*)
     (alter-var-root #'accept-http bound-fn*)
-    ;; Let the client know about *ns* changes
-    (server/start-server {:address host :port port :name :replique
+    (http-server/start-server {:address utils/http-host
+                               :port utils/http-port
+                               :accept `accept-http
+                               :server-daemon true})
+    (server/start-server {:address utils/host
+                          :port utils/port
+                          :name :replique
                           :accept `tooling-repl
-                          :accept-http `accept-http
                           :server-daemon false})
-    (println (str "Replique version " version " listening on port " (server/server-port)))
+    (println (str "Replique listening on host " (pr-str (utils/server-host))
+                  " and port " (utils/server-port) "\n"
+                  "HTTP server listening on host " (pr-str (http-server/server-host))
+                  " and port " (http-server/server-port)))
     (catch Throwable t
       (prn t))))
 
@@ -143,8 +164,8 @@
    "clojure.core/*warn-on-reflection*" *warn-on-reflection*})
 
 (defn set-source-meta! []
-  (let [char (.read *in*)
-        _ (.unread *in* char)
+  (let [char (.read ^Reader *in*)
+        _ (.unread ^PushbackReader *in* char)
         {:keys [url line column]} @replique.source-meta/source-meta
         url (try (URL. url) (catch Exception _ nil))
         path (when url (utils/url->path url))]
@@ -181,7 +202,7 @@
   ([]
    (repl repl-print))
   ([print-result-fn]
-   (binding [*file* "NO_SOURCE_PATH"]
+   (binding [*file* *file*]
      (apply clojure.main/repl (->> {:init (fn [] (in-ns 'user))
                                     :print print-result-fn
                                     :caught repl-caught
@@ -203,4 +224,3 @@
 ;; It seems (requireing) namespaces in the init fn sometimes throws an exception. I am not sure
 ;; why, maybe we just cannot dynamically (require) a namespace and immediately use its vars
 ;; without the use of (resolve)
-

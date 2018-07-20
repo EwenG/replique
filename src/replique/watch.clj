@@ -3,7 +3,8 @@
             [replique.utils :as utils]
             [replique.completion :as completion]
             [replique.elisp-printer :as elisp]
-            [replique.watch-protocols :as protocols])
+            [replique.watch-protocols :as protocols]
+            [clojure.core.server :as server])
   (:import [clojure.lang IRef IDeref IPending]
            [java.util Map Collection]
            [replique.watch_protocols WatchedRef RecordedWatchedRef]))
@@ -577,9 +578,9 @@
   (binding [*printed* (or *printed* (atom nil))
             *results* (or *results* (atom nil))
             pr (make-watched-pr *out*)]
-    (let [printed-buffer-id (str "printed-" (:client replique.server/*session*))
+    (let [printed-buffer-id (str "printed-" (:client server/*session*))
           printed-watched-ref (protocols/->RecordedWatchedRef *printed* [@*printed*] 0 3 nil)
-          results-buffer-id (str "results-" (:client replique.server/*session*))
+          results-buffer-id (str "results-" (:client server/*session*))
           results-watched-ref (protocols/->RecordedWatchedRef *results* [@*results*] 0 3 nil)]
       (swap! watched-refs assoc printed-buffer-id printed-watched-ref)
       (protocols/add-watch-handler printed-watched-ref printed-buffer-id)

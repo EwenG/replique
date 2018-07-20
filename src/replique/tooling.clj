@@ -2,7 +2,7 @@
   (:require [clojure.set]
             [clojure.java.io :as io]
             [replique.utils :as utils]
-            [replique.server :as server]
+            [replique.http-server :as http-server]
             [replique.tooling-msg :as tooling-msg]
             [replique.repliquedoc :as repliquedoc]
             [replique.omniscient :as omniscient]
@@ -151,7 +151,8 @@
                         (sort completion/by-length-comparator))})))
 
 (defn output-main-js-file [output-to main-ns]
-  (let [port (server/server-port)]
+  (let [http-port (http-server/server-port)
+        http-host (http-server/server-host)]
     (io/make-parents output-to)
     (spit
      output-to
@@ -159,15 +160,16 @@
 var CLOSURE_UNCOMPILED_DEFINES = null;
 (function() {
   var port = '%s';
+  var host = '%s';
   %s
-  document.write('<script src=\"http://localhost:' + port + '/goog/base.js\"></script>');
-  document.write('<script src=\"http://localhost:' + port + '/cljs_deps.js\"></script>');
+  document.write('<script src=\"http://' + host + ':' + port + '/goog/base.js\"></script>');
+  document.write('<script src=\"http://' + host + ':' + port + '/cljs_deps.js\"></script>');
   document.write('<script>goog.require(\"replique.cljs_env.repl\");</script>');
   document.write('<script>goog.require(\"replique.cljs_env.browser\");</script>');
   %s
-  document.write('<script src=\"http://localhost:' + port + '/replique/cljs_env/bootstrap.js\"></script>');
-  document.write('<script>replique.cljs_env.repl.connect(\"http://localhost:' + port + '\");</script>')})();"
-             port
+  document.write('<script src=\"http://' + host + ':' + port + '/replique/cljs_env/bootstrap.js\"></script>');
+  document.write('<script>replique.cljs_env.repl.connect(\"http://' + host + ':' + port + '\");</script>')})();"
+             http-port http-host
              (if main-ns (str "var mainNs = '" (namespace-munge main-ns) "';") "")
              (if main-ns
                "document.write('<script>goog.require(\"' + mainNs + '\");</script>');"
