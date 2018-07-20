@@ -1,5 +1,7 @@
 # Version 0.0.15
 
+- Replique now depends on clojure tools.deps instead of leiningen 
+
 # Version 0.0.14
 
 - Add the possibility to reload logback configurations
