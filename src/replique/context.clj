@@ -177,10 +177,9 @@
               (recur binding-context dependency-context (rest context-forms))))
           {:binding-context (persistent! binding-context)
            :dependency-context (persistent! dependency-context)
+           :ns-context {"ns" :ns-like
+                        "clojure.core/ns" :ns-like}
            :repl-type (utils/repl-type repl-env)})))))
-
-(def ns-context-clj {"ns" :ns-like
-                     "clojure.core/ns" :ns-like})
 
 (comment
   (require '[replique.environment :as env])

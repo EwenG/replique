@@ -243,10 +243,9 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
   [{:keys [ns repl-env] :as msg}]
   (tooling-msg/with-tooling-response msg
     (when ns
-      (assoc (context/context-forms
-              nil repl-env ns
-              context/context-forms-clj)
-             :ns-context context/ns-context-clj))))
+      (context/context-forms
+       nil repl-env ns
+       context/context-forms-clj))))
 
 (defmethod tooling-msg/tooling-msg-handle [:replique/browser :context]
   [{:keys [ns repl-env] :as msg}]
