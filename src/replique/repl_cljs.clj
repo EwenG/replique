@@ -208,6 +208,7 @@ replique.cljs_env.repl.connect(\"" url "\");
    (repl-compile-cljs f repl-opts opts true))
   ([f repl-opts opts reload-macros]
    (let [src (f->src f)
+         _ (when-not src (throw (ex-info "File not found " {:file f})))
          ;; prior to cljs 1.9.456, closure/src-file->target-file returned a relative path. After
          ;; cljs 1.9.456, closure/src-file->target-file returns an absolute path. Let's normalize
          ;; the path
@@ -669,7 +670,7 @@ replique.cljs_env.repl.connect(\"" url "\");
     (when uri
       (when-not (get-in @@compiler-env [::ana/namespaces namespace])
         (let [opts (:options @@compiler-env)]
-          (compile-file repl-env (.getPath ^URL uri) opts))))))
+          (compile-file repl-env uri opts))))))
 
 (defn cljs-repl [main-namespace]
   (let [repl-env @repl-env
