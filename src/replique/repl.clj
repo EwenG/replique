@@ -78,11 +78,6 @@
         (let [absolute-path (Paths/get (System/getProperty "user.dir")
                                        (into-array String [utils/cljs-compile-path]))]
           (alter-var-root #'utils/cljs-compile-path (constantly (str absolute-path))))))
-    ;; Propagate bindings to other REPLS
-    ;; The tooling REPL printing is a custom one and thus is not affected by those bindings,
-    ;; and it must not !!
-    (alter-var-root #'tooling-repl bound-fn*)
-    (alter-var-root #'accept-http bound-fn*)
     (http-server/start-server {:address utils/http-host
                                :port utils/http-port
                                :accept `accept-http
