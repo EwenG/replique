@@ -20,6 +20,7 @@
          {:status 500 :body (.getMessage e)})))
 
 (defn tooling-repl []
+  (.setContextClassLoader (Thread/currentThread) utils/root-dynamic-classloader)
   (clojure.main/repl
    :init (fn [] (in-ns 'replique.repl))
    :prompt #()
@@ -50,15 +51,9 @@
 (defn start-repl-process [{:keys [host port process-id
                                   http-host http-port]}]
   (try
-    ;; Leiningen specific --- Not needed anymore - kept here for information
-    ;; clojure.main/repl sets the context class loader BEFORE the clojure.lang.Compiler/LOADER
-    ;; var is bound. Thus when the clojure.lang.Compiler/LOADER var is bound, it shares a same
-    ;; DynamicClassLoader ancestor than the context class loader.
-    ;; Leiningen starts the process with an init script (clojure.main/repl is NOT directly used by
-    ;; leiningen). When starting the process with an init script, the clojure.lang.Compiler/LOADER
-    ;; var is bound BEFORE the context class loader is bound. In order for them to share a same
-    ;; ancestor, we set the contextClassLoader here
-    #_(.setContextClassLoader (Thread/currentThread) (deref Compiler/LOADER))
+    ;; All REPLs threads should share a common DynamicClassLoader for the classpath updates to be visibile by all REPLs. Also the Compiler/LOADER classloader must be a child of the root DynamicClassLoader for the Clojure compiler to be able to see classpath updates.
+    (let [cl (clojure.lang.DynamicClassLoader. (.getContextClassLoader (Thread/currentThread)))]
+      (alter-var-root #'utils/root-dynamic-classloader (constantly cl)))
     (alter-var-root #'utils/process-out (constantly *out*))
     (alter-var-root #'utils/process-err (constantly *err*))
     (alter-var-root #'utils/host (constantly host))

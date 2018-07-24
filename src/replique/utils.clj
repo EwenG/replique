@@ -5,9 +5,10 @@
            [java.net URL]
            [java.net ServerSocket]))
 
+(defonce version "0.0.15-SNAPSHOT")
+(defonce root-dynamic-classloader nil)
 (defonce process-out nil)
 (defonce process-err nil)
-(defonce version "0.0.15-SNAPSHOT")
 (defonce host "localhost")
 (defonce port 0)
 (defonce http-host "localhost")
