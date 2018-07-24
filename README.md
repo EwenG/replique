@@ -1,30 +1,32 @@
 # Replique
 
-Replique is a development environment for Clojure and Clojurescript implemented as a [Leiningen](https://github.com/technomancy/leiningen) plugin.
+Replique is a development environment for Clojure and Clojurescript.
+Replique relies on the Clojure [command line tools](https://clojure.org/guides/deps_and_cli) for starting REPLs.
+The Clojure command line tools must be [installed](https://clojure.org/guides/getting_started#_clojure_installer_and_cli_tools) before getting started with Replique.
 The easiest way to start with Replique is to use a client. The only client currently available is an [emacs mode](https://github.com/EwenG/replique.el).
-If you are interested in writing a client for another text editor/ide, please fill an issue to ask for more documentation :)
 
 ## Overview
 
 The following is an overview of Replique features, demonstrating the use of Replique with only the help of a terminal.
 
-Create an empty leiningen project. Add Replique to your plugins and Clojurescript to your depenencies. Clojurescript is necessary because we will later start a Clojurescript REPL.
+Create an empty directory named "replique-demo". In the replique-demo directory, create a file named "deps.edn" with the following content.
 
 ```clojure
-(defproject replique-demo "0.0.1"
-  :dependencies [[org.clojure/clojurescript "x.x.x"]]
-  :plugins [[replique/replique "0.0.14"]])
+{:deps {replique.replique {:git/url "git@github.com:EwenG/replique.git" 
+                           :sha "267c48f57334f1028b9cab28b24c801de92d5c1c"
+                           :tag "0.0.15-SNAPSHOT"}
+        org.clojure/clojurescript {:mvn/version "1.10.339"}}}
 ```
+
+The dependency on Clojurescript is not strictly needed but is added because we will later start a Clojurescript REPL.
 
 From the project directory, start a REPL server on port 9000:
 
-`lein replique localhost 9000`
+`clj -J-Dreplique.server.port=9000 -J-Dreplique.http-server.port=9001 -m replique.main`
 
 In an other terminal, connect to the REPL server:
 
 `telnet localhost 9000`
-
-Enter the 'R' character. You must enter this first character before anything else. The reason is that the REPL server is able to understand several protocols and, in order to recognise the right protocol, the server checks the first character sent by the client.
 
 You are now in a Clojure REPL. You will notice that the current REPL does not print a prompt. The reason is Replique is designed to be easy to integrate into a text editor or an IDE. By not printing the prompt we make the REPL output easier to parse for the machine.
 You can enter any Clojure expression to get it evaluated.
@@ -38,15 +40,15 @@ Now let's start a more familiar Clojure REPL:
 
 A prompt is now printed. Again, you can enter any Clojure expression.
 
-Let's start a Clojurescipt REPL. Be sure you added a Clojurescript dependency to your project.clj file, as described earlier.
+Let's start a Clojurescipt REPL. Ensure that you added a Clojurescript dependency to your deps.edn file, as described earlier.
 
 `(replique.interactive/cljs-repl)`
 
 Wait a few seconds for the Clojurescript core libraries to be compiled. Javascript files get compiled to the `target/cljs` folder. As you can now see, the Clojurescript REPL is waiting for a browser to connect on port 9000 ...
 
-`Waiting for browser to connect on port 9000 ...`
+`Waiting for browser to connect on port 9001 ...`
 
-Open a browser tab at `localhost:9000`
+Open a browser tab at `localhost:9001`
 
 You are now able to evaluate Clojurescript expressions at the REPL:
 
@@ -75,7 +77,7 @@ Let's start a "tooling" REPL.
 
 `(replique.repl/shared-tooling-repl :edn)`
 
-Notice that no prompt is printed. By not pinting a rompt, we make the REPL output easier to parse by the machine. The first parameter, `:edn`, instructs the REPL to print the tooling messages using the [EDN](https://github.com/edn-format/edn) format. The tooling REPL currently supports two formats: EDN and [elisp](https://en.wikipedia.org/wiki/Emacs_Lisp).
+Notice that no prompt is printed. By not pinting a prompt, we make the REPL output easier to parse by the machine. The first parameter, `:edn`, instructs the REPL to print the tooling messages using the [EDN](https://github.com/edn-format/edn) format. The tooling REPL currently supports two formats: EDN and [elisp](https://en.wikipedia.org/wiki/Emacs_Lisp).
 
 Enter the following in the tooling REPL:
 
