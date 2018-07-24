@@ -1,9 +1,11 @@
 # Replique
 
 Replique is a development environment for Clojure and Clojurescript.
+
 Replique relies on the Clojure [command line tools](https://clojure.org/guides/deps_and_cli) for starting REPLs.
-The Clojure command line tools must be [installed](https://clojure.org/guides/getting_started#_clojure_installer_and_cli_tools) before getting started with Replique.
-The easiest way to start with Replique is to use a client. The only client currently available is an [emacs mode](https://github.com/EwenG/replique.el).
+The Clojure command line tools must be [installed](https://clojure.org/guides/getting_started#_clojure_installer_and_cli_tools) before using Replique.
+
+If you are interested in using Replique, you should check out its [emacs mode](https://github.com/EwenG/replique.el).
 
 ## Overview
 
