@@ -44,10 +44,6 @@
   []
   (@cljs-repl-nashorn*))
 
-(def repl-port
-  "Returns the port the REPL is listening on"
-  utils/server-port)
-
 ;; At the moment, load file does not intern macros in the cljs-env, making dynamically loaded
 ;; macros unavailable to autocompletion/repliquedoc
 (defmacro load-file
