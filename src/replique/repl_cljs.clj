@@ -310,7 +310,7 @@ replique.cljs_env.repl.connect(\"" url "\");
     ret))
 
 (defn evaluate-form [repl-env js & {:keys [timeout-before-submitted]}]
-  (let [port (http-server/server-port)
+  (let [port (utils/server-port utils/http-server)
         {:keys [state eval-executor]} @http-server/cljs-server]
     (cond
       (= :stopped state)
@@ -418,8 +418,8 @@ replique.cljs_env.repl.connect(\"" url "\");
                    :wrap #'wrap-fn}]
     (merge (BrowserEnv. repl-opts) repl-opts
            ;; st/parse-stacktrace expects host host-port and port to be defined on the repl-env
-           {:host "localhost" :host-port (http-server/server-port)
-            :port (http-server/server-port)})))
+           {:host "localhost" :host-port (utils/server-port utils/http-server)
+            :port (utils/server-port utils/http-server)})))
 
 #_(comment
   (cljs-env/with-compiler-env @compiler-env
@@ -693,7 +693,7 @@ replique.cljs_env.repl.connect(\"" url "\");
     (when main-namespace (ensure-compiled repl-env main-namespace))
     (when (not= :started state)
       (println (format "Waiting for browser to connect on port %d ..."
-                       (http-server/server-port))))
+                       (utils/server-port utils/http-server))))
     (swap! cljs-outs conj *out*)
     (try
       (binding [utils/*repl-env* :replique/browser]

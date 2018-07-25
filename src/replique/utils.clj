@@ -6,22 +6,25 @@
            [java.net ServerSocket]))
 
 (defonce version "0.0.15-SNAPSHOT")
-(defonce root-dynamic-classloader nil)
-(defonce process-out nil)
-(defonce process-err nil)
+
 (defonce host "localhost")
 (defonce port 0)
 (defonce http-host "localhost")
 (defonce http-port 0)
 (defonce cljs-compile-path "target/cljs")
 
-(defn server-port []
-  (let [ss (-> @#'server/servers (get :replique) :socket)]
-    (.getLocalPort ^ServerSocket ss)))
+(defonce process-out nil)
+(defonce process-err nil)
+(defonce repl-server nil)
+(defonce http-server nil)
 
-(defn server-host []
-  (let [ss (-> @#'server/servers (get :replique) :socket)]
-    (.getHostName (.getInetAddress ^ServerSocket ss))))
+(defonce root-dynamic-classloader nil)
+
+(defn server-port [server]
+  (.getLocalPort ^ServerSocket server))
+
+(defn server-host [server]
+  (.getHostName (.getInetAddress ^ServerSocket server)))
 
 (defmacro with-1.9+ [& body]
   (let [{:keys [major minor]} *clojure-version*]

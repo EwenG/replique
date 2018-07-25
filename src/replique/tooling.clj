@@ -2,7 +2,6 @@
   (:require [clojure.set]
             [clojure.java.io :as io]
             [replique.utils :as utils]
-            [replique.http-server :as http-server]
             [replique.tooling-msg :as tooling-msg]
             [replique.repliquedoc :as repliquedoc]
             [replique.omniscient :as omniscient]
@@ -151,8 +150,8 @@
                         (sort completion/by-length-comparator))})))
 
 (defn output-main-js-file [output-to main-ns]
-  (let [http-port (http-server/server-port)
-        http-host (http-server/server-host)]
+  (let [http-port (utils/server-port utils/http-server)
+        http-host (utils/server-host utils/http-server)]
     (io/make-parents output-to)
     (spit
      output-to

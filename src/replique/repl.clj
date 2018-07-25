@@ -73,19 +73,21 @@
         (let [absolute-path (Paths/get (System/getProperty "user.dir")
                                        (into-array String [utils/cljs-compile-path]))]
           (alter-var-root #'utils/cljs-compile-path (constantly (str absolute-path))))))
-    (http-server/start-server {:address utils/http-host
-                               :port utils/http-port
-                               :accept `accept-http
-                               :server-daemon true})
-    (server/start-server {:address utils/host
-                          :port utils/port
-                          :name :replique
-                          :accept `tooling-repl
-                          :server-daemon false})
-    (println (str "Replique listening on host " (pr-str (utils/server-host))
-                  " and port " (utils/server-port) "\n"
-                  "HTTP server listening on host " (pr-str (http-server/server-host))
-                  " and port " (http-server/server-port)))
+    (let [http-server (http-server/start-server {:address utils/http-host
+                                                 :port utils/http-port
+                                                 :accept `accept-http
+                                                 :server-daemon true})
+          repl-server (server/start-server {:address utils/host
+                                            :port utils/port
+                                            :name :replique
+                                            :accept `tooling-repl
+                                            :server-daemon false})]
+      (alter-var-root #'utils/http-server (constantly http-server))
+      (alter-var-root #'utils/repl-server (constantly repl-server)))
+    (println (str "Replique listening on host " (pr-str (utils/server-host utils/repl-server))
+                  " and port " (utils/server-port utils/repl-server) "\n"
+                  "HTTP server listening on host " (pr-str (utils/server-host utils/http-server))
+                  " and port " (utils/server-port utils/http-server)))
     (catch Throwable t
       (prn t))))
 

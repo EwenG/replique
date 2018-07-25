@@ -1,6 +1,5 @@
 (ns replique.http-server
-  (:require [replique.utils :as utils]
-            [replique.http :as http]
+  (:require [replique.http :as http]
             [replique.tooling-msg :as tooling-msg])
   (:import [java.net InetAddress ServerSocket SocketException]
            [java.io InputStreamReader BufferedReader]))
@@ -92,15 +91,3 @@
         (finally
           (alter-var-root #'server-socket (constantly nil)))))
     socket))
-
-(defn server-port []
-  (.getLocalPort ^ServerSocket server-socket))
-
-(defn server-host []
-  (.getHostName (.getInetAddress ^ServerSocket server-socket)))
-
-(defmethod tooling-msg/tooling-msg-handle [:replique/clj :http-address]
-  [msg]
-  (tooling-msg/with-tooling-response msg
-    {:http-host (server-host)
-     :http-port (server-port)}))
