@@ -570,9 +570,10 @@
          (reset! *printed* x)))
      (apply replique.repl/core-pr x more))))
 
-(defn watched-print-result [x]
-  (reset! *results* x)
-  (replique.repl/repl-print x))
+(defn repl-print-with-watch [f]
+  (fn repl-print [x]
+    (reset! *results* x)
+    (f x)))
 
 (defn repl []
   (binding [*printed* (or *printed* (atom nil))
@@ -586,7 +587,8 @@
       (protocols/add-watch-handler printed-watched-ref printed-buffer-id)
       (swap! watched-refs assoc results-buffer-id results-watched-ref)
       (protocols/add-watch-handler results-watched-ref results-buffer-id)
-      (try (replique.repl/repl watched-print-result)
+      (try (replique.repl/repl {:init (fn [] (in-ns 'user))
+                                :print (repl-print-with-watch prn)})
            (finally
              (remove-watch (protocols/get-ref printed-watched-ref)
                            (keyword "replique.watch" (str printed-buffer-id)))

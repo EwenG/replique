@@ -6,7 +6,8 @@
             [clojure.core.server :as server]
             [replique.environment :as env]
             [clojure.java.io :as io]
-            [replique.omniscient :as omniscient])
+            [replique.omniscient :as omniscient]
+            [replique.watch :as watch])
   (:import [java.net URL]
            [java.io File]))
 
@@ -25,13 +26,9 @@
 
 (defn repl [& options]
   (let [options-map (apply hash-map options)
-        options-map (cond-> options-map
-                      (not (contains? options-map :init)) (assoc :init #())
-                      (not (contains? options-map :print)) (assoc :print prn)
-                      (not (contains? options-map :caught))
-                      (assoc :caught clojure.main/repl-caught)
-                      true replique.repl/options-with-repl-meta)]
-    (apply clojure.main/repl (apply concat options-map))))
+        options-map (assoc options-map :print
+                           (watch/repl-print-with-watch (get options-map :print prn)))]
+    (replique.repl/repl options-map)))
 
 (defn cljs-repl
   "Start a Clojurescript REPL. When a main-namescape is provided, the namespace is compiled if
