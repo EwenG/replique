@@ -1,7 +1,8 @@
 (ns replique.files
   (:import [java.io File]
-           [java.nio.file Path Files FileVisitor FileVisitResult
+           [java.nio.file Path Paths Files FileVisitor FileVisitResult
             FileVisitOption FileSystemLoopException NoSuchFileException]
+           [java.nio.file.attribute FileAttribute]
            [java.util EnumSet]
            [java.util.jar JarFile JarEntry]))
 
@@ -81,3 +82,18 @@
   (def the-path (Paths/get "." (make-array String 0)))
   )
 
+(defn create-symbolic-link
+  ([link target]
+   (create-symbolic-link link target nil))
+  ([link target file-attributes]
+   (let [^Path link (if (string? link)
+                      (Paths/get link (make-array String 0))
+                      link)
+         target (if (string? target)
+                  (Paths/get target (make-array String 0))
+                  target)
+         file-attributes (if file-attributes
+                           (into-array FileAttribute file-attributes)
+                           (make-array FileAttribute 0))]
+     (Files/createDirectories (.getParent link) (make-array FileAttribute 0))
+     (Files/createSymbolicLink link target file-attributes))))
