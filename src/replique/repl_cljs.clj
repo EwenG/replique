@@ -553,18 +553,23 @@ replique.cljs_env.repl.connect(\"" url "\");
         (flush))))
   {:status 200 :body "ignore__" :content-type "text/plain"})
 
+(defn updated-ns? [prev-comp-env comp-env ns-sym]
+  (not (identical? (-> prev-comp-env :cljs.analyzer/namespaces (get ns-sym) :defs)
+                   (-> comp-env :cljs.analyzer/namespaces (get ns-sym) :defs))))
+
+(defn updated-var? [prev-comp-env comp-env var-sym]
+  (let [ns-sym (symbol (namespace var-sym))
+        var-sym (symbol (name var-sym))]
+    (not (identical? (-> prev-comp-env :cljs.analyzer/namespaces (get ns-sym) :defs (get var-sym))
+                     (-> comp-env :cljs.analyzer/namespaces (get ns-sym) :defs (get var-sym))))))
+
 (defn call-post-eval-hooks [repl-env prev-comp-env comp-env]
-  (doseq [[ns-sym f] (:replique/ns-watches comp-env)]
-    (when-not (identical? (-> prev-comp-env :cljs.analyzer/namespaces (get ns-sym) :defs)
-                          (-> comp-env :cljs.analyzer/namespaces (get ns-sym) :defs))
-      (f repl-env comp-env)))
-  (doseq [[ns-sym vars-map] (:replique/var-watches comp-env)]
-    (doseq [[var-sym f] vars-map]
-      (when-not (identical? (-> prev-comp-env :cljs.analyzer/namespaces (get ns-sym)
-                                :defs (get var-sym))
-                            (-> comp-env :cljs.analyzer/namespaces (get ns-sym)
-                                :defs (get var-sym)))
-        (f repl-env comp-env)))))
+  (let [updated-ns? (partial updated-ns? prev-comp-env comp-env)]
+    (doseq [[k f] (:replique/ns-watches comp-env)]
+      (f repl-env comp-env updated-ns?)))
+  (let [updated-var? (partial updated-var? prev-comp-env comp-env)]
+    (doseq [[k f] (:replique/var-watches comp-env)]
+      (f repl-env comp-env updated-var?))))
 
 ;; patch cljs.repl/eval-cljs in order to add the possibility to define post-eval hooks
 ;; patch cljs.repl/eval-cljs to correctly set the file name
