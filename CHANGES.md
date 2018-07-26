@@ -1,5 +1,6 @@
 # Version 0.0.15
 
+- Improve clojurescript namespace/var watching
 - Replique now depends on clojure tools.deps instead of leiningen 
 
 # Version 0.0.14
