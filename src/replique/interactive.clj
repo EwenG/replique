@@ -25,10 +25,7 @@
   (utils/dynaload 'replique.repl-cljs/install-node-deps!))
 
 (defn repl [& options]
-  (let [options-map (apply hash-map options)
-        options-map (assoc options-map :print
-                           (watch/repl-print-with-watch (get options-map :print prn)))]
-    (replique.repl/repl options-map)))
+  (apply replique.repl/repl options))
 
 (defn cljs-repl
   "Start a Clojurescript REPL. When a main-namescape is provided, the namespace is compiled if

@@ -164,53 +164,79 @@
     (set! *file* (or path "NO_SOURCE_PATH"))
     (.setLineNumber ^LineNumberingPushbackReader *in* (or line 1))))
 
-(defn repl-read-with-source-meta [f]
-  (fn repl-read [request-prompt request-exit]
-    (set-source-meta!)
-    (f request-prompt request-exit)))
+(def ^:dynamic *repl-context* nil)
 
-;; Wrap functions are called with var args because the clj repl and the cljs repl options
-;; do not have the same arity
-(defn options-with-repl-meta [{:keys [init caught print]
-                               :as options-map}]
-  (assert (and init print caught) "init print and caught are required")
-  (assoc options-map
-         :init (fn [] (init) (print-repl-meta))
-         :print (fn [& args] (apply print args) (print-repl-meta))
-         :caught (fn [& args] (apply caught args) (print-repl-meta))))
+(defn repl
+  "Like clojure.main/repl but with repl-meta printing and hooks *repl-context*."
+  [& options]
+  (let [cl (.getContextClassLoader (Thread/currentThread))]
+    (.setContextClassLoader (Thread/currentThread) (clojure.lang.DynamicClassLoader. cl)))
+  (let [{:keys [init need-prompt prompt flush read eval print caught]
+         :or {init        #()
+              need-prompt (if (instance? LineNumberingPushbackReader *in*)
+                            #(.atLineStart ^LineNumberingPushbackReader *in*)
+                            #(identity true))
+              prompt      clojure.main/repl-prompt
+              flush       flush
+              read        clojure.main/repl-read
+              eval        eval
+              print       prn
+              caught      clojure.main/repl-caught}}
+        (apply hash-map options)
+        request-prompt (Object.)
+        request-exit (Object.)
+        read-eval-print
+        (fn []
+          (try
+            (let [read-eval *read-eval*
+                  input (clojure.main/with-read-known
+                          (set-source-meta!)
+                          (binding [*repl-context* :read]
+                            (read request-prompt request-exit)))]
+              (or (#{request-prompt request-exit} input)
+                  (let [value (binding [*read-eval* read-eval]
+                                (binding [*repl-context* :eval]
+                                  (eval input)))]
+                    (binding [*repl-context* :print]
+                      (print value))
+                    (set! *3 *2)
+                    (set! *2 *1)
+                    (set! *1 value))))
+            (catch Throwable e
+              (binding [*repl-context* :caught]
+                (caught e))
+              (set! *e e)))
+          (print-repl-meta))]
+    (clojure.main/with-bindings
+      (binding [*file* *file*]
+        (try
+          (binding [*repl-context* :init]
+            (init))
+          (catch Throwable e
+            (binding [*repl-context* :caught]
+              (caught e))
+            (set! *e e)))
+        (print-repl-meta)
+        (binding [*repl-context* :prompt]
+          (prompt))
+        (binding [*repl-context* :flush]
+          (flush))
+        (loop []
+          (when-not 
+              (try (identical? (read-eval-print) request-exit)
+                   (catch Throwable e
+                     (binding [*repl-context* :caught]
+                       (caught e))
+                     (set! *e e)
+                     nil))
+            (when (binding [*repl-context* :need-prompt]
+                    (need-prompt))
+              (binding [*repl-context* :prompt]
+                (prompt))
+              (binding [*repl-context* :flush]
+                (flush)))
+            (recur)))))))
 
-(defn repl-print-with-core-pr [f]
-  (fn repl-print [x]
-    (binding [pr core-pr]
-      (f x))))
-
-(defn repl-caught-with-core-pr [f]
-  (fn repl-caught [e]
-    (binding [pr core-pr]
-      (f e))))
-
-(defn repl-prompt-with-core-pr [f]
-  (fn repl-prompt []
-    (binding [pr core-pr]
-      (f))))
-
-(defn repl [options-map]
-  (binding [*file* *file*]
-    (let [options-map (cond-> options-map
-                        (not (contains? options-map :init)) (assoc :init #())
-                        true (assoc :print (repl-print-with-core-pr
-                                            (get options-map :print prn)))
-                        true
-                        (assoc :caught (repl-caught-with-core-pr
-                                        (get options-map :caught clojure.main/repl-caught)))
-                        true
-                        (assoc :prompt (repl-prompt-with-core-pr
-                                        (get options-map :prompt clojure.main/repl-prompt)))
-                        true
-                        (assoc :read (repl-read-with-source-meta
-                                      (get options-map :read clojure.main/repl-read)))
-                        true options-with-repl-meta)]
-      (apply clojure.main/repl (apply concat options-map)))))
 
 ;; Behavior of the socket REPL on repl closing
 ;; The read fn returns (end of stream), the parent REPL prints the result of the repl command.

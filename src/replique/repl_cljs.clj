@@ -676,27 +676,33 @@ replique.cljs_env.repl.connect(\"" url "\");
   (let [repl-env @repl-env
         compiler-env @compiler-env
         {:keys [state]} @http-server/cljs-server
-        repl-opts (replique.repl/options-with-repl-meta
-                   {:compiler-env compiler-env
-                    ;; Code modifying the runtime should not be put in :init, otherwise it
-                    ;; would be lost on browser refresh
-                    :init (fn [] (in-ns* repl-env 'cljs.user))
-                    ;; cljs results are strings, so we must not print with prn
-                    :print println
-                    :caught cljs.repl/repl-caught
-                    :read (repl-read-with-exit :cljs/quit)
-                    :reader #(let [{:keys [url line column]} @replique.source-meta/source-meta
-                                   url (try (URL. url) (catch Exception _ nil))
-                                   path (when url (utils/url->path url))]
-                               (replique.cljs/source-logging-push-back-reader
-                                *in* 1 (or path "NO_SOURCE_FILE") (or line 1) (or column 1)))})]
+        repl-opts {:compiler-env compiler-env
+                   ;; Code modifying the runtime should not be put in :init, otherwise it
+                   ;; would be lost on browser refresh
+                   :init (fn []
+                           (in-ns* repl-env 'cljs.user)
+                           (replique.repl/print-repl-meta))
+                   ;; cljs results are strings, so we must not print with prn
+                   :print (fn println [& args]
+                            (apply clojure.core/println args)
+                            (replique.repl/print-repl-meta))
+                   :caught (fn repl-caught [e repl-env opts]
+                             (cljs.repl/repl-caught e repl-env opts)
+                             (replique.repl/print-repl-meta))
+                   :read (repl-read-with-exit :cljs/quit)
+                   :reader #(let [{:keys [url line column]} @replique.source-meta/source-meta
+                                  url (try (URL. url) (catch Exception _ nil))
+                                  path (when url (utils/url->path url))]
+                              (replique.cljs/source-logging-push-back-reader
+                               *in* 1 (or path "NO_SOURCE_FILE") (or line 1) (or column 1)))}]
     (when main-namespace (ensure-compiled repl-env main-namespace))
     (when (not= :started state)
       (println (format "Waiting for browser to connect on port %d ..."
                        (utils/server-port utils/http-server))))
     (swap! cljs-outs conj *out*)
     (try
-      (binding [utils/*repl-env* :replique/browser]
+      (binding [utils/*repl-env* :replique/browser
+                replique.repl/*repl-context* nil]
         (apply
          (partial replique.cljs/repl repl-env)
          (->> (merge (:options @compiler-env) repl-opts {:eval eval-cljs})

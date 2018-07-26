@@ -560,25 +560,22 @@
     ([]
      (replique.repl/core-pr))
     ([x]
-     (when (identical? *out* out)
+     (when (and (identical? *out* out) (= replique.repl/*repl-context* :eval))
        (reset! *printed* x))
+     (when (= replique.repl/*repl-context* :print)
+       (reset! *results* x))
      (replique.repl/core-pr x))
     ([x & more]
-     (when (identical? *out* out)
+     ;; No need to set! *results* since print is only called with one argument by the REPL loop
+     (when (and (identical? *out* out) (= replique.repl/*repl-context* :eval))
        (reset! *printed* x)
        (doseq [x more]
          (reset! *printed* x)))
      (apply replique.repl/core-pr x more))))
 
-(defn repl-print-with-watch [f]
-  (fn repl-print [x]
-    (reset! *results* x)
-    (f x)))
-
 (defn repl []
   (binding [*printed* (or *printed* (atom nil))
-            *results* (or *results* (atom nil))
-            pr (make-watched-pr *out*)]
+            *results* (or *results* (atom nil))]
     (let [printed-buffer-id (str "printed-" (:client server/*session*))
           printed-watched-ref (protocols/->RecordedWatchedRef *printed* [@*printed*] 0 3 nil)
           results-buffer-id (str "results-" (:client server/*session*))
@@ -587,15 +584,16 @@
       (protocols/add-watch-handler printed-watched-ref printed-buffer-id)
       (swap! watched-refs assoc results-buffer-id results-watched-ref)
       (protocols/add-watch-handler results-watched-ref results-buffer-id)
-      (try (replique.repl/repl {:init (fn [] (in-ns 'user))
-                                :print (repl-print-with-watch prn)})
-           (finally
-             (remove-watch (protocols/get-ref printed-watched-ref)
-                           (keyword "replique.watch" (str printed-buffer-id)))
-             (swap! watched-refs dissoc printed-buffer-id)
-             (remove-watch (protocols/get-ref results-watched-ref)
-                           (keyword "replique.watch" (str results-buffer-id)))
-             (swap! watched-refs dissoc results-buffer-id))))))
+      (try
+        (binding [pr (make-watched-pr *out*)]
+          (replique.repl/repl :init (fn [] (in-ns 'user))))
+        (finally
+          (remove-watch (protocols/get-ref printed-watched-ref)
+                        (keyword "replique.watch" (str printed-buffer-id)))
+          (swap! watched-refs dissoc printed-buffer-id)
+          (remove-watch (protocols/get-ref results-watched-ref)
+                        (keyword "replique.watch" (str results-buffer-id)))
+          (swap! watched-refs dissoc results-buffer-id))))))
 
 (comment
   (def tt (atom {{:e 33} "e" :f "f"}))
