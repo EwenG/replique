@@ -375,7 +375,7 @@
        (sort-by :candidate by-length-comparator)))
 
 (defn libspec-option-candidates [prefix]
-  (->> (for [^String option ["as" "refer" "rename"]
+  (->> (for [^String option ["as" "refer" "rename" "include-macros"]
              :when (.startsWith option prefix)]
          {:candidate (str ":" option) :match-index (count prefix) :type :keyword})
        (sort-by :candidate by-length-comparator)))
