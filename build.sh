@@ -1,3 +1,3 @@
 #!/bin/sh
 
-clojure -A:build
+clojure -A:build -m replique.build
