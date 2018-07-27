@@ -5,7 +5,7 @@
            [java.net URL]
            [java.net ServerSocket]))
 
-(defonce version "0.0.15-SNAPSHOT")
+(defonce version "0.0.15")
 
 (defonce host "localhost")
 (defonce port 0)
