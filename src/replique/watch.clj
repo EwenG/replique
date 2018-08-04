@@ -6,7 +6,7 @@
             [replique.watch-protocols :as protocols]
             [clojure.core.server :as server])
   (:import [clojure.lang IRef IDeref IPending]
-           [java.util Map Collection]
+           [java.util Map Collection UUID]
            [replique.watch_protocols WatchedRef RecordedWatchedRef]))
 
 (def ^:private cljs-repl-env (utils/dynaload 'replique.repl-cljs/repl-env))
@@ -252,6 +252,7 @@
         (keyword? x) true
         (or (map? x) (instance? Map x)) (every? browsable-map-entry? x)
         (or (coll? x) (instance? Collection x)) (every? browsable-key? x)
+        (instance? UUID x) true
         :else false))
 
 ;; We can only browse keys that can be read by the clojure/clojurescript reader and that implement
