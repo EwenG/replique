@@ -107,3 +107,7 @@
 
 (defmethod url->path "jar" [url]
   (jar-url->path url))
+
+;; post eval hooks
+(defonce clj-env-hooks (atom nil))
+(defonce cljs-env-hooks (atom nil))

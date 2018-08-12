@@ -563,13 +563,23 @@ replique.cljs_env.repl.connect(\"" url "\");
     (not (identical? (-> prev-comp-env :cljs.analyzer/namespaces (get ns-sym) :defs (get var-sym))
                      (-> comp-env :cljs.analyzer/namespaces (get ns-sym) :defs (get var-sym))))))
 
+;; Hooks are called at most one time by evaluation event
 (defn call-post-eval-hooks [repl-env prev-comp-env comp-env]
-  (let [updated-ns? (partial updated-ns? prev-comp-env comp-env)]
-    (doseq [[k f] (:replique/ns-watches comp-env)]
-      (f repl-env comp-env updated-ns?)))
-  (let [updated-var? (partial updated-var? prev-comp-env comp-env)]
-    (doseq [[k f] (:replique/var-watches comp-env)]
-      (f repl-env comp-env updated-var?))))
+  (let [cljs-env-hooks @utils/cljs-env-hooks]
+    (when (seq cljs-env-hooks)
+      (let [updated-ns? (partial updated-ns? prev-comp-env comp-env)]
+        (loop [namespaces (:cljs.analyzer/namespaces comp-env)
+               hooks-keys (keys cljs-env-hooks)]
+          (when-let [[k v] (first namespaces)]
+            (if-let [match-hook-keys (filter
+                                      #(and (.startsWith (name k) (name %)) (updated-ns? k))
+                                      hooks-keys)]
+              (let [rest-hooks-keys (keys (apply dissoc cljs-env-hooks match-hook-keys))]
+                (doseq [hook-key match-hook-keys]
+                  ((get cljs-env-hooks hook-key) repl-env prev-comp-env comp-env))
+                (when (seq rest-hooks-keys)
+                  (recur (rest namespaces) rest-hooks-keys)))
+              (recur (rest namespaces) hooks-keys))))))))
 
 ;; patch cljs.repl/eval-cljs in order to add the possibility to define post-eval hooks
 ;; patch cljs.repl/eval-cljs to correctly set the file name

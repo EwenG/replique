@@ -48,6 +48,45 @@
                                     :ns (utils/repl-ns utils/*repl-env*)
                                     :params params}))))))
 
+;; Modified namespace prefixes during an eval / load-file called, among the
+;; namespace prefixes registered in utils/clj-env-hooks
+(defonce modified-namespace-prefixes (atom #{}))
+
+(defn update-modified-namespace-prefixes
+  ([namespace-prefix]
+   (when-not (contains? @modified-namespace-prefixes namespace-prefix)
+     (swap! modified-namespace-prefixes conj namespace-prefix)))
+  ([namespace-prefix r k o n]
+   (when-not (contains? @modified-namespace-prefixes namespace-prefix)
+     (swap! modified-namespace-prefixes conj namespace-prefix))))
+
+(defn add-var-watches [namespace-prefix namespace]
+  (let [watch-fn (partial update-modified-namespace-prefixes namespace-prefix)
+        watch-k (keyword (str *ns*) (str "post-eval-watch-" namespace-prefix))]
+    (doseq [[k v] (ns-interns namespace)]
+      (when-not (contains? (.getWatches v) watch-k)
+        (add-watch v watch-k watch-fn)))))
+
+(defn post-eval-hook []
+  (let [env-hooks @utils/clj-env-hooks
+        namespace-prefixes (keys env-hooks)]
+    (when (seq namespace-prefixes)
+      (doseq [namespace (all-ns)]
+        (let [namespace-prefixes (filter #(.startsWith (str namespace) (str %))
+                                         namespace-prefixes)]
+          (when (seq namespace-prefixes)
+            (let [prev-mapping (::prev-mapping (meta namespace))
+                  mapping (ns-map namespace)]
+              (when-not (identical? prev-mapping mapping)
+                (doseq [namespace-prefix namespace-prefixes]
+                  (update-modified-namespace-prefixes namespace-prefix)
+                  (add-var-watches namespace-prefix namespace)))
+              (alter-meta! namespace assoc ::prev-mapping mapping)))))
+      (doseq [namespace-prefix @modified-namespace-prefixes]
+        (when-let [f (get env-hooks namespace-prefix)]
+          (f))))
+    (reset! modified-namespace-prefixes #{})))
+
 (defn start-repl-process [{:keys [host port process-id
                                   http-host http-port]}]
   (try
@@ -167,7 +206,7 @@
 (def ^:dynamic *repl-context* nil)
 
 (defn repl
-  "Like clojure.main/repl but with repl-meta printing and hooks *repl-context*."
+  "Like clojure.main/repl but with repl-meta printing, post-eval-hook and hooks *repl-context*."
   [& options]
   (let [cl (.getContextClassLoader (Thread/currentThread))]
     (.setContextClassLoader (Thread/currentThread) (clojure.lang.DynamicClassLoader. cl)))
@@ -206,7 +245,8 @@
               (binding [*repl-context* :caught]
                 (caught e))
               (set! *e e)))
-          (print-repl-meta))]
+          (print-repl-meta)
+          (post-eval-hook))]
     (clojure.main/with-bindings
       (binding [*file* *file*]
         (try
