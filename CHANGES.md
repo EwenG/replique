@@ -1,5 +1,7 @@
 # Version 0.0.16
 
+- Post hooks API changes - enable post eval hooks for Clojure
+
 # Version 0.0.15
 
 - Improve Clojurescript namespace/var watching
