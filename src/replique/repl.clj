@@ -84,7 +84,10 @@
               (alter-meta! namespace assoc ::prev-mapping mapping)))))
       (doseq [namespace-prefix @modified-namespace-prefixes]
         (when-let [f (get env-hooks namespace-prefix)]
-          (f))))
+          (try (f)
+               (catch Exception e
+                 (reset! modified-namespace-prefixes #{})
+                 (throw e))))))
     (reset! modified-namespace-prefixes #{})))
 
 (defn start-repl-process [{:keys [host port process-id
