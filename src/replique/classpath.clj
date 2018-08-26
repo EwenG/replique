@@ -26,7 +26,7 @@
     (for [path (-> classpath
                    clojure.string/trim
                    (.split File/pathSeparator))]
-      (Paths/get path (make-array String 0)))))
+      (.toAbsolutePath (Paths/get path (make-array String 0))))))
 
 (defn paths->urls [paths]
   (->> paths
@@ -36,7 +36,7 @@
 (defn urls->paths [urls]
   (->> urls
        (map #(.toURI ^URL %))
-       (map #(Paths/get ^URI %))))
+       (map #(.toAbsolutePath (Paths/get ^URI %)))))
 
 (defn paths
   ([] (paths true))
