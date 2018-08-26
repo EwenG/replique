@@ -67,21 +67,37 @@
       (when-not (contains? (.getWatches v) watch-k)
         (add-watch v watch-k watch-fn)))))
 
+(defn matching-namespace-prefixes [namespace-prefixes namespace]
+  (filter #(.startsWith (str namespace) (str %)) namespace-prefixes))
+
+(add-watch
+ utils/clj-env-hooks
+ ::update-post-eval-hooks
+ (fn [k r o n]
+   (let [namespace-prefixes (keys n)]
+     (when (seq namespace-prefixes)
+       (doseq [namespace (all-ns)]
+         (let [namespace-prefixes (matching-namespace-prefixes namespace-prefixes namespace)]
+           (when (seq namespace-prefixes)
+             (let [mapping (ns-map namespace)]
+               (doseq [namespace-prefix namespace-prefixes]
+                 (add-var-watches namespace-prefix namespace))
+               (alter-meta! namespace assoc ::prev-mapping mapping)))))))))
+
 (defn post-eval-hook []
   (let [env-hooks @utils/clj-env-hooks
         namespace-prefixes (keys env-hooks)]
     (when (seq namespace-prefixes)
       (doseq [namespace (all-ns)]
-        (let [namespace-prefixes (filter #(.startsWith (str namespace) (str %))
-                                         namespace-prefixes)]
+        (let [namespace-prefixes (matching-namespace-prefixes namespace-prefixes namespace)]
           (when (seq namespace-prefixes)
             (let [prev-mapping (::prev-mapping (meta namespace))
                   mapping (ns-map namespace)]
               (when-not (identical? prev-mapping mapping)
                 (doseq [namespace-prefix namespace-prefixes]
                   (update-modified-namespace-prefixes namespace-prefix)
-                  (add-var-watches namespace-prefix namespace)))
-              (alter-meta! namespace assoc ::prev-mapping mapping)))))
+                  (add-var-watches namespace-prefix namespace))
+                (alter-meta! namespace assoc ::prev-mapping mapping))))))
       (doseq [namespace-prefix @modified-namespace-prefixes]
         (when-let [f (get env-hooks namespace-prefix)]
           (try (f)
