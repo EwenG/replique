@@ -333,7 +333,8 @@ replique.cljs_env.repl.connect(\"" url "\");
                                       (.cancel eval-future false))
                                     (.get eval-future)))
                                 (.get eval-future))]
-                   (reset! repl-params (:params result))
+                   (when (:params result)
+                     (reset! repl-params (:params result)))
                    (handle-stacktrace repl-env result))
                  (catch RejectedExecutionException e
                    {:status :error
