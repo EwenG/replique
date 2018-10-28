@@ -193,5 +193,22 @@
 (defn logback-reload []
   (@logback-reload*))
 
+(defn eval-js [repl-env js]
+  (let [ret ((resolve 'cljs.repl/-evaluate)
+             repl-env "<cljs repl>" 1
+             js)]
+    (case (:status ret)
+      :error (throw
+              (ex-info (:value ret)
+                       {:type :js-eval-error
+                        :error ret
+                        :repl-env repl-env}))
+      :exception (throw
+                  (ex-info (:value ret)
+                           {:type :js-eval-exception
+                            :error ret
+                            :repl-env repl-env}))
+      :success (:value ret))))
+
 #_(defmacro install-node-deps! []
     (boolean (@cljs-install-node-deps!)))
