@@ -337,7 +337,7 @@
     (add-watch-and-retry buffer-id var-sym set-record-position params)))
 
 (defonce printed (atom nil))
-(defonce core-pr-with-opts cljs.core/pr-with-opts)
+(defonce core-pr-with-opts @#'cljs.core/pr-with-opts)
 (defonce results (atom nil))
 
 (defn watched-pr-with-opts
