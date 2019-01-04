@@ -190,8 +190,8 @@
 (defmacro with-env [captured-env-var & body]
   (omniscient/with-env &env captured-env-var body))
 
-(defn logback-reload []
-  (@logback-reload*))
+(defn logback-reload [file-url]
+  (@logback-reload* file-url))
 
 (defn eval-js [repl-env js]
   (let [ret ((resolve 'cljs.repl/-evaluate)

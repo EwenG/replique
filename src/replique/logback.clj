@@ -1,11 +1,13 @@
 (ns replique.logback
   (:import [org.slf4j LoggerFactory]
            [ch.qos.logback.classic.util ContextInitializer]
-           [ch.qos.logback.classic LoggerContext]))
+           [ch.qos.logback.classic LoggerContext]
+           [java.net URL]))
 
-(defn logback-reload []
-  (let [^LoggerContext logger-context (LoggerFactory/getILoggerFactory)]
+(defn logback-reload [file-url]
+  (let [file-url (if (string? file-url) (URL. file-url) file-url)
+        ^LoggerContext logger-context (LoggerFactory/getILoggerFactory)]
     (.reset logger-context)
-    (.autoConfig (ContextInitializer. logger-context))
+    (.configureByResource (ContextInitializer. logger-context) file-url)
     logger-context))
 
