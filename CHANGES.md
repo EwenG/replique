@@ -4,7 +4,7 @@
 - Fix private var usage warning with clojurescript 1.10.439
 - Add the replique.interactive/eval-js function
 - cljs repl params (dynamic bindings) were sometimes unexpectedly reset
-- Post hooks API changes - enable post eval hooks for Clojure
+- Post hooks API changes + enable post eval hooks for Clojure
 
 # Version 0.0.15
 
