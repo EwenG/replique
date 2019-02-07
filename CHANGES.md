@@ -1,5 +1,6 @@
 # Version 0.0.16
 
+- Fix replique.watch refresh/browsing errors in some cases
 - Logback reloading now requires an explicit url
 - Fix private var usage warning with clojurescript 1.10.439
 - Add the replique.interactive/eval-js function
