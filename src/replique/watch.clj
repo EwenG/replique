@@ -16,6 +16,11 @@
 
 (defonce watched-refs (atom {}))
 
+(defn pr-str-for-eval [& xs]
+  (binding [*print-length* nil
+            *print-level* nil]
+    (apply pr-str xs)))
+
 (defn notification-watcher [buffer-id k ref old-value value]
   (binding [*out* tooling-msg/tooling-out]
     (utils/with-lock tooling-msg/tooling-out-lock
@@ -353,10 +358,18 @@
          (format "replique.cljs_env.watch.refresh_watch(%s, %s, [%s, %s, %s, %s, %s]);"
                  (pr-str buffer-id) (pr-str (@cljs-munged var-sym))
                  (pr-str (boolean update?))
-                 (if (nil? print-length) "null" (pr-str print-length))
-                 (if (nil? print-level) "null" (pr-str print-level))
-                 (if (nil? print-meta) "null" (pr-str print-meta))
-                 (if (nil? browse-path) "null" (pr-str (browse-path->js-array browse-path))))
+                 (if (nil? print-length)
+                   "null"
+                   (pr-str print-length))
+                 (if (nil? print-level)
+                   "null"
+                   (pr-str print-level))
+                 (if (nil? print-meta)
+                   "null"
+                   (pr-str print-meta))
+                 (if (nil? browse-path)
+                   "null"
+                   (pr-str-for-eval (browse-path->js-array browse-path))))
          :timeout-before-submitted 100)]
     (if-not (= status :success)
       {:error (or stacktrace value)
@@ -379,10 +392,14 @@
         (@cljs-evaluate-form
          repl-env
          (format "replique.cljs_env.watch.browse_candidates(%s, %s, [%s, %s, %s]);"
-                 (pr-str buffer-id) (pr-str (@cljs-munged var-sym))
+                 (pr-str buffer-id) (pr-str  (@cljs-munged var-sym))
                  (pr-str prefix)
-                 (if (nil? print-meta) "null" (pr-str print-meta))
-                 (if (nil? browse-path) "null" (pr-str (browse-path->js-array browse-path))))
+                 (if (nil? print-meta)
+                   "null"
+                   (pr-str print-meta))
+                 (if (nil? browse-path)
+                   "null"
+                   (pr-str-for-eval (browse-path->js-array browse-path))))
          :timeout-before-submitted 100)]
     (if-not (= status :success)
       {:error (or stacktrace value)
