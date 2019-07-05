@@ -14,7 +14,7 @@ The following is an overview of Replique features, demonstrating the use of Repl
 Create an empty directory named "replique-demo". In the replique-demo directory, create a file named "deps.edn" with the following content.
 
 ```clojure
-{:deps {replique.replique {:git/url "https://github.com:EwenG/replique.git" 
+{:deps {replique.replique {:git/url "https://github.com/EwenG/replique.git" 
                            :sha "be37cd5d48ed6585bd343a4437fe6bcefd365ec1"
                            :tag "0.0.16"}
         org.clojure/clojurescript {:mvn/version "1.10.516"}}}
