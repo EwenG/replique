@@ -1,5 +1,7 @@
 # Version 0.0.17
 
+- The usage of strings in the cljs (:require ...) syntax is now correctly handled
+
 # Version 0.0.16
 
 - Fix replique.watch refresh/browsing errors in some cases
