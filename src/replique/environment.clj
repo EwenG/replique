@@ -132,10 +132,15 @@
     (->> (get-wrapped comp-env) (@cljs-all-ns) (remove nil?)
          (map (partial find-ns comp-env))))
   (find-ns [comp-env sym]
-    (when-let [found-ns (@cljs-find-ns (get-wrapped comp-env) sym)]
-      ;; name may be null for clojure namespaces (those defining macros)
-      (let [found-ns (if (nil? (:name found-ns)) (assoc found-ns :name sym) found-ns)]
-        (map->CljsNamespace found-ns))))
+    (let [;; The cljs (:require ...) syntax allows strings.
+          ;; For example, (:require ["react" :as react])
+          sym (if (string? sym)
+                (symbol sym)
+                sym)]
+      (when-let [found-ns (@cljs-find-ns (get-wrapped comp-env) sym)]
+        ;; name may be null for clojure namespaces (those defining macros)
+        (let [found-ns (if (nil? (:name found-ns)) (assoc found-ns :name sym) found-ns)]
+          (map->CljsNamespace found-ns)))))
   (ns-publics [comp-env ns]
     (let [ns (if (symbol? ns) (find-ns comp-env ns) ns)]
       (->> (merge (:defs ns) (:macros ns))
