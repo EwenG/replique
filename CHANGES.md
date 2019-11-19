@@ -1,5 +1,6 @@
 # Version 0.0.17
 
+- Fix the printing of keywords by the elisp printer (escape special chars)
 - The usage of strings in the cljs (:require ...) syntax is now correctly handled
 
 # Version 0.0.16
