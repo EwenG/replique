@@ -257,7 +257,7 @@
   number
   (-pr-writer [o w] (print-number o w))
   Keyword
-  (-pr-writer [o w] (-write w (str o)))
+  (-pr-writer [o w] (-write w (escape-symbol (str o))))
   object
   (-pr-writer [o w] (cond
                       (instance? js/Date o)

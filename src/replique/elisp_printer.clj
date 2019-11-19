@@ -99,7 +99,7 @@
   (print-object o w))
 
 (defmethod print-method clojure.lang.Keyword [o, ^Writer w]
-  (.write w (str o)))
+  (.write w (escape-symbol (str o))))
 
 (defmethod print-method Number [o, ^Writer w]
   (.write w (str o)))
