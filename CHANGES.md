@@ -1,5 +1,6 @@
 # Version 0.0.17
 
+- Support for Clojurescript 1.10.597
 - Fix the printing of keywords by the elisp printer (escape special chars)
 - The usage of strings in the cljs (:require ...) syntax is now correctly handled
 
