@@ -1214,16 +1214,37 @@
 ;; Custom constructor to be able to set :file :line and :column when evaluating
 ;; code from a source file at the REPL
 
-(defn ^Closeable source-logging-push-back-reader
-  "Creates a SourceLoggingPushbackReader from a given string or PushbackReader"
-  [s-or-rdr buf-len file-name line column]
-  (readers/->SourceLoggingPushbackReader
-   (readers/to-pbr s-or-rdr buf-len)
-   line column
-   true
-   nil
-   0
-   file-name
-   (doto (clojure.tools.reader.impl.utils/make-var)
-     (alter-var-root (constantly {:buffer (StringBuilder.)
-                                  :offset 0})))))
+(with-version
+  [1 10 597]
+  [nil nil nil]
+  (defn ^Closeable source-logging-push-back-reader
+    "Creates a SourceLoggingPushbackReader from a given string or PushbackReader"
+    [s-or-rdr buf-len file-name line column]
+    (readers/->SourceLoggingPushbackReader
+     (readers/to-pbr s-or-rdr buf-len)
+     line column
+     true
+     nil
+     0
+     file-name
+     (doto (clojure.tools.reader.impl.utils/make-var)
+       (alter-var-root (constantly {:buffer (StringBuilder.)
+                                    :offset 0})))
+     true)))
+
+(with-version
+  [0 0 0]
+  [1 10 520]
+  (defn ^Closeable source-logging-push-back-reader
+    "Creates a SourceLoggingPushbackReader from a given string or PushbackReader"
+    [s-or-rdr buf-len file-name line column]
+    (readers/->SourceLoggingPushbackReader
+     (readers/to-pbr s-or-rdr buf-len)
+     line column
+     true
+     nil
+     0
+     file-name
+     (doto (clojure.tools.reader.impl.utils/make-var)
+       (alter-var-root (constantly {:buffer (StringBuilder.)
+                                    :offset 0}))))))
