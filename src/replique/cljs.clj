@@ -1101,8 +1101,9 @@
             "js" (cond-> (:provides (cljsc/parse-js-ns src))
                    (not all-provides) first)
             (throw
+             (util/compilation-error
               (IllegalArgumentException.
-               (str "Can't create goog.require expression for " src))))]
+               (str "Can't create goog.require expression for " src)))))]
       (if (and (not all-provides) wrap)
         (cond
           (:reload-all options) (str "goog.require(\"" goog-ns "\", \"reload-all\");")
