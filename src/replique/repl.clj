@@ -10,11 +10,13 @@
            [java.io File Reader PushbackReader]
            [java.nio.file Paths]))
 
-(def ^:private dispatch-request
-  (utils/dynaload 'replique.repl-cljs/dispatch-request))
+(defn- request-dispatcher [{:keys [headers]} callback]
+  (:user-agent headers))
+
+(defmulti dispatch-request request-dispatcher)
 
 (defn accept-http [request callback]
-  (try (@dispatch-request request callback)
+  (try (dispatch-request request callback)
        (catch Exception e
          (tooling-msg/uncaught-exception (Thread/currentThread) e)
          {:status 500 :body (.getMessage e)})))

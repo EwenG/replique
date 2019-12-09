@@ -7,7 +7,7 @@
             [replique.environment :refer [->CljsCompilerEnv]]
             [clojure.java.io :as io]
             [cljs.closure :as closure]
-            [cljs.env :as cljs-env]
+            [cljs.env]
             [cljs.analyzer :as ana]
             [cljs.compiler :as comp]
             [cljs.util]
@@ -17,12 +17,13 @@
             [cljs.stacktrace :as st]
             [clojure.edn :as edn]
             [clojure.tools.reader :as reader]
-            [clojure.tools.reader.reader-types :as readers]
+            [cljs.tagged-literals :as tags]
+            [replique.repl-common :as repl-common]
             [replique.cljs]
             #_[replique.npm-deps :as npm-deps]
             [replique.source-meta])
   (:import [java.io File PushbackReader]
-           [java.nio.file Files Paths Path]
+           [java.nio.file Paths Path]
            [java.net URL]
            [java.util.concurrent Executors SynchronousQueue TimeUnit
             RejectedExecutionException ExecutorService TimeoutException CancellationException]
@@ -61,30 +62,10 @@
 
 (def env {:context :expr :locals {}})
 
-(defn dispatcher [{:keys [method path content]} callback]
-  (cond (and (= :get method) (= path "/"))
-        :init
-        (and (= :post method) (= :ready (:type content)))
-        :ready
-        (and (= :post method)
-             (not= :ready (:type content))
-             (not= (:session content) (:session @http-server/cljs-server)))
-        :session-expired
-        (and (= :post method) (= :result (:type content)))
-        :result
-        (and (= :post method) (= :print (:type content)))
-        :print
-        (and (= :post method) (= :print-tooling (:type content)))
-        :print-tooling
-        (and (= :get method))
-        :assets))
-
-(defmulti dispatch-request dispatcher)
-
-(defmethod dispatch-request :session-expired [request callback]
+(defn dispatch-request-session-expired [request callback]
   {:status 500 :body "Session expired" :content-type "text/plain"})
 
-(defmethod dispatch-request :default [request callback]
+(defn dispatch-request-default [request callback]
   {:status 500 :body (format "Cannot handle request %s" (str request))
    :content-type "text/plain"})
 
@@ -95,7 +76,7 @@
       (doseq [task pendingTasks]
         (.run ^Runnable task)))))
 
-(defmethod dispatch-request :init [{{host :host} :headers} callback]
+(defn dispatch-request-init [{{host :host} :headers} callback]
   (let [url (format "http://%s" host)]
     {:status 200
      :content-type "text/html"
@@ -118,7 +99,7 @@ replique.cljs_env.repl.connect(\"" url "\");
 </body>
 </html>")}))
 
-(defmethod dispatch-request :assets [{path :path :as request} callback]
+(defn dispatch-request-assets [{path :path :as request} callback]
   (if (not= "/favicon.ico" path)
     (let [path (if (= "/" path) "/index.html" path)
           local-path (cond->
@@ -156,7 +137,7 @@ replique.cljs_env.repl.connect(\"" url "\");
   (call [this]
     (if *stopped-eval-executor?*
       {:status :error :value "Connection broken"}
-      (let[{:keys [js-queue result-queue]} @http-server/cljs-server]
+      (let [{:keys [js-queue result-queue]} @http-server/http-server]
         (try
           (.put ^SynchronousQueue js-queue js)
           (set! submitted? true)
@@ -311,7 +292,7 @@ replique.cljs_env.repl.connect(\"" url "\");
 
 (defn evaluate-form [repl-env js & {:keys [timeout-before-submitted]}]
   (let [port (utils/server-port utils/http-server)
-        {:keys [state eval-executor]} @http-server/cljs-server]
+        {:keys [state eval-executor]} @http-server/http-server]
     (cond
       (= :stopped state)
       {:status :error
@@ -375,7 +356,7 @@ replique.cljs_env.repl.connect(\"" url "\");
 
 (defn in-ns* [repl-env ns-name]
   (when-not (ana/get-namespace ns-name)
-    (swap! cljs-env/*compiler*
+    (swap! cljs.env/*compiler*
            assoc-in [::ana/namespaces ns-name]
            {:name ns-name})
     (cljs.repl/-evaluate
@@ -423,7 +404,7 @@ replique.cljs_env.repl.connect(\"" url "\");
             :port (utils/server-port utils/http-server)})))
 
 #_(comment
-  (cljs-env/with-compiler-env @compiler-env
+  (cljs.env/with-compiler-env @compiler-env
     (npm-deps/handle-js-modules))
 
   (keys (:options @@compiler-env))
@@ -441,10 +422,10 @@ replique.cljs_env.repl.connect(\"" url "\");
         repl-opts (cljs.repl/-repl-options repl-env)
         compiler-env (-> comp-opts
                          closure/add-implicit-options
-                         cljs-env/default-compiler-env)]
+                         cljs.env/default-compiler-env)]
     (closure/load-data-readers! compiler-env)
 
-    (cljs-env/with-compiler-env compiler-env
+    (cljs.env/with-compiler-env compiler-env
 
       ;; process and index :npm-deps
       #_(let [opts (npm-deps/handle-js-modules)]
@@ -474,11 +455,11 @@ replique.cljs_env.repl.connect(\"" url "\");
     compiler-env))
 
 ;; This must be executed on a single thread (the server thread for example)
-(defmethod dispatch-request :ready [request callback]
+(defn dispatch-request-session-ready [request callback]
   (let [compiler-env @compiler-env
-        _ (swap! http-server/cljs-server assoc :state :stopped)
+        _ (swap! http-server/http-server assoc :state :stopped)
         {:keys [result-executor eval-executor js-queue result-queue session]
-         :or {session 0}} @http-server/cljs-server
+         :or {session 0}} @http-server/http-server
         new-eval-executor (Executors/newSingleThreadExecutor)
         new-result-executor (Executors/newSingleThreadExecutor)
         new-js-queue (SynchronousQueue.)
@@ -487,7 +468,11 @@ replique.cljs_env.repl.connect(\"" url "\");
     (when result-executor (.shutdownNow ^ExecutorService result-executor))
     ;; Init stuff needs to go there and not in the :init method of the REPL, otherwise it
     ;; get lost on browser refresh
-    (let [js (cljs-env/with-compiler-env compiler-env
+    (let [user-resource (cljs.util/ns->source 'user)
+          user-resource (when (and user-resource
+                                   (= "file" (.getProtocol ^URL user-resource)))
+                          user-resource)
+          js (cljs.env/with-compiler-env compiler-env
                (closure/-compile
                 [`(~'ns ~'cljs.user)
                  `(swap! replique.cljs-env.repl/connection
@@ -500,12 +485,18 @@ replique.cljs_env.repl.connect(\"" url "\");
                  `(~'set! ~'replique.cljs-env.repl/*process-id* ~tooling-msg/process-id)
                  (init-core-bindings)
                  `(replique.cljs-env.watch/init)]
-                {}))]
+                {}))
+          user-js (when user-resource
+                    (cljs.env/with-compiler-env compiler-env
+                      (closure/-compile
+                       user-resource
+                       {})))
+          js (str js "\n" user-js)]
       (.submit ^ExecutorService new-eval-executor
                (reify Callable
                  (call [this]
                    (.take ^SynchronousQueue new-result-queue))))
-      (swap! http-server/cljs-server assoc
+      (swap! http-server/http-server assoc
              :eval-executor new-eval-executor
              :result-executor new-result-executor
              :js-queue new-js-queue
@@ -514,8 +505,8 @@ replique.cljs_env.repl.connect(\"" url "\");
              :state :started)
       {:status 200 :body js :content-type "text/javascript"})))
 
-(defmethod dispatch-request :result [{:keys [content]} callback]
-  (let [{:keys [result-queue js-queue result-executor]} @http-server/cljs-server
+(defn dispatch-request-result [{:keys [content] :as request} callback]
+  (let [{:keys [result-queue js-queue result-executor]} @http-server/http-server
         result-task (reify Callable
                       (call [this]
                         (try
@@ -538,7 +529,7 @@ replique.cljs_env.repl.connect(\"" url "\");
          (catch RejectedExecutionException e
            {:status 409 :body "Connection closed" :content-type "text/plain"}))))
 
-(defmethod dispatch-request :print [{:keys [content]} callback]
+(defn dispatch-request-print [{:keys [content]} callback]
   ;; Maybe we should print only in the currently active REPL instead of all REPLs
   (doseq [out @cljs-outs]
     (binding [*out* out]
@@ -546,13 +537,34 @@ replique.cljs_env.repl.connect(\"" url "\");
       (.flush *out*)))
   {:status 200 :body "ignore__" :content-type "text/plain"})
 
-(defmethod dispatch-request :print-tooling [{:keys [content]} callback]
+(defn dispatch-request-print-tooling [{:keys [content]} callback]
   (when tooling-msg/tooling-out
     (binding [*out* tooling-msg/tooling-out]
       (utils/with-lock tooling-msg/tooling-out-lock
         (.append *out* ^String (:content content))
         (flush))))
   {:status 200 :body "ignore__" :content-type "text/plain"})
+
+(defmethod replique.repl/dispatch-request :default
+  [{:keys [method path content] :as request} callback]
+  (cond (and (= :get method) (= path "/"))
+        (dispatch-request-init request callback)
+        (and (= :post method) (= :ready (:type content)))
+        (dispatch-request-session-ready request callback)
+        (and (= :post method)
+             (not= :ready (:type content))
+             (not= (:session content) (:session @http-server/http-server)))
+        (dispatch-request-session-expired request callback)
+        (and (= :post method) (= :result (:type content)))
+        (dispatch-request-result request callback)
+        (and (= :post method) (= :print (:type content)))
+        (dispatch-request-print request callback)
+        (and (= :post method) (= :print-tooling (:type content)))
+        (dispatch-request-print-tooling request callback)
+        (and (= :get method))
+        (dispatch-request-assets request callback)
+        :else
+        (dispatch-request-default request callback)))
 
 (defn updated-ns? [prev-comp-env comp-env ns-sym]
   (not (identical? (-> prev-comp-env :cljs.analyzer/namespaces (get ns-sym) :defs)
@@ -605,7 +617,7 @@ replique.cljs_env.repl.connect(\"" url "\");
                         warnings ana/*cljs-warnings*}}]
    (binding [ana/*cljs-ns* ns
              ana/*cljs-warnings* warnings]
-     (cljs-env/with-compiler-env @compiler-env
+     (cljs.env/with-compiler-env @compiler-env
        (eval-cljs repl-env env form cljs.repl/*repl-opts*)))))
 
 (comment
@@ -614,7 +626,7 @@ replique.cljs_env.repl.connect(\"" url "\");
 
 (defn tooling-form->js [ns form]
   (binding [ana/*analyze-deps* false]
-    (cljs-env/with-compiler-env @compiler-env
+    (cljs.env/with-compiler-env @compiler-env
       (let [ast (ana/analyze (assoc env
                                     :ns ns
                                     :def-emits-var true)
@@ -632,29 +644,6 @@ replique.cljs_env.repl.connect(\"" url "\");
                              "cljs.core/*print-level*"
                              "cljs.core/*print-meta*"]))
 
-;; Customized REPL to allow exiting the REPL with :cljs/quit
-;; Also always reset the reader even is :source-map-inline is false in order to set the metadata on
-;; code evaluated from a buffer
-;; Delay the creation of the new reader after the source meta has been set by the tooling REPL
-(defn repl-read-with-exit [exit-keyword]
-  (fn repl-read
-    ([request-prompt request-exit]
-     (repl-read request-prompt request-exit cljs.repl/*repl-opts*))
-    ([request-prompt request-exit opts]
-     ;; Wait for something to come in in order to delay the creation of the new reader
-     (.unread ^PushbackReader *in* (.read ^PushbackReader *in*))
-     (let [current-in *in*]
-       (binding [*in* ((:reader opts))]
-         (or ({:line-start request-prompt :stream-end request-exit}
-              (cljs.repl/skip-whitespace *in*))
-             (let [input (reader/read {:read-cond :allow :features #{:cljs}} *in*)]
-               ;; Transfer 1-char buffer to original *in*
-               (readers/unread current-in (readers/read-char *in*))
-               (cljs.repl/skip-if-eol current-in)
-               (if (= input exit-keyword)
-                 request-exit
-                 input))))))))
-
 (defprotocol ReplLoadFile
   (-load-file
     [repl-env file-path]
@@ -664,7 +653,7 @@ replique.cljs_env.repl.connect(\"" url "\");
   (-evaluate-form [this js & opts]))
 
 (defn compile-file [repl-env file-path opts]
-  (cljs-env/with-compiler-env @compiler-env
+  (cljs.env/with-compiler-env @compiler-env
     (let [repl-opts (cljs.repl/-repl-options repl-env)
           compiled (repl-compile-cljs file-path repl-opts opts)]
       (->> (refresh-cljs-deps opts)
@@ -688,46 +677,103 @@ replique.cljs_env.repl.connect(\"" url "\");
         (let [opts (:options @@compiler-env)]
           (compile-file repl-env uri opts))))))
 
+(defn repl-read [request-exit]
+  (binding [*ns* (create-ns ana/*cljs-ns*)
+            reader/resolve-symbol ana/resolve-symbol
+            reader/*data-readers* tags/*cljs-data-readers*
+            reader/*alias-map*
+            (apply merge
+                   ((juxt :requires :require-macros)
+                    (ana/get-namespace ana/*cljs-ns*)))]
+    (try
+      (repl-common/repl-read request-exit)
+      (catch Throwable e
+        (throw (ex-info nil {:clojure.error/phase :read-source} e))))))
+
+(defn read-eval-print [request-exit opts]
+  (let [input (repl-read request-exit)]
+    (if (or (= request-exit input)
+            (= repl-common/request-prompt input))
+      input
+      (let [value (eval-cljs @repl-env env input opts)]
+        (try
+          (println value)
+          (catch Throwable e
+            (throw (ex-info nil {:clojure.error/phase :print-eval-result} e))))))))
+
+(defn repl-caught [e repl-env opts]
+  (cljs.repl/repl-caught e repl-env opts)
+  (replique.repl/print-repl-meta))
+
+(defn cljs-repl-env-var []
+  (if-let [repl-env-var (resolve 'cljs.repl/*repl-env*)]
+    repl-env-var
+    (def ^:dynamic *repl-env* nil)))
+
+(defn cljs-repl-vars-bindings [repl-env]
+  `{~@(when-let [v (resolve 'cljs.repl/*repl-env*)]
+        [v repl-env]) ~@[]
+    ~@(when-let [v (resolve 'ana/*unchecked-arrays*)]
+        [v @v]) ~@[]
+    ~@(when-let [v (resolve 'ana/*checked-arrays*)]
+        [v @v]) ~@[]})
+
+;; Differences from the cljs.repl:
+;; specials fns are not supported
+;; No binding of *print-namespace-maps*
+;; Also set :cache-analysis to false
 (defn cljs-repl [main-namespace]
-  (let [repl-env @repl-env
+  (let [{:keys [state]} @http-server/http-server
         compiler-env @compiler-env
-        {:keys [state]} @http-server/cljs-server
-        repl-opts {:compiler-env compiler-env
-                   ;; Code modifying the runtime should not be put in :init, otherwise it
-                   ;; would be lost on browser refresh
-                   :init (fn []
-                           (in-ns* repl-env 'cljs.user)
-                           (replique.repl/print-repl-meta))
-                   ;; cljs results are strings, so we must not print with prn
-                   :print (fn println [& args]
-                            (apply clojure.core/println args)
-                            (replique.repl/print-repl-meta))
-                   :caught (fn repl-caught [e repl-env opts]
-                             (cljs.repl/repl-caught e repl-env opts)
-                             (replique.repl/print-repl-meta))
-                   :read (repl-read-with-exit :cljs/quit)
-                   :reader #(let [{:keys [url line column]} @replique.source-meta/source-meta
-                                  url (try (URL. url) (catch Exception _ nil))
-                                  path (when url (utils/url->path url))]
-                              (replique.cljs/source-logging-push-back-reader
-                               *in* 1 (or path "NO_SOURCE_FILE") (or line 1) (or column 1)))}]
+        repl-env @repl-env
+        comp-opts (:options compiler-env)
+        repl-opts (cljs.repl/-repl-options repl-env)
+        repl-opts (closure/add-implicit-options repl-opts)]
     (when main-namespace (ensure-compiled repl-env main-namespace))
     (when (not= :started state)
       (println (format "Waiting for browser to connect on port %d ..."
                        (utils/server-port utils/http-server))))
     (swap! cljs-outs conj *out*)
     (try
-      (binding [utils/*repl-env* :replique/browser
-                replique.repl/*repl-context* nil]
-        (apply
-         (partial replique.cljs/repl repl-env)
-         (->> (merge (:options @compiler-env) repl-opts {:eval eval-cljs})
-              (apply concat))))
+      (with-bindings (cljs-repl-vars-bindings repl-env)
+        (binding [utils/*repl-env* :replique/browser
+                  replique.repl/*repl-context* nil
+
+                  cljs.env/*compiler* compiler-env
+                  ana/*unchecked-if* ana/*unchecked-if*
+                  ana/*cljs-ns* ana/*cljs-ns*
+                  cljs.repl/*cljs-verbose* cljs.repl/*cljs-verbose*
+                  ana/*cljs-warnings* ana/*cljs-warnings*
+                  ana/*cljs-static-fns* ana/*cljs-static-fns*
+                  cljs.repl/*repl-opts* repl-opts]
+          (.start (Thread. (bound-fn [] (cljs.repl/read-source-map "cljs/core.aot.js"))))
+          ;; Ensure cljs.core has been analyzed
+          (when-not (get-in @compiler-env [::ana/namespaces 'cljs.core :defs])
+            (ana/analyze-file "cljs/core.cljs" comp-opts))
+          (replique.repl/print-repl-meta)
+          
+          ;; parametrize the exit keyword
+          (repl-common/repl-quit-prompt :cljs/quit)
+          (repl-common/repl-prompt ana/*cljs-ns*)
+          (flush)
+
+          (let [request-exit :cljs/quit]
+            (loop []
+              (when-not
+                  (try
+                    (identical? (read-eval-print request-exit comp-opts) request-exit)
+                    (catch Throwable e
+                      (repl-caught e repl-env comp-opts)
+                      nil))
+                (when (repl-common/repl-need-prompt)
+                  (repl-common/repl-prompt ana/*cljs-ns*)
+                  (flush))
+                (recur))))))
       (finally (swap! cljs-outs disj *out*)))))
 
-(defn stop-cljs-server []
-  (let [{:keys [eval-executor result-executor]} @http-server/cljs-server]
-    (swap! http-server/cljs-server assoc :state :stopped)
+(defn stop-http-server []
+  (let [{:keys [eval-executor result-executor]} @http-server/http-server]
+    (swap! http-server/http-server assoc :state :stopped)
     (when eval-executor (shutdown-eval-executor eval-executor))
     (when result-executor (.shutdownNow ^ExecutorService result-executor))))
 
@@ -792,7 +838,7 @@ replique.cljs_env.repl.connect(\"" url "\");
   (binding [*out* utils/process-out
             *err* utils/process-err]
     (let [form (reader/read-string {:read-cond :allow :features #{:cljs}} form)
-          result (cljs-env/with-compiler-env @compiler-env
+          result (cljs.env/with-compiler-env @compiler-env
                    (eval-cljs repl-env env form (:repl-opts repl-env)))]
       (assoc msg :result result))))
 

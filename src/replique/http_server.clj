@@ -4,7 +4,7 @@
   (:import [java.net InetAddress ServerSocket SocketException]
            [java.io InputStreamReader BufferedReader]))
 
-(defonce cljs-server (atom {:state :stopped}))
+(defonce http-server (atom {:state :stopped}))
 (defonce server-socket nil)
 
 (defmacro ^:private thread
