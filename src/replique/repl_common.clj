@@ -45,21 +45,18 @@
 
 ;; Custom constructor to be able to set :file :line and :column when evaluating
 ;; code from a source file at the REPL
-(def source-logging-push-back-reader-pre-1-3-0-arglists
-  '([rdr line column line-start? prev prev-column file-name source-log-frames]))
-
-(def source-logging-push-back-reader-post-1-3-0-arglists
-  '([rdr line column line-start? prev prev-column file-name source-log-frames normalize?]))
-
 (defn ^Closeable source-logging-push-back-reader
   "Creates a SourceLoggingPushbackReader from a given string or PushbackReader"
   [s-or-rdr buf-len file-name line column]
-  (let [arglists (:arglists (meta #'readers/->SourceLoggingPushbackReader))
+  (let [arglists-counts (->> #'readers/->SourceLoggingPushbackReader
+                             meta 
+                             :arglists
+                             (into #{} (map count)))
         rdr (readers/to-pbr s-or-rdr buf-len)
         source-log-frames (doto (clojure.tools.reader.impl.utils/make-var)
                             (alter-var-root (constantly {:buffer (StringBuilder.)
                                                          :offset 0})))]
-    (cond (= arglists source-logging-push-back-reader-pre-1-3-0-arglists)
+    (cond (contains? arglists-counts 8)
           (readers/->SourceLoggingPushbackReader
            rdr
            line column
@@ -69,7 +66,7 @@
            file-name
            source-log-frames)
           ;; clojure/tools.reader >= 1.3.0
-          (= arglists source-logging-push-back-reader-post-1-3-0-arglists)
+          (contains? arglists-counts 9)
           (readers/->SourceLoggingPushbackReader
            rdr
            line column
