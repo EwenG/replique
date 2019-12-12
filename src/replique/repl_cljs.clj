@@ -3,7 +3,6 @@
   (:require [replique.utils :as utils]
             [replique.tooling-msg :as tooling-msg]
             [replique.http :as http]
-            [replique.http-server :as http-server]
             [replique.environment :refer [->CljsCompilerEnv]]
             [clojure.java.io :as io]
             [cljs.closure :as closure]
@@ -44,6 +43,8 @@
 
 (defonce repl-env (utils/delay (init-repl-env)))
 (defonce compiler-env (utils/delay (init-compiler-env @repl-env)))
+
+(defonce cljs-server (atom {:state :stopped}))
 
 (defonce cljs-outs (atom #{}))
 (def ^:dynamic *stopped-eval-executor?* false)
@@ -137,7 +138,7 @@ replique.cljs_env.repl.connect(\"" url "\");
   (call [this]
     (if *stopped-eval-executor?*
       {:status :error :value "Connection broken"}
-      (let [{:keys [js-queue result-queue]} @http-server/http-server]
+      (let [{:keys [js-queue result-queue]} @cljs-server]
         (try
           (.put ^SynchronousQueue js-queue js)
           (set! submitted? true)
@@ -292,7 +293,7 @@ replique.cljs_env.repl.connect(\"" url "\");
 
 (defn evaluate-form [repl-env js & {:keys [timeout-before-submitted]}]
   (let [port (utils/server-port utils/http-server)
-        {:keys [state eval-executor]} @http-server/http-server]
+        {:keys [state eval-executor]} @cljs-server]
     (cond
       (= :stopped state)
       {:status :error
@@ -457,9 +458,9 @@ replique.cljs_env.repl.connect(\"" url "\");
 ;; This must be executed on a single thread (the server thread for example)
 (defn dispatch-request-session-ready [request callback]
   (let [compiler-env @compiler-env
-        _ (swap! http-server/http-server assoc :state :stopped)
+        _ (swap! cljs-server assoc :state :stopped)
         {:keys [result-executor eval-executor js-queue result-queue session]
-         :or {session 0}} @http-server/http-server
+         :or {session 0}} @cljs-server
         new-eval-executor (Executors/newSingleThreadExecutor)
         new-result-executor (Executors/newSingleThreadExecutor)
         new-js-queue (SynchronousQueue.)
@@ -496,7 +497,7 @@ replique.cljs_env.repl.connect(\"" url "\");
                (reify Callable
                  (call [this]
                    (.take ^SynchronousQueue new-result-queue))))
-      (swap! http-server/http-server assoc
+      (swap! cljs-server assoc
              :eval-executor new-eval-executor
              :result-executor new-result-executor
              :js-queue new-js-queue
@@ -506,7 +507,7 @@ replique.cljs_env.repl.connect(\"" url "\");
       {:status 200 :body js :content-type "text/javascript"})))
 
 (defn dispatch-request-result [{:keys [content] :as request} callback]
-  (let [{:keys [result-queue js-queue result-executor]} @http-server/http-server
+  (let [{:keys [result-queue js-queue result-executor]} @cljs-server
         result-task (reify Callable
                       (call [this]
                         (try
@@ -553,7 +554,7 @@ replique.cljs_env.repl.connect(\"" url "\");
         (dispatch-request-session-ready request callback)
         (and (= :post method)
              (not= :ready (:type content))
-             (not= (:session content) (:session @http-server/http-server)))
+             (not= (:session content) (:session @cljs-server)))
         (dispatch-request-session-expired request callback)
         (and (= :post method) (= :result (:type content)))
         (dispatch-request-result request callback)
@@ -723,7 +724,7 @@ replique.cljs_env.repl.connect(\"" url "\");
 ;; No binding of *print-namespace-maps*
 ;; Also set :cache-analysis to false
 (defn cljs-repl [main-namespace]
-  (let [{:keys [state]} @http-server/http-server
+  (let [{:keys [state]} @cljs-server
         compiler-env @compiler-env
         repl-env @repl-env
         comp-opts (:options compiler-env)
@@ -772,8 +773,8 @@ replique.cljs_env.repl.connect(\"" url "\");
       (finally (swap! cljs-outs disj *out*)))))
 
 (defn stop-http-server []
-  (let [{:keys [eval-executor result-executor]} @http-server/http-server]
-    (swap! http-server/http-server assoc :state :stopped)
+  (let [{:keys [eval-executor result-executor]} @cljs-server]
+    (swap! cljs-server assoc :state :stopped)
     (when eval-executor (shutdown-eval-executor eval-executor))
     (when result-executor (.shutdownNow ^ExecutorService result-executor))))
 
