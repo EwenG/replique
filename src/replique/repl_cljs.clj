@@ -746,6 +746,7 @@ replique.cljs_env.repl.connect(\"" url "\");
                   cljs.repl/*cljs-verbose* cljs.repl/*cljs-verbose*
                   ana/*cljs-warnings* ana/*cljs-warnings*
                   ana/*cljs-static-fns* ana/*cljs-static-fns*
+                  ana/*fn-invoke-direct* ana/*fn-invoke-direct*
                   cljs.repl/*repl-opts* repl-opts]
           (.start (Thread. (bound-fn [] (cljs.repl/read-source-map "cljs/core.aot.js"))))
           ;; Ensure cljs.core has been analyzed
@@ -762,7 +763,7 @@ replique.cljs_env.repl.connect(\"" url "\");
             (loop []
               (when-not
                   (try
-                    (identical? (read-eval-print request-exit comp-opts) request-exit)
+                    (identical? (read-eval-print request-exit repl-opts) request-exit)
                     (catch Throwable e
                       (repl-caught e repl-env comp-opts)
                       nil))
