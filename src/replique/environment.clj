@@ -89,12 +89,15 @@
 
 (defn cljs-ns-map-resolve*
   [comp-env [sym ns-or-qualified-sym]]
-  (let [ns (if (namespace ns-or-qualified-sym)
-             (symbol (namespace ns-or-qualified-sym))
-             ns-or-qualified-sym)
-        ns (get-in @(get-wrapped comp-env) [:cljs.analyzer/namespaces ns])
-        var-sym (when (namespace ns-or-qualified-sym) (symbol (name ns-or-qualified-sym)))]
-    [sym (or (get-in ns [:defs (or var-sym sym)]) (get-in ns [:macros (or var-sym sym)]))]))
+  (when-not
+      ;; js dependencies may be required as string
+      (string? ns-or-qualified-sym)
+    (let [ns (if (namespace ns-or-qualified-sym)
+               (symbol (namespace ns-or-qualified-sym))
+               ns-or-qualified-sym)
+          ns (get-in @(get-wrapped comp-env) [:cljs.analyzer/namespaces ns])
+          var-sym (when (namespace ns-or-qualified-sym) (symbol (name ns-or-qualified-sym)))]
+      [sym (or (get-in ns [:defs (or var-sym sym)]) (get-in ns [:macros (or var-sym sym)]))])))
 
 (defn cljs-ns-map-resolve
   "Symbols retrieved from a namespace :uses or :use-macros entry refer to the namespace the symbol
