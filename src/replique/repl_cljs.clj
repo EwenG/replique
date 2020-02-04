@@ -44,6 +44,17 @@
 (defonce repl-env (utils/delay (init-repl-env)))
 (defonce compiler-env (utils/delay (init-compiler-env @repl-env)))
 
+(defn default-compiler-opts []
+  {:output-to (str (File. ^String utils/cljs-compile-path "main.js"))
+   :output-dir utils/cljs-compile-path
+   :optimizations :none
+   :recompile-dependents false
+   ;; We want the analysis data to be cleared on process restart
+   :cache-analysis false
+   ;; Do not automatically install node deps. This must be done explicitly instead
+   :install-deps false
+   :npm-deps false})
+
 (defonce cljs-server (atom {:state :stopped}))
 
 (defonce cljs-outs (atom #{}))
@@ -222,6 +233,15 @@ replique.cljs_env.repl.connect(\"" url "\");
                      opts)]
     (assoc foreign :file output-path)))
 
+(defn find-js-fs
+  "finds js resources from a path on the files system"
+  [path]
+  (let [file (io/file path)]
+    (when (.exists file)
+      (map deps/to-url (filter #(and (.endsWith ^String (.getName ^File %) ".js")
+                                     (not (.isDirectory ^File %)))
+                               (file-seq (io/file path)))))))
+
 (defn refresh-cljs-deps [opts]
   (let [parse-js-fn (fn [js-file]
                       (-> js-file
@@ -233,7 +253,7 @@ replique.cljs_env.repl.connect(\"" url "\");
                   (some #(.startsWith ^String % "goog.")
                         (:provides js-file)))
         ups-foreign-libs (:ups-foreign-libs opts)
-        js-files (deps/find-js-fs (:output-dir opts))
+        js-files (find-js-fs (:output-dir opts))
         js-files (map parse-js-fn js-files)
         js-files (filter #(and (seq (:provides %))
                                (not (is-goog %)))
@@ -396,9 +416,13 @@ replique.cljs_env.repl.connect(\"" url "\");
 
 (defn init-repl-env []
   ;; Merge repl-opts in browserenv because clojurescript expects this. This is weird
-  (let [repl-opts {:analyze-path []
-                   :static-dir [utils/cljs-compile-path]
-                   :wrap #'wrap-fn}]
+  (let [repl-opts (merge {:analyze-path []
+                          :static-dir [utils/cljs-compile-path]
+                          :wrap #'wrap-fn}
+                         ;; compiler opts
+                         ;; looks like the clojurescript REPL expects some of the compiler opts
+                         ;; when usinf the REPL opts ??
+                         (default-compiler-opts))]
     (merge (BrowserEnv. repl-opts) repl-opts
            ;; st/parse-stacktrace expects host host-port and port to be defined on the repl-env
            {:host "localhost" :host-port (utils/server-port utils/http-server)
@@ -412,14 +436,7 @@ replique.cljs_env.repl.connect(\"" url "\");
   )
 
 (defn init-compiler-env [repl-env]
-  (let [comp-opts {:output-to (str (File. ^String utils/cljs-compile-path "main.js"))
-                   :output-dir utils/cljs-compile-path
-                   :optimizations :none
-                   :recompile-dependents false
-                   ;; We want the analysis data to be cleared on process restart
-                   :cache-analysis false
-                   ;; Do not automatically install node deps. This must be done explicitly instead
-                   :install-deps false}
+  (let [comp-opts (default-compiler-opts)
         repl-opts (cljs.repl/-repl-options repl-env)
         compiler-env (-> comp-opts
                          closure/add-implicit-options
