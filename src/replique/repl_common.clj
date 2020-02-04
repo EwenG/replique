@@ -89,14 +89,14 @@
 ;; Also always reset the reader even is :source-map-inline is false in order to set the metadata on
 ;; code evaluated from a buffer
 ;; Delay the creation of the new reader after the source meta has been set by the tooling REPL
-(defn repl-read [request-exit]
+(defn repl-read [request-exit features]
   ;; Wait for something to come in in order to delay the creation of the new reader
   (.unread ^PushbackReader *in* (.read ^PushbackReader *in*))
   (let [current-in *in*]
     (binding [*in* (repl-reader)]
       (or ({:line-start request-prompt :stream-end request-exit}
            (skip-whitespace *in*))
-          (let [input (reader/read {:read-cond :allow :features #{:cljs}} *in*)]
+          (let [input (reader/read {:read-cond :allow :features features} *in*)]
             ;; Transfer 1-char buffer to original *in*
             (readers/unread current-in (readers/read-char *in*))
             (skip-if-eol current-in)

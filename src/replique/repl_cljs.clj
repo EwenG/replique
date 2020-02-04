@@ -687,7 +687,7 @@ replique.cljs_env.repl.connect(\"" url "\");
                    ((juxt :requires :require-macros)
                     (ana/get-namespace ana/*cljs-ns*)))]
     (try
-      (repl-common/repl-read request-exit)
+      (repl-common/repl-read request-exit #{:cljs})
       (catch Throwable e
         (throw (ex-info nil {:clojure.error/phase :read-source} e))))))
 
