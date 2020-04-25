@@ -7,8 +7,6 @@
            [java.util.concurrent.locks ReentrantLock]
            [java.util.concurrent Executors]))
 
-(defonce cljs-server (atom {:state :stopped}))
-
 (def ^:dynamic *session* nil)
 
 ;; lock protects servers
