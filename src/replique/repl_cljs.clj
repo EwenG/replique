@@ -231,7 +231,7 @@ replique.cljs_env.repl.connect(\"" url "\");
   (let [output-path (closure/rel-output-path
                      (assoc foreign :foreign true)
                      opts)]
-    (assoc foreign :file output-path)))
+    (assoc foreign :file (str (io/file (cljs.util/output-directory opts) output-path)))))
 
 (defn find-js-fs
   "finds js resources from a path on the files system"
