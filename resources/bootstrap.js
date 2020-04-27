@@ -26,14 +26,27 @@
       var dependencies = [];
       var visitedDependencies = {};
       do {
-        var path = goog.dependencies_.nameToPath[src];
+        var path = null;
+        if(goog.debugLoader_) {
+          path = goog.debugLoader_.getPathFromDeps_(src);
+        } else {
+          path = goog.dependencies_.nameToPath[src];
+        }
         if(!(src === "cljs.core") && !visitedDependencies[src]) {
           visitedDependencies[src] = true;
-          objremove(goog.dependencies_.visited, path);
-          objremove(goog.dependencies_.written, path);
-          objremove(goog.dependencies_.written, goog.basePath + path);
-          for(src in goog.dependencies_.requires[path]) {
-            dependencies.push(src);
+          if(goog.debugLoader_) {
+            objremove(goog.debugLoader_.written_, path);
+            objremove(goog.debugLoader_.written_, goog.basePath + path);
+            for(src in goog.debugLoader_.dependencies_[path].requires) {
+              dependencies.push(src);
+            }
+          } else {
+            objremove(goog.dependencies_.visited, path);
+            objremove(goog.dependencies_.written, path);
+            objremove(goog.dependencies_.written, goog.basePath + path);
+            for(src in goog.dependencies_.requires[path]) {
+              dependencies.push(src);
+            }
           }
         }
         src = dependencies.pop();
@@ -89,6 +102,13 @@
         return goog.writeScriptTag__(src, opt_sourceText);
       }
     };
+    // In the latest Closure library implementation, there is no goog.writeScriptTag_,
+    // to monkey-patch. The behavior of interest is instead in goog.Dependency.prototype.load,
+    // which first checks and uses CLOSURE_IMPORT_SCRIPT if defined. So we hook our desired
+    // behavior here.
+    if(goog.debugLoader_) {
+      CLOSURE_IMPORT_SCRIPT = goog.writeScriptTag_;
+    }
     // we must reuse Closure library dev time dependency management,
     // under namespace reload scenarios we simply delete entries from
     // the correct private locations
@@ -105,6 +125,6 @@
         goog.cljsReloadAll_ = false;
       }
       return ret;
-    }
+    };
   }
 })();

@@ -243,6 +243,16 @@
               (when-let [recompiled' (and comp/*recompiled* @cljs.compiler/*recompiled*)]
                 (some requires recompiled')))))))))
 
-(alter-var-root #'cljs.compiler/requires-compilation? (constantly requires-compilation?))
+;; goog.require seems to call goog.loadModule
+;; cljs.closure/add-goog-load wraps the module into a goog.loadModule call
+;; The double goog.loadModule calls seems to break the loading mechanism
+;; patch cljs.closure/transpile to avoid wrapping the module into a goog.loadModule call
 
+(defonce transpile-o (resolve 'cljs.closure/transpile))
 
+(defn transpile
+  [opts res js]
+  (transpile-o opts res (assoc js :module :none)))
+
+(when transpile-o
+  (alter-var-root transpile-o (constantly transpile)))
