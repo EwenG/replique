@@ -1,7 +1,9 @@
 # Version 0.0.17
 
-- Support for Clojurescript 1.10.597
+- Support for Clojurescript 1.10.741
+- The cljs REPL now binds the cljs.analyzer/*fn-invoke-direct* var
 - Fix the printing of keywords by the elisp printer (escape special chars)
+- Fix several bugs when requiring javascript modules
 - The usage of strings in the cljs (:require ...) syntax is now correctly handled
 
 # Version 0.0.16
