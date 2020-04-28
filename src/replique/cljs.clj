@@ -248,11 +248,12 @@
 ;; The double goog.loadModule calls seems to break the loading mechanism
 ;; patch cljs.closure/transpile to avoid wrapping the module into a goog.loadModule call
 
-(defonce transpile-o (resolve 'cljs.closure/transpile))
+(defonce transpile-var (resolve 'cljs.closure/transpile))
+(defonce transpile-o @transpile-var)
 
 (defn transpile
   [opts res js]
   (transpile-o opts res (assoc js :module :none)))
 
 (when transpile-o
-  (alter-var-root transpile-o (constantly transpile)))
+  (alter-var-root transpile-var (constantly transpile)))
