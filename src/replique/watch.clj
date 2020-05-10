@@ -163,7 +163,12 @@
 ;; Like clojure.core/get for maps. Get the nth element for collections
 (defn browse-get [o k]
   (cond (or (map? o) (instance? Map o))
-        (get o k)
+        ;; "get" on sorted-maps may throw when keys cannot be compared 
+        (if (sorted? o)
+          (try (get o k)
+               (catch ClassCastException e
+                 nil))
+          (get o k))
         (and (or (coll? o) (instance? Collection  o))
              (number? k))
         (nth (seq o) k nil)
