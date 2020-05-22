@@ -26,9 +26,11 @@
 (defn server-host [server]
   (.getHostName (.getInetAddress ^ServerSocket server)))
 
-(defmacro with-1.9+ [& body]
-  (let [{:keys [major minor]} *clojure-version*]
-    (when (or (> major 1) (and (= 1 major) (>= minor 9)))
+(defmacro with-1.10.0+ [& body]
+  (let [{:keys [major minor incremental]} *clojure-version*]
+    (when (or (> major 1)
+              (and (= 1 major) (> minor 10))
+              (and (= 1 major) (= minor 10) (>= incremental 0)))
       `(do ~@body))))
 
 (defn cljs-env?

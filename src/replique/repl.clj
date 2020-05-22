@@ -215,6 +215,7 @@
    "clojure.core/*print-meta*" *print-meta*
    "clojure.core/*warn-on-reflection*" *warn-on-reflection*})
 
+;; The line number is set by the repl-read function
 (defn set-source-meta! []
   (let [char (.read ^Reader *in*)
         _ (.unread ^PushbackReader *in* char)
@@ -222,7 +223,26 @@
         url (try (URL. url) (catch Exception _ nil))
         path (when url (utils/url->path url))]
     (set! *file* (or path "NO_SOURCE_PATH"))
+    ;; This should not be useful anymore because the line number is set in repl-read,
+    ;; but let's keep it anyway
     (.setLineNumber ^LineNumberingPushbackReader *in* (or line 1))))
+
+;; Custom repl-read because otherwise, the line number from "source-meta" is not set because
+;; of the usage of "renumbering-read"
+
+(def repl-read clojure.main/repl-read)
+
+(utils/with-1.10.0+
+  (alter-var-root
+   #'repl-read
+   (constantly
+    (fn repl-read [request-prompt request-exit]
+      (or ({:line-start request-prompt :stream-end request-exit}
+           (clojure.main/skip-whitespace *in*))
+          (let [{:keys [line]} @replique.source-meta/source-meta
+                input (clojure.main/renumbering-read {:read-cond :allow} *in* (or line 1))]
+            (clojure.main/skip-if-eol *in*)
+            input))))))
 
 (def ^:dynamic *repl-context* nil)
 
@@ -238,7 +258,7 @@
                             #(identity true))
               prompt      clojure.main/repl-prompt
               flush       flush
-              read        clojure.main/repl-read
+              read        repl-read
               eval        eval
               print       prn
               caught      clojure.main/repl-caught}}

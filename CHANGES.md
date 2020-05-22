@@ -1,5 +1,6 @@
 # Version 0.0.17
 
+- Fix jump-to-definition for forms evaluated in the REPL without loading a file
 - Support for Clojurescript 1.10.741
 - The cljs REPL now binds the cljs.analyzer/*fn-invoke-direct* var
 - Fix the printing of keywords by the elisp printer (escape special chars)
