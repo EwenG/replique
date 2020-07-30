@@ -37,8 +37,9 @@
           if(goog.debugLoader_) {
             objremove(goog.debugLoader_.written_, path);
             objremove(goog.debugLoader_.written_, goog.basePath + path);
-            for(src in goog.debugLoader_.dependencies_[path].requires) {
-              dependencies.push(src);
+            var requiresLength = goog.debugLoader_.dependencies_[path].requires ? goog.debugLoader_.dependencies_[path].requires.length : 0;
+            for(var i = 0; i < requiresLength; i++) {
+              dependencies.push(goog.debugLoader_.dependencies_[path].requires[i]);
             }
           } else {
             objremove(goog.dependencies_.visited, path);
