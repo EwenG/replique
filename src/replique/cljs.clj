@@ -249,7 +249,7 @@
 ;; patch cljs.closure/transpile to avoid wrapping the module into a goog.loadModule call
 
 (defonce transpile-var (resolve 'cljs.closure/transpile))
-(defonce transpile-o @transpile-var)
+(defonce transpile-o (when transpile-var @transpile-var))
 
 (defn transpile
   [opts res js]
