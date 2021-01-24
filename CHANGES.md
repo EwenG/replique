@@ -1,5 +1,6 @@
 # Version 0.0.17
 
+- Add the replique.files/create-file function
 - Fix jump-to-definition for forms evaluated in the REPL without loading a file
 - Support for Clojurescript 1.10.741
 - The cljs REPL now binds the cljs.analyzer/*fn-invoke-direct* var
