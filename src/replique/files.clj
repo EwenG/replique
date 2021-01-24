@@ -1,6 +1,7 @@
 (ns replique.files
+  (:require [replique.utils :as utils])
   (:import [java.io File]
-           [java.nio.file Path Paths Files FileVisitor FileVisitResult
+           [java.nio.file Path Files FileVisitor FileVisitResult
             FileVisitOption FileSystemLoopException NoSuchFileException]
            [java.nio.file.attribute FileAttribute]
            [java.util EnumSet]
@@ -82,15 +83,22 @@
   (def the-path (Paths/get "." (make-array String 0)))
   )
 
+(defn create-file [path]
+  (let [^Path path (if (string? path)
+                     (utils/make-path path)
+                     path)]
+    (Files/createDirectories path (make-array FileAttribute 0))
+    (Files/createFile path (make-array FileAttribute 0))))
+
 (defn create-symbolic-link
   ([link target]
    (create-symbolic-link link target nil))
   ([link target file-attributes]
    (let [^Path link (if (string? link)
-                      (Paths/get link (make-array String 0))
+                      (utils/make-path link)
                       link)
          target (if (string? target)
-                  (Paths/get target (make-array String 0))
+                  (utils/make-path target)
                   target)
          file-attributes (if file-attributes
                            (into-array FileAttribute file-attributes)
