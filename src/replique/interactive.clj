@@ -20,6 +20,7 @@
 (def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
 (def ^:private cljs-munge (utils/dynaload 'cljs.compiler/munge))
 (def ^:private logback-reload* (utils/dynaload 'replique.logback/logback-reload))
+(def ^:private log4j2-reload* (utils/dynaload 'replique.log4j2/log4j2-reload))
 
 #_(def ^:private cljs-install-node-deps!
   (utils/dynaload 'replique.repl-cljs/install-node-deps!))
@@ -192,6 +193,9 @@
 
 (defn logback-reload [file-url]
   (@logback-reload* file-url))
+
+(defn log4j2-reload [file-url]
+  (@log4j2-reload* file-url))
 
 (defn eval-js [repl-env js]
   (let [ret ((resolve 'cljs.repl/-evaluate)

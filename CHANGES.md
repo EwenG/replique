@@ -1,3 +1,7 @@
+# Version 0.0.18
+
+- Add the possibility to reload log4j2 configurations
+
 # Version 0.0.17
 
 - Add the replique.files/create-file function
