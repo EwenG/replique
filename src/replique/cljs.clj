@@ -257,3 +257,37 @@
 
 (when transpile-o
   (alter-var-root transpile-var (constantly transpile)))
+
+
+;; cljs.closure/load-data-reader-file does not use any conditional reader feature to read the data_readers.cljc files ???
+;; Patch cljs.closure/load-data-reader-file to add a :features option when reading data-readers files
+
+(alter-var-root
+ #'cljsc/load-data-reader-file
+ (constantly
+  (fn load-data-reader-file
+    [mappings ^java.net.URL url]
+    (with-open [rdr (clojure.tools.reader.reader-types/input-stream-push-back-reader (.openStream url))]
+      (binding [*file* (.getFile url)]
+        (let [new-mappings (clojure.tools.reader/read {:eof nil :read-cond :allow :features #{:clj}} rdr)]
+          (when (not (map? new-mappings))
+            (throw (ex-info (str "Not a valid data-reader map")
+                            {:url url
+                             :clojure.error/phase :compilation})))
+          (reduce
+           (fn [m [k v]]
+             (when (not (symbol? k))
+               (throw (ex-info (str "Invalid form in data-reader file")
+                               {:url url
+                                :form k
+                                :clojure.error/phase :compilation})))
+             (when (and (contains? mappings k)
+                        (not= (mappings k) v))
+               (throw (ex-info "Conflicting data-reader mapping"
+                               {:url url
+                                :conflict k
+                                :mappings m
+                                :clojure.error/phase :compilation})))
+             (assoc m k v))
+           mappings
+           new-mappings)))))))
