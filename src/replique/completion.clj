@@ -42,6 +42,10 @@
        (filter #(not= "" %))
        distinct))
 
+(comment
+  (tokenize-prefix "aa-bb.ccDd")
+  )
+
 (defn tokenize-file-prefix [prefix]
   (->> (string/split prefix #"/")
        (filter #(not= "" %))
@@ -97,6 +101,12 @@
               (recur (rest prefix-tokens) maybe-match-index)
               (recur (rest prefix-tokens) match-index)))))
       match-index)))
+
+(comment
+  (matches? "Ee" ["Ee"])
+
+  (.lastIndexOf ".rrr" (str "." "rrr"))
+  )
 
 (defn matches-file? [^String candidate prefix-tokens]
   (loop [prefix-tokens (seq prefix-tokens)
