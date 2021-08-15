@@ -1,5 +1,6 @@
 # Version 0.0.18
 
+- Default the Clojurescript :language-in option to :ecmascript6
 - Add the possibility to reload log4j2 configurations
 
 # Version 0.0.17
