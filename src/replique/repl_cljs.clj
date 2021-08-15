@@ -53,7 +53,8 @@
    :cache-analysis false
    ;; Do not automatically install node deps. This must be done explicitly instead
    :install-deps false
-   :npm-deps false})
+   :npm-deps false
+   :language-in :ecmascript6})
 
 (defonce cljs-server (atom {:state :stopped}))
 
@@ -879,5 +880,5 @@ replique.cljs_env.repl.connect(\"" url "\");
 ;; cljs files are loaded by appending a <script> tag to the page. Errors during a load-file
 ;; are handled by a global error handler, which prints the error
 
-;; (require 'xxx :reload-all) does not work in cljs. Thus :reload-all must be done through
+;; (require 'xxx :reload-all) does not work in cljs. Thus :reload-all must be done through. Check clojurescript 1.10.758 to check if it was fixed
 ;; load-file
