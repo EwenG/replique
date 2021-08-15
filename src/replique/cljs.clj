@@ -253,7 +253,7 @@
 
 (defn transpile
   [opts res js]
-  (transpile-o opts res (assoc js :module :none)))
+  (transpile-o opts res (assoc js :module "none")))
 
 (when transpile-o
   (alter-var-root transpile-var (constantly transpile)))
