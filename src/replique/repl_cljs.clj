@@ -54,7 +54,8 @@
    ;; Do not automatically install node deps. This must be done explicitly instead
    :install-deps false
    :npm-deps false
-   :language-in :ecmascript6})
+   :language-in :ecmascript6
+   :language-out :ecmascript5})
 
 (defonce cljs-server (atom {:state :stopped}))
 
