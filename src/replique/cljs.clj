@@ -258,6 +258,22 @@
 (when transpile-o
   (alter-var-root transpile-var (constantly transpile)))
 
+;; Fix cljs.closure/closure-transpile to munge "!" characters in file names
+;; Otherwise the closure transpiler emits var names with "!", which is invalid js
+
+(defonce closure-transpile-var (resolve 'cljs.closure/closure-transpile))
+(defonce closure-transpile-o (when closure-transpile-var @closure-transpile-var))
+
+(defn closure-transpile
+  ([rsc opts]
+   (closure-transpile-o rsc opts))
+  ([path source opts]
+   (let [path (clojure.string/replace (str path) "!" "_BANG_")]
+     (closure-transpile-o path source opts))))
+
+(when closure-transpile-o
+  (alter-var-root closure-transpile-var (constantly closure-transpile)))
+
 
 ;; cljs.closure/load-data-reader-file does not use any conditional reader feature to read the data_readers.cljc files ???
 ;; Patch cljs.closure/load-data-reader-file to add a :features option when reading data-readers files
