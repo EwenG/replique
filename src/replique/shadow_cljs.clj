@@ -1,5 +1,8 @@
 (ns replique.shadow-cljs
-  (:require [cljs.analyzer :as ana]))
+  (:require [cljs.analyzer :as ana]
+            [clojure.string]
+            [cljs.closure]
+            [cljs.compiler]))
 
 ;; Patch the Clojurescript compiler in order to be compatible
 ;; with the shadow-cljs syntax
@@ -32,3 +35,36 @@
       (cljs-parse-require-spec env macros? deps aliases spec))))
 
 (alter-var-root #'cljs.analyzer/parse-require-spec (constantly parse-require-spec))
+
+;; Support for the shadow-cljs (:require "./js-file.js") syntax
+;; cljs.closure/add-dep-string calls cljs.compiler/munge on its input but the input is already munged when compiling
+;; and double munging sometimes gives a different result than single munging for example:
+;; (cljs.compiler/munge "./js-file.js") => "..js_file.js"
+;; (cljs.compiler/munge (cljs.compiler/munge "./js-file.js")) => "_DOT__DOT_js_file.js"
+;; This results in a cljs_deps.js file which :provides a single munged dependency and requires a double munged dependency
+;; Also the "_" characters are replaced by "-" in the provides, but not in the requires.
+
+(def ^:dynamic *munge-hook?* false)
+
+(defonce cljs-munge cljs.compiler/munge)
+
+(defn wrapped-munge
+  ([s]
+   (if (and *munge-hook?* (.startsWith (str s) ".."))
+     (clojure.string/replace s "-" "_")
+     (cljs-munge s)))
+  ([s reserved]
+   (if (and *munge-hook?* (.startsWith (str s) ".."))
+     s
+     (cljs-munge s reserved))))
+
+(alter-var-root #'cljs.compiler/munge (constantly wrapped-munge))
+
+(defonce cljs-add-dep-string cljs.closure/add-dep-string)
+
+(defn add-dep-string [opts input]
+  (binding [*munge-hook?* true]
+    (cljs-add-dep-string opts input)))
+
+(alter-var-root #'cljs.closure/add-dep-string (constantly add-dep-string))
+
