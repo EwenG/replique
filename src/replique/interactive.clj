@@ -18,6 +18,7 @@
 (def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
 (def ^:private cljs-set-repl-verbose (utils/dynaload 'replique.repl-cljs/set-repl-verbose))
 (def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
+(def ^:private cljs-custom-compiler-opts (utils/dynaload 'replique.repl-cljs/custom-compiler-opts))
 (def ^:private cljs-munge (utils/dynaload 'cljs.compiler/munge))
 (def ^:private logback-reload* (utils/dynaload 'replique.logback/logback-reload))
 (def ^:private log4j2-reload* (utils/dynaload 'replique.log4j2/log4j2-reload))
@@ -101,7 +102,9 @@
   "Set the value of the Clojurescript compiler option named by the key"
   [opt-key opt-val]
   {:pre [(contains? compiler-opts opt-key)]}
-  (swap! @@cljs-compiler-env assoc-in [:options opt-key] opt-val)
+  (swap! @cljs-custom-compiler-opts assoc opt-key opt-val)
+  (when utils/http-server
+    (swap! @@cljs-compiler-env assoc-in [:options opt-key] opt-val))
   opt-val)
 
 #_(defn remote-repl
