@@ -44,18 +44,23 @@
 (defonce repl-env (utils/delay (init-repl-env)))
 (defonce compiler-env (utils/delay (init-compiler-env @repl-env)))
 
+;; Intented to be set by replique.interactive
+;; Merged into the default compiler opts
+(defonce custom-compiler-opts (atom nil))
+
 (defn default-compiler-opts []
-  {:output-to (str (File. ^String utils/cljs-compile-path "main.js"))
-   :output-dir utils/cljs-compile-path
-   :optimizations :none
-   :recompile-dependents false
-   ;; We want the analysis data to be cleared on process restart
-   :cache-analysis false
-   ;; Do not automatically install node deps. This must be done explicitly instead
-   :install-deps false
-   :npm-deps false
-   :language-in :ecmascript6
-   :language-out :ecmascript5})
+  (merge {:output-to (str (File. ^String utils/cljs-compile-path "main.js"))
+          :output-dir utils/cljs-compile-path
+          :optimizations :none
+          :recompile-dependents false
+          ;; We want the analysis data to be cleared on process restart
+          :cache-analysis false
+          ;; Do not automatically install node deps. This must be done explicitly instead
+          :install-deps false
+          :npm-deps false
+          :language-in :ecmascript6
+          :language-out :ecmascript5}
+         @custom-compiler-opts))
 
 (defonce cljs-server (atom {:state :stopped}))
 
