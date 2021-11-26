@@ -4,7 +4,7 @@
                  :extra-deps {org.clojure/clojurescript {:mvn/version "1.10.879"}
                               org.clojure/clojure {:mvn/version "1.10.1"}}}
            :build {:extra-deps {badigeon/badigeon {:git/url "https://github.com/EwenG/badigeon.git"
-                                                   :sha "79b5504263937e981ce25eab4730ec18a46a184a"
-                                                   :tag "0.0.1"}}
+                                                   :sha "743417e50b37b6e22634b606cfea937fc9f3c734"
+                                                   :tag "1.7"}}
                    :extra-paths ["src-build"]}}}
 
