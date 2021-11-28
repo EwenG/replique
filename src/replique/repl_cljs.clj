@@ -139,12 +139,21 @@ replique.cljs_env.repl.connect(\"" url "\");
       (if local-path
         (if-let [ext (some #(if (.endsWith ^String path %) %) (keys http/ext->mime-type))]
           (let [mime-type (http/ext->mime-type ext)
-                encoding (if (contains? http/text-encoding mime-type) "UTF-8" "ISO-8859-1")]
-            {:status 200
-             :body (slurp local-path :encoding encoding)
-             :content-type mime-type
-             :encoding encoding})
-          {:status 200 :body (slurp local-path)})
+                encoding (if (contains? http/text-encoding mime-type) "UTF-8" "ISO-8859-1")
+                body (slurp local-path :encoding encoding)]
+            (future (try (callback {:status 200
+                                    :body body
+                                    :content-type mime-type
+                                    :encoding encoding})
+                         ;; Socket closed
+                         (catch Exception e
+                           (tooling-msg/uncaught-exception (Thread/currentThread) e)))))
+          (let [body (slurp local-path)]
+            (future
+              (try (callback {:status 200 :body body})
+                   ;; Socket closed
+                   (catch Exception e
+                     (tooling-msg/uncaught-exception (Thread/currentThread) e))))))
         (http/make-404 path)))
     (http/make-404 path)))
 
