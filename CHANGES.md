@@ -1,13 +1,13 @@
-# Version 0.0.18
-
-- Default the Clojurescript :language-in option to :ecmascript6
-- Add the possibility to reload log4j2 configurations
-
 # Version 0.0.17
 
+- Prevents the cljs REPL from hanging when connected to chrome
+- Add :global-goog-object&array to the cljs compiler options that can be customized
+- More robust "replique.interactive/set-cljs-compiler-opt"
+- Default the Clojurescript :language-in option to :ecmascript6
+- Add the possibility to reload log4j2 configurations
 - Add the replique.files/create-file function
 - Fix jump-to-definition for forms evaluated in the REPL without loading a file
-- Support for Clojurescript 1.10.741
+- Support for Clojurescript 1.10.891
 - The cljs REPL now binds the cljs.analyzer/*fn-invoke-direct* var
 - Fix the printing of keywords by the elisp printer (escape special chars)
 - Fix several bugs when requiring javascript modules
