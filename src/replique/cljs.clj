@@ -274,6 +274,21 @@
 (when closure-transpile-o
   (alter-var-root closure-transpile-var (constantly closure-transpile)))
 
+;; Force the inclusion of es6 polyfill
+;; es6/util/inherits seem to not be included even though it is needed
+;; when compiling from es6 to es5
+(defonce closure-set-options-var (resolve 'cljs.closure/set-options))
+(defonce closure-set-options-o (when closure-set-options-var @closure-set-options-var))
+
+(defn closure-set-options
+  ([opts compiler-options]
+   (let [compiler-options (closure-set-options-o opts compiler-options)]
+     (.setForceLibraryInjection compiler-options ["es6/util/inherits"])
+     compiler-options)))
+
+(when closure-set-options-o
+  (alter-var-root closure-set-options-var (constantly closure-set-options)))
+
 
 ;; cljs.closure/load-data-reader-file does not use any conditional reader feature to read the data_readers.cljc files ???
 ;; Patch cljs.closure/load-data-reader-file to add a :features option when reading data-readers files
