@@ -1,3 +1,3 @@
 #!/bin/sh
 
-clojure -A:dev:build
+clojure -M:dev:build
