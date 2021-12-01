@@ -1,3 +1,5 @@
+# Version 0.0.18
+
 # Version 0.0.17
 
 - Prevents the cljs REPL from hanging when connected to chrome
