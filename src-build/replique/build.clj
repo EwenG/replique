@@ -20,12 +20,13 @@
 (defn -main []
   (let [jar-path (make-jar)
         artifacts (sign/sign [{:file-path jar-path} {:file-path "pom.xml"}])
-        password (prompt/prompt-password "Password:")]
+        #_#_password (prompt/prompt-password "Password:")
+        deploy-token (slurp "deploy_token.txt")]
     (badigeon.deploy/deploy 'replique/replique utils/version artifacts
                             {:id "clojars"
                              :url "https://repo.clojars.org/"}
                             {:credentials {:username "ewen"
-                                           :password password}})))
+                                           :password deploy-token}})))
 
 (comment
   (deploy-local)
