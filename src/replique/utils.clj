@@ -3,7 +3,8 @@
   (:require [clojure.core.server :as server])
   (:import [java.util.concurrent.locks ReentrantLock]
            [java.net URL]
-           [java.net ServerSocket]))
+           [java.net ServerSocket]
+           [java.nio.file Paths Path]))
 
 (defonce version "0.0.17")
 
@@ -92,6 +93,11 @@
        ~@body
        (finally
          (.unlock lockee#)))))
+
+(defn ^Path make-path
+  "Returns a java.nio.file.Path constructed from the provided String(s)."
+  [path & paths]
+  (Paths/get (str path) (into-array String (map str paths))))
 
 (defn jar-url->path [url]
   (let [url-str (str url)
