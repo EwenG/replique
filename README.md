@@ -14,7 +14,7 @@ The following is an overview of Replique features, demonstrating the use of Repl
 Create an empty directory named "replique-demo". In the replique-demo directory, create a file named "deps.edn" with the following content.
 
 ```clojure
-{:deps {replique.replique {:git/url "https://github.com/EwenG/replique.git" 
+{:deps {replique/replique {:git/url "https://github.com/EwenG/replique.git" 
                            :sha "b8c416404c80d073af533ed24f4b509e4bedbea0"
                            :tag "0.0.17"}
         org.clojure/clojurescript {:mvn/version "1.10.891"}}}
@@ -24,7 +24,7 @@ The dependency on Clojurescript is not strictly needed but is added because we w
 
 From the project directory, start a REPL server on port 9000:
 
-`clj -J-Dreplique.server.port=9000 -J-Dreplique.http-server.port=9001 -m replique.main`
+`clj -J-Dreplique.server.port=9000 -J-Dreplique.http-server.port=9001 -M -m replique.main`
 
 In an other terminal, connect to the REPL server:
 
