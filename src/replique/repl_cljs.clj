@@ -687,15 +687,17 @@ replique.cljs_env.repl.connect(\"" url "\");
   (-evaluate-form [this js & opts]))
 
 (defn compile-file [repl-env file-path opts]
-  (cljs.env/with-compiler-env @compiler-env
-    (let [repl-opts (cljs.repl/-repl-options repl-env)
-          compiled (repl-compile-cljs file-path repl-opts opts)]
-      (->> (refresh-cljs-deps opts)
-           (closure/output-deps-file
-            (assoc opts :output-to
-                   (str (cljs.util/output-directory opts)
-                        File/separator "cljs_deps.js"))))
-      compiled)))
+  (utils/maybe-locking
+   clojure.lang.RT/REQUIRE_LOCK
+   (cljs.env/with-compiler-env @compiler-env
+     (let [repl-opts (cljs.repl/-repl-options repl-env)
+           compiled (repl-compile-cljs file-path repl-opts opts)]
+       (->> (refresh-cljs-deps opts)
+            (closure/output-deps-file
+             (assoc opts :output-to
+                    (str (cljs.util/output-directory opts)
+                         File/separator "cljs_deps.js"))))
+       compiled))))
 
 (defn load-file [repl-env file-path]
   (let [opts (:options @@compiler-env)

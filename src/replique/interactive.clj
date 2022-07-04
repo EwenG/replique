@@ -58,7 +58,9 @@
   (if (utils/cljs-env? env)
     ;; (:repl-env &env) can be a browser/nashorn/whatever... env
     (@cljs-load-file (:repl-env env) url opts)
-    `(clojure.core/load-file ~(utils/file-url->path url))))
+    `(utils/maybe-locking
+      clojure.lang.RT/REQUIRE_LOCK
+      (clojure.core/load-file ~(utils/file-url->path url)))))
 
 (defmethod load "jar" [protocol env url opts]
   (let [path (utils/jar-url->path url)
@@ -66,7 +68,9 @@
     (assert path (str "Cannot load url: " (str url)))
     (if (utils/cljs-env? env)
       (@cljs-load-file (:repl-env env) url opts)
-      `(Compiler/load (io/reader (URL. ~(str url))) ~path ~file))))
+      `(utils/maybe-locking
+        clojure.lang.RT/REQUIRE_LOCK
+        (Compiler/load (io/reader (URL. ~(str url))) ~path ~file)))))
 
 (defmacro load-url
   "Sequentially read and evaluate the set of forms contained at the URL. Works both for Clojure and Clojurescript"
