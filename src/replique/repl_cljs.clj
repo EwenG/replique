@@ -686,6 +686,39 @@ replique.cljs_env.repl.connect(\"" url "\");
 (defprotocol IReplEval
   (-evaluate-form [this js & opts]))
 
+(defn- update-comp-env-ups-foreign-libs [comp-env ups-foreign-libs js-dependency-index]
+  (-> comp-env
+      (assoc-in [:options :ups-foreign-libs] ups-foreign-libs)
+      (assoc :js-dependency-index js-dependency-index)))
+
+(defn refresh-ups-foreign-libs []
+  (let [ups-foreign-libs (closure/expand-libs (:foreign-libs (closure/get-upstream-deps*)))
+        repl-opts (cljs.repl/-repl-options @repl-env)
+        comp-opts (:options @@compiler-env)
+        comp-opts (assoc comp-opts :ups-foreign-libs ups-foreign-libs)
+        opts (-> repl-opts
+                 (merge comp-opts)
+                 ;; :force -> force compilation (require-compile? -> true)
+                 (assoc ;; :interactive -> do not clear namespace analysis data
+                  ;; before reloading
+                  :mode :interactive))
+        js-dependency-index (deps/js-dependency-index comp-opts)]
+    (swap! @compiler-env update-comp-env-ups-foreign-libs ups-foreign-libs js-dependency-index)
+    (doseq [source ups-foreign-libs]
+      (let [{:keys [url file]} source
+            url (or url (io/resource file))
+            source (merge {:url url
+                           :foreign true}
+                          source)]
+        (closure/source-on-disk opts source)))
+    (refresh-cljs-deps comp-opts)
+    (map :file ups-foreign-libs)))
+
+(defn- get-deps-cljs-urls []
+  (-> (. (Thread/currentThread) (getContextClassLoader))
+      (.getResources "deps.cljs")
+      enumeration-seq))
+
 (defn compile-file [repl-env file-path opts]
   (utils/maybe-locking
    clojure.lang.RT/REQUIRE_LOCK
@@ -700,9 +733,12 @@ replique.cljs_env.repl.connect(\"" url "\");
        compiled))))
 
 (defn load-file [repl-env file-path]
-  (let [opts (:options @@compiler-env)
-        compiled (compile-file repl-env file-path opts)]
-    (:value (repl-eval-compiled compiled repl-env file-path opts))))
+  ;; Trying to load a deps.cljs file
+  (if (some #(= file-path %) (get-deps-cljs-urls))
+    (vec (refresh-ups-foreign-libs))
+    (let [opts (:options @@compiler-env)
+          compiled (compile-file repl-env file-path opts)]
+      (:value (repl-eval-compiled compiled repl-env file-path opts)))))
 
 ;; Ensure a namespace is loaded in the compiler-env. If not, compiles it but does not load it
 (defn ensure-compiled [repl-env namespace]
