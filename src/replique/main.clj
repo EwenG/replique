@@ -16,7 +16,7 @@
        (do (require 'replique.interactive)
            (require 'replique.source-meta)
            ((resolve 'replique.repl/start-repl-process)
-            {:host host :port (when port (read-string port)) :process-id process-id
+            {:host host :port (when port (read-string port)) :process-id (read-string process-id)
              :http-host http-host :http-port (when http-port (read-string http-port))}))))))
 
 (comment
