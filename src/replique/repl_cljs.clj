@@ -809,6 +809,7 @@ replique.cljs_env.repl.connect(\"" url "\");
     (try
       (with-bindings (cljs-repl-vars-bindings repl-env)
         (binding [utils/*repl-env* :replique/browser
+                  utils/*main-ns* main-namespace
                   replique.repl/*repl-context* nil
 
                   cljs.env/*compiler* compiler-env

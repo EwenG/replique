@@ -48,6 +48,7 @@
                                     :repl-type (utils/repl-type utils/*repl-env*)
                                     :repl-env utils/*repl-env*
                                     :ns (utils/repl-ns utils/*repl-env*)
+                                    :main-ns utils/*main-ns*
                                     :params params}))))))
 
 ;; Modified namespace prefixes during an eval / load-file called, among the

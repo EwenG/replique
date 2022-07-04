@@ -43,6 +43,7 @@
   (contains? env :ns))
 
 (def ^:dynamic *repl-env* :replique/clj)
+(def ^:dynamic *main-ns* nil)
 
 (defmulti repl-type identity)
 (defmulti repl-ns identity)
