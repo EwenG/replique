@@ -27,12 +27,15 @@
 (defn server-host [server]
   (.getHostName (.getInetAddress ^ServerSocket server)))
 
-(defmacro with-1.10.0+ [& body]
-  (let [{:keys [major minor incremental]} *clojure-version*]
-    (when (or (> major 1)
-              (and (= 1 major) (> minor 10))
-              (and (= 1 major) (= minor 10) (>= incremental 0)))
-      `(do ~@body))))
+(defn- is-1-10-0+? [clojure-version]
+  (let [{:keys [major minor incremental]} clojure-version]
+    (or (> major 1)
+        (and (= 1 major) (> minor 10))
+        (and (= 1 major) (= minor 10) (>= incremental 0)))))
+
+(defmacro with-1-10-0+ [& body]
+  (when (is-1-10-0+? *clojure-version*)
+    `(do ~@body)))
 
 (defn cljs-env?
   "Take the &env from a macro, and tell whether we are expanding into cljs."
@@ -93,6 +96,11 @@
        ~@body
        (finally
          (.unlock lockee#)))))
+
+(defmacro maybe-locking [x & body]
+  (when (resolve 'clojure.core/locking)
+    `(clojure.core/locking ~x ~@body)
+    `(do ~@body)))
 
 (defn ^Path make-path
   "Returns a java.nio.file.Path constructed from the provided String(s)."
