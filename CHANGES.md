@@ -1,4 +1,9 @@
-# Version 0.0.18
+# Version 1.0.0
+
+- Add the possibility to refresh the clojurescript "deps.cljs" file
+- Fix potential races conditions when loading file concurrently from clojure/clojurescript
+- Support for Clojurescript 1.11.60
+- Update Clojurescript minimum version to 1.10.238
 
 # Version 0.0.17
 
