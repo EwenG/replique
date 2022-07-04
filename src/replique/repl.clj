@@ -232,7 +232,7 @@
 
 (def repl-read clojure.main/repl-read)
 
-(utils/with-1.10.0+
+(utils/with-1-10-0+
   (alter-var-root
    #'repl-read
    (constantly
