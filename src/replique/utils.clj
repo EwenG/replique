@@ -99,7 +99,7 @@
          (.unlock lockee#)))))
 
 (defmacro maybe-locking [x & body]
-  (when (resolve 'clojure.core/locking)
+  (if (resolve 'clojure.core/locking)
     `(clojure.core/locking ~x ~@body)
     `(do ~@body)))
 
