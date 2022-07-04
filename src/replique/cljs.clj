@@ -275,15 +275,15 @@
   (alter-var-root closure-transpile-var (constantly closure-transpile)))
 
 ;; Force the inclusion of es6 polyfill
-;; es6/util/inherits seem to not be included even though it is needed
-;; when compiling from es6 to es5
+;; es6/util/inherits, es6/util/makeiterator
+;; seem to not be included even though they are needed when compiling from es6 to es5
 (defonce closure-set-options-var (resolve 'cljs.closure/set-options))
 (defonce closure-set-options-o (when closure-set-options-var @closure-set-options-var))
 
 (defn closure-set-options
   ([opts compiler-options]
    (let [compiler-options (closure-set-options-o opts compiler-options)]
-     (.setForceLibraryInjection compiler-options ["es6/util/inherits"])
+     (.setForceLibraryInjection compiler-options ["es6/util/inherits" "es6/util/makeiterator"])
      compiler-options)))
 
 (when closure-set-options-o
