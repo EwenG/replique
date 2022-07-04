@@ -14,7 +14,12 @@
 ;; :default is replaced by :as
 (defn- basic-validate-ns-spec-reducer [acc v]
   (if (= :default (peek acc))
-    (-> acc pop (conj :as) (conj v))
+    (let [lib (first acc)
+          add-default? (not (clojure.string/ends-with? (str lib) "$default"))
+          acc (if add-default?
+                (assoc acc 0 (str lib "$default"))
+                acc)]
+      (-> acc pop (conj :as) (conj v)))
     (conj acc v)))
 
 (defonce cljs-basic-validate-ns-spec cljs.analyzer/basic-validate-ns-spec)
