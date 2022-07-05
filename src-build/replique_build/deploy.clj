@@ -22,7 +22,7 @@
     (sign/sign-gpg {:jar-file jar-file
                     :lib 'replique/replique
                     :class-dir "target/classes"})
-    #_(deploy/deploy {:basis basis
+    (deploy/deploy {:basis basis
                     :class-dir "target/classes"
                     :lib 'replique/replique
                     :version utils/version
