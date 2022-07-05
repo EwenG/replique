@@ -6,7 +6,7 @@
            [java.net ServerSocket]
            [java.nio.file Paths Path]))
 
-(defonce version "1.0.0-SNAPSHOT")
+(defonce version "1.0.0")
 
 (defonce host "localhost")
 (defonce port 0)
