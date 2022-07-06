@@ -15,7 +15,7 @@ Create an empty directory named "replique-demo". In the replique-demo directory,
 
 ```clojure
 {:deps {replique/replique {:git/url "https://github.com/EwenG/replique.git" 
-                           :git/tag "1.1.0"
+                           :git/tag "1.0.0"
                            :git/sha "039e8bc"}
         org.clojure/clojurescript {:mvn/version "1.11.60"}}}
 ```
