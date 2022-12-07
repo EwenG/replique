@@ -105,13 +105,13 @@
 <script>var CLOSURE_UNCOMPILED_DEFINES = null;</script>
 <script src=\"goog/base.js\"></script>
 <script src=\"cljs_deps.js\"></script>
+<script src=\"replique/cljs_env/bootstrap.js\"></script>
 <script>
 goog.require(\"replique.cljs_env.repl\");
 </script>
 <script>
 goog.require(\"replique.cljs_env.browser\");
 </script>
-<script src=\"replique/cljs_env/bootstrap.js\"></script>
 <script>
 replique.cljs_env.repl.connect(\"" url "\");
 </script>

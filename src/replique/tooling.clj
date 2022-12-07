@@ -163,11 +163,11 @@ var CLOSURE_UNCOMPILED_DEFINES = null;
   %s
   document.write('<script src=\"http://' + host + ':' + port + '/goog/base.js\"></script>');
   document.write('<script src=\"http://' + host + ':' + port + '/cljs_deps.js\"></script>');
+  document.write('<script src=\"http://' + host + ':' + port + '/replique/cljs_env/bootstrap.js\"></script>');
   document.write('<script>goog.require(\"replique.cljs_env.repl\");</script>');
   document.write('<script>goog.require(\"replique.cljs_env.browser\");</script>');
   %s
-  document.write('<script src=\"http://' + host + ':' + port + '/replique/cljs_env/bootstrap.js\"></script>');
-  document.write('<script>replique.cljs_env.repl.connect(\"http://' + host + ':' + port + '\");</script>')})();"
+  document.write('<script>replique.cljs_env.repl.connect(\"http://' + host + ':' + port + '\");</script>');})();"
              http-port http-host
              (if main-ns (str "var mainNs = '" (namespace-munge main-ns) "';") "")
              (if main-ns

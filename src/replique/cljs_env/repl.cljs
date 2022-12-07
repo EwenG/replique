@@ -151,6 +151,11 @@
     conn))
 
 (defn connect [url]
+  ;; Tell the load function of goog.base to not use doc.write but instead to append <script ...>
+  ;; to the header/body of the page. doc.write cannot be used anymore after the page is finished
+  ;; loading
+  (o/set js/goog "ENABLE_CHROME_APP_SAFE_SCRIPT_LOADING" true)
+  
   (reset! connection {:url url})
   (send-result (eval-connection url) url (wrap-message :ready "ready"))
   url)
