@@ -641,6 +641,7 @@ replique.cljs_env.repl.connect(\"" url "\");
                      ;; where catching the error will swallow the original trace
                      ((or (:wrap opts) wrap-fn) form)
                      opts)]
+    (replique.repl/print-repl-meta)
     (call-post-eval-hooks repl-env comp-env @@compiler-env)
     eval-result))
 
