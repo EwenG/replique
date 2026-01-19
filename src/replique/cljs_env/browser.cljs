@@ -74,8 +74,9 @@
        first))
 
 (defn reload-css-node [css-node]
-  (let [href (.-href css-node)]
-    (goog.dom.setProperties css-node (js-obj "href" href))))
+  (let [href (.-href css-node)
+        new-href (str (first (.split href "?")) "?v=" (.getTime (js/Date.)))]
+    (goog.dom.setProperties css-node (js-obj "href" new-href))))
 
 (defn reload-css [url]
   (let [the-stylesheet (stylesheet-with-url url)]
