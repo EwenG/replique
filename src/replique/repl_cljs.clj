@@ -4,6 +4,7 @@
             [replique.tooling-msg :as tooling-msg]
             [replique.http :as http]
             [replique.environment :refer [->CljsCompilerEnv]]
+            [replique.repl-protocols :as repl-protocols]
             [clojure.java.io :as io]
             [cljs.closure :as closure]
             [cljs.env]
@@ -58,8 +59,8 @@
           ;; Do not automatically install node deps. This must be done explicitly instead
           :install-deps false
           :npm-deps false
-          :language-in :ecmascript6
-          :language-out :ecmascript5}
+          :language-in :ecmascript-next
+          :language-out :no-transpile}
          @custom-compiler-opts))
 
 (defonce cljs-server (atom {:state :stopped}))
@@ -214,7 +215,7 @@ replique.cljs_env.repl.connect(\"" url "\");
 
 (defn repl-compile-cljs
   ([f repl-opts opts]
-   (repl-compile-cljs f repl-opts opts true))
+   (repl-compile-cljs f repl-opts opts false))
   ([f repl-opts opts reload-macros]
    (let [src (f->src f)
          _ (when-not src (throw (ex-info "File not found " {:file f})))
@@ -679,11 +680,6 @@ replique.cljs_env.repl.connect(\"" url "\");
                              "cljs.core/*print-level*"
                              "cljs.core/*print-meta*"]))
 
-(defprotocol ReplLoadFile
-  (-load-file
-    [repl-env file-path]
-    [repl-env file-path opts]))
-
 (defprotocol IReplEval
   (-evaluate-form [this js & opts]))
 
@@ -853,12 +849,13 @@ replique.cljs_env.repl.connect(\"" url "\");
     (when result-executor (.shutdownNow ^ExecutorService result-executor))))
 
 (extend-type BrowserEnv
-  ReplLoadFile
-  (-load-file [repl-env file-path]
-    (load-file repl-env file-path nil))
-  (-load-file [repl-env file-path opts]
-    (binding [replique.cljs/*reload-all* (boolean (contains? opts :reload-all))]
-      (load-file repl-env file-path)))
+  repl-protocols/ReplLoadFile
+  (repl-protocols/-load-file
+    ([repl-env file-path]
+     (load-file repl-env file-path))
+    ([repl-env file-path opts]
+     (binding [replique.cljs/*reload-all* (boolean (contains? opts :reload-all))]
+       (load-file repl-env file-path))))
   IReplEval
   (-evaluate-form [this js & opts]
     (apply evaluate-form this js opts)))

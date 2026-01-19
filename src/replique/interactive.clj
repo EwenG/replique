@@ -2,6 +2,7 @@
   "Replique REPL public API"
   (:refer-clojure :exclude [load-file load])
   (:require [replique.repl]
+            [replique.repl-protocols :as repl-protocols]
             [replique.utils :as utils]
             [clojure.core.server :as server]
             [replique.environment :as env]
@@ -13,7 +14,6 @@
 
 (def ^:private cljs-repl* (utils/dynaload 'replique.repl-cljs/cljs-repl))
 (def ^:private cljs-repl-nashorn* (utils/dynaload 'replique.nashorn/cljs-repl))
-(def ^:private cljs-load-file (utils/dynaload 'replique.repl-cljs/-load-file))
 (def ^:private cljs-in-ns* (utils/dynaload 'replique.repl-cljs/in-ns*))
 (def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
 (def ^:private cljs-set-repl-verbose (utils/dynaload 'replique.repl-cljs/set-repl-verbose))
@@ -49,7 +49,7 @@
   (let [opts (into #{} opts)]
     (if (utils/cljs-env? &env)
       ;; (:repl-env &env) can be a browser/nashorn/whatever... env
-      (@cljs-load-file (:repl-env &env) file-path opts)
+      (repl-protocols/-load-file (:repl-env &env) file-path opts)
       `(clojure.core/load-file ~file-path))))
 
 (defmulti load (fn [protocol env url opts] protocol))
@@ -57,7 +57,7 @@
 (defmethod load "file" [protocol env url opts]
   (if (utils/cljs-env? env)
     ;; (:repl-env &env) can be a browser/nashorn/whatever... env
-    (@cljs-load-file (:repl-env env) url opts)
+    (repl-protocols/-load-file (:repl-env env) url opts)
     `(utils/maybe-locking
       clojure.lang.RT/REQUIRE_LOCK
       (clojure.core/load-file ~(utils/file-url->path url)))))
@@ -67,7 +67,7 @@
         file (when path (.getName (File. ^String path)))]
     (assert path (str "Cannot load url: " (str url)))
     (if (utils/cljs-env? env)
-      (@cljs-load-file (:repl-env env) url opts)
+      (repl-protocols/-load-file (:repl-env env) url opts)
       `(utils/maybe-locking
         clojure.lang.RT/REQUIRE_LOCK
         (Compiler/load (io/reader (URL. ~(str url))) ~path ~file)))))
