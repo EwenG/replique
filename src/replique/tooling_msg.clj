@@ -1,6 +1,7 @@
 (ns replique.tooling-msg
   (:refer-clojure :exclude [in-ns])
-  (:require [replique.utils :as utils]
+  (:require [replique.elisp-printer :as elisp-printer]
+            [replique.utils :as utils]
             [clojure.stacktrace :refer [print-stack-trace]])
   (:import [java.util.concurrent.locks ReentrantLock]))
 
@@ -9,6 +10,13 @@
 (defonce tooling-out-lock (ReentrantLock.))
 (defonce tooling-err nil)
 (defonce tooling-prn prn)
+
+(def ^:dynamic *tooling-prn-format* nil)
+
+(defn tooling-prn [& more]
+  (if (= *tooling-prn-format* :elisp)
+    (apply elisp-printer/prn more)
+    (apply prn more)))
 
 (defmacro with-tooling-response [msg & resp]
   `(try (dissoc (merge ~msg (~'do ~@resp)) :context)
@@ -40,13 +48,4 @@
 (defn tooling-available? []
   (boolean (and tooling-out tooling-err tooling-out-lock)))
 
-(defmulti set-print-format identity)
-
-(defmethod set-print-format :default [print-format]
-  ;; Do nothing
-  )
-
-(defmethod set-print-format :elisp [print-format]
-  (require '[replique.elisp-printer])
-  (alter-var-root #'tooling-prn (constantly @(resolve 'replique.elisp-printer/prn))))
 
