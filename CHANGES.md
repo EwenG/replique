@@ -1,3 +1,8 @@
+# Version 1.1.0
+
+- Fix missing cljs REPL meta (current namespace, ...) printing
+- Rewrite bootstrap.js to support more recent versions of google closure
+
 # Version 1.0.0
 
 - Add the possibility to refresh the clojurescript "deps.cljs" file
