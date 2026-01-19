@@ -289,3 +289,39 @@
 (when closure-set-options-o
   (alter-var-root closure-set-options-var (constantly closure-set-options)))
 
+
+;; Fix check-as-alias-duplicates.
+;; check-as-alias-duplicates sees
+;; (require [lib :as-alias a])
+;; and
+;; (require-macros [lib :as-alias a])
+;; as a duplicate
+(defonce check-as-alias-duplicates-var (resolve 'cljs.analyzer.impl.namespaces/check-as-alias-duplicates))
+(defonce check-as-alias-duplicates-o (when check-as-alias-duplicates-var @check-as-alias-duplicates-var))
+
+(defn check-as-alias-duplicates
+  [as-aliases new-as-aliases]
+  (doseq [[new-alias new-lib] new-as-aliases]
+    (let [lib (get as-aliases new-alias)]
+      (assert (or (nil? lib) (= lib new-lib))
+              (str "Duplicate :as-alias " new-alias ", already in use for lib "
+                   lib)))))
+
+(when check-as-alias-duplicates-o
+  (alter-var-root check-as-alias-duplicates-var (constantly check-as-alias-duplicates)))
+
+
+
+
+;; Ignore defmacro calls in cljs files, or cljc files when compiling with cljs
+(defonce macroexpand-1-var (resolve 'cljs.analyzer/macroexpand-1))
+(defonce macroexpand-1-o (when macroexpand-1-var @macroexpand-1-var))
+
+(defn macroexpand-1-custom
+  [env form]
+  (when-not (= (first form) 'defmacro)
+    (macroexpand-1-o env form)))
+
+(when macroexpand-1-o
+  (alter-var-root macroexpand-1-var (constantly macroexpand-1-custom)))
+
