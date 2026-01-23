@@ -22,8 +22,7 @@
     (apply pr-str xs)))
 
 (defn notification-watcher [buffer-id k ref old-value value]
-  (binding [*out* tooling-msg/tooling-out
-            tooling-msg/*tooling-prn-format* :elisp]
+  (binding [*out* tooling-msg/tooling-out]
     (utils/with-lock tooling-msg/tooling-out-lock
       (tooling-msg/tooling-prn {:type :watch-update
                                 :process-id tooling-msg/process-id

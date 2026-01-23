@@ -30,7 +30,7 @@
             (binding [*print-length* nil
                       *print-level* nil
                       *print-meta* nil]
-              (tooling-msg/tooling-prn result)))))
+              (prn result)))))
 
 (defn print-repl-meta []
   (when (and (tooling-msg/tooling-available?) server/*session*)
@@ -169,6 +169,7 @@
   ([]
    (shared-tooling-repl :edn))
   ([print-format]
+   (tooling-msg/set-print-format print-format)
    ;; Only load tooling stuff when it is necessary
    (utils/with-lock tooling-msg/tooling-out-lock
      (alter-var-root #'tooling-msg/tooling-out (constantly *out*)))
@@ -192,8 +193,7 @@
         :print (fn [result]
                  (binding [*print-length* nil
                            *print-level* nil
-                           *print-meta* nil
-                           tooling-msg/*tooling-prn-format* print-format]
+                           *print-meta* nil]
                    (utils/with-lock tooling-msg/tooling-out-lock
                      (tooling-msg/tooling-prn result))))))
      (catch Exception ex
@@ -290,8 +290,7 @@
           (print-repl-meta)
           (post-eval-hook))]
     (clojure.main/with-bindings
-      (binding [*file* *file*
-                tooling-msg/*tooling-prn-format* :elisp]
+      (binding [*file* *file*]
         (try
           (binding [*repl-context* :init]
             (init))
