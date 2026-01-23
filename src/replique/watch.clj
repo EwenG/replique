@@ -81,7 +81,7 @@
                                            (.-index this) record-size
                                            (.-meta this)))
   (protocols/stop-recording [this buffer-id]
-    (remove-watch ref (keyword "replique.watch" (str buffer-id)))
+    (remove-watch (.-ref this) (keyword "replique.watch" (str buffer-id)))
     (let [watched-ref (protocols/->WatchedRef (.-ref this) (.-values this) (.-index this)
                                               (.-meta this))]
       (protocols/add-watch-handler watched-ref buffer-id)
