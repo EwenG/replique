@@ -1,5 +1,6 @@
 (ns replique.repl-common
   (:require [clojure.tools.reader :as reader]
+            [clojure.tools.reader.impl.utils :as reader-impl-utils]
             [clojure.tools.reader.reader-types :as readers]
             [replique.source-meta]
             [replique.utils :as utils])
@@ -45,15 +46,15 @@
 
 ;; Custom constructor to be able to set :file :line and :column when evaluating
 ;; code from a source file at the REPL
-(defn ^Closeable source-logging-push-back-reader
+(defn source-logging-push-back-reader
   "Creates a SourceLoggingPushbackReader from a given string or PushbackReader"
-  [s-or-rdr buf-len file-name line column]
+  ^Closeable [s-or-rdr buf-len file-name line column]
   (let [arglists-counts (->> #'readers/->SourceLoggingPushbackReader
                              meta 
                              :arglists
                              (into #{} (map count)))
         rdr (readers/to-pbr s-or-rdr buf-len)
-        source-log-frames (doto (clojure.tools.reader.impl.utils/make-var)
+        source-log-frames (doto (reader-impl-utils/make-var)
                             (alter-var-root (constantly {:buffer (StringBuilder.)
                                                          :offset 0})))]
     (cond (contains? arglists-counts 8)
