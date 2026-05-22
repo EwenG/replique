@@ -16,6 +16,7 @@
            [java.nio.file FileVisitResult]))
 
 (def ^:private cljs-evaluate-form (utils/dynaload 'replique.repl-cljs/-evaluate-form))
+(def ^:private shadow-evaluate-form (utils/dynaload 'replique.shadow-repl/evaluate-form))
 (def ^:private cljs-munged (utils/dynaload 'cljs.compiler/munge))
 (def ^:private cljs-tooling-form->js (utils/dynaload 'replique.repl-cljs/tooling-form->js))
 
@@ -488,12 +489,17 @@
               js-prefix (@cljs-munged js-prefix)
               original-scope-name (str scope-name "/" (when (> split-index -1)
                                                         (subs prefix 0 (inc split-index))))]
-          (let [{:keys [status value] :as e}
-                (@cljs-evaluate-form
-                 repl-env
-                 (format "replique.cljs_env.completion.js_scoped_candidates(%s, %s, %s, true);"
-                         (pr-str original-scope-name) (pr-str js-scope-name) (pr-str js-prefix))
-                 :timeout-before-submitted 100)]
+          (let [form (format "replique.cljs_env.completion.js_scoped_candidates(%s, %s, %s, true);"
+                             (pr-str original-scope-name) (pr-str js-scope-name) (pr-str js-prefix))
+                {:keys [status value] :as e}
+                (if repl-env
+                  (@cljs-evaluate-form
+                   repl-env
+                   form
+                   :timeout-before-submitted 100)
+                  (@shadow-evaluate-form
+                   form
+                   :timeout-before-submitted 100))]
             (when (= :success status)
               (elisp/->ElispString value))))))))
 

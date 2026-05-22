@@ -13,12 +13,19 @@
            [java.io File]))
 
 (def ^:private cljs-repl* (utils/dynaload 'replique.repl-cljs/cljs-repl))
+(def ^:private shadow-repl* (utils/dynaload 'replique.shadow-repl/cljs-repl))
 (def ^:private cljs-repl-nashorn* (utils/dynaload 'replique.nashorn/cljs-repl))
 (def ^:private cljs-in-ns* (utils/dynaload 'replique.repl-cljs/in-ns*))
+(def ^:private shadow-in-ns* (utils/dynaload 'replique.shadow-repl/in-ns*))
 (def ^:private cljs-compiler-env (utils/dynaload 'replique.repl-cljs/compiler-env))
+(def ^:private shadow-compiler-env (utils/dynaload 'replique.shadow-compile/compiler-env-atom))
+(def ^:private shadow-build-state (utils/dynaload 'replique.shadow-compile/build-state))
+(def ^:private cljs-shadow-load-file (utils/dynaload 'replique.shadow-repl/load-file))
 (def ^:private cljs-set-repl-verbose (utils/dynaload 'replique.repl-cljs/set-repl-verbose))
 (def ^:private cljs-eval-cljs-form (utils/dynaload 'replique.repl-cljs/eval-cljs-form))
+(def ^:private shadow-eval-cljs-form (utils/dynaload 'replique.shadow-repl/eval-cljs-form))
 (def ^:private cljs-custom-compiler-opts (utils/dynaload 'replique.repl-cljs/custom-compiler-opts))
+(def ^:private shadow-custom-compiler-opts (utils/dynaload 'replique.shadow-compile/custom-compiler-opts))
 (def ^:private cljs-munge (utils/dynaload 'cljs.compiler/munge))
 (def ^:private logback-reload* (utils/dynaload 'replique.logback/logback-reload))
 (def ^:private log4j2-reload* (utils/dynaload 'replique.log4j2/log4j2-reload))
@@ -35,6 +42,12 @@
   ([] (@cljs-repl* nil))
   ([main-namespace] (@cljs-repl* main-namespace)))
 
+(defn shadow-repl
+  "Start a shadow-cljs REPL. When a main-namescape is provided, the namespace is compiled if
+  it is not already loaded in the compiler environment."
+  ([] (@shadow-repl* nil))
+  ([main-namespace] (@shadow-repl* main-namespace)))
+
 (defn cljs-repl-nashorn
   "Start a Clojurescript Nashorn REPL"
   []
@@ -48,16 +61,20 @@
   [file-path & opts]
   (let [opts (into #{} opts)]
     (if (utils/cljs-env? &env)
-      ;; (:repl-env &env) can be a browser/nashorn/whatever... env
-      (repl-protocols/-load-file (:repl-env &env) file-path opts)
+      (if (:shadow.build.compiler/repl-context &env)
+        (@cljs-shadow-load-file file-path)
+        ;; (:repl-env &env) can be a browser/nashorn/whatever... env
+        (repl-protocols/-load-file (:repl-env &env) file-path opts))
       `(clojure.core/load-file ~file-path))))
 
 (defmulti load (fn [protocol env url opts] protocol))
 
 (defmethod load "file" [protocol env url opts]
   (if (utils/cljs-env? env)
-    ;; (:repl-env &env) can be a browser/nashorn/whatever... env
-    (repl-protocols/-load-file (:repl-env env) url opts)
+    (if (:shadow.build.compiler/repl-context env)
+      (@cljs-shadow-load-file url)
+      ;; (:repl-env &env) can be a browser/nashorn/whatever... env
+      (repl-protocols/-load-file (:repl-env env) url opts))
     `(utils/maybe-locking
       clojure.lang.RT/REQUIRE_LOCK
       (clojure.core/load-file ~(utils/file-url->path url)))))
@@ -88,7 +105,9 @@
         ns-name (and (seq? ns-quote) (second ns-quote))]
     (when-not (and (= 'quote quote) (symbol? ns-name))
       (throw (IllegalArgumentException. "Argument to in-ns must be a symbol.")))
-    (list 'quote (@cljs-in-ns* (:repl-env &env) ns-name))))
+    (if (:shadow.build.compiler/repl-context &env)
+      (list 'quote (@shadow-in-ns* ns-name))
+      (list 'quote (@cljs-in-ns* (:repl-env &env) ns-name)))))
 
 (defmacro set-cljs-repl-verbose
   "Switch the clojurescript REPL into verbose mode"
@@ -100,7 +119,7 @@
 (def compiler-opts
   "Clojurescript compiler options that can be set at the REPL"
   #{:verbose :warnings :compiler-stats :language-in :language-out
-    :closure-warnings :checked-arrays :global-goog-object&array})
+    :closure-warnings :closure-defines :checked-arrays :global-goog-object&array})
 
 (defmacro set-cljs-compiler-opt
   "Set the value of the Clojurescript compiler option named by the key"
@@ -109,7 +128,17 @@
   (swap! @cljs-custom-compiler-opts assoc opt-key opt-val)
   (when utils/http-server
     (swap! @@cljs-compiler-env assoc-in [:options opt-key] opt-val))
-  opt-val)
+  true)
+
+(defmacro set-shadow-compiler-opt
+  "Set the value of the Clojurescript compiler option named by the key"
+  [opt-key opt-val]
+  {:pre [(contains? compiler-opts opt-key)]}
+  (swap! @shadow-custom-compiler-opts assoc opt-key opt-val)
+  (when utils/http-server
+    (swap! @@shadow-compiler-env assoc-in [:options opt-key] opt-val)
+    (swap! @@shadow-build-state assoc :compiler-env @@@shadow-compiler-env))
+  true)
 
 #_(defn remote-repl
     "Start a REPL on a remote machine"
@@ -155,33 +184,51 @@
 
 (defmacro remove-var [var-sym]
   (assert (symbol? var-sym))
-  (let [comp-env (when (utils/cljs-env? &env)
-                   (env/->CljsCompilerEnv @@cljs-compiler-env))
+  (let [cljs-env? (utils/cljs-env? &env)
+        shadow-env? (when cljs-env? (:shadow.build.compiler/repl-context &env))
+        comp-env (when cljs-env?
+                   (if shadow-env?
+                     (env/->CljsCompilerEnv @@shadow-compiler-env)
+                     (env/->CljsCompilerEnv @@cljs-compiler-env)))
         var-ns-sym (env/safe-symbol (namespace var-sym))
         var-ns (when var-ns-sym (env/find-ns comp-env var-ns-sym))
         the-var (when var-ns (env/ns-resolve comp-env var-ns var-sym))]
     (assert (and the-var var-sym var-ns))
     (env/ns-unmap comp-env var-ns (-> var-sym name symbol))
     (doseq [n (env/all-ns comp-env)]
-      (if (utils/cljs-env? &env)
-        (do (doseq [[m-s m-ns-sym] (:uses n)
-                    :when (= m-ns-sym var-ns-sym)]
-              (env/ns-unmap comp-env n m-s))
-            (doseq [[m-s m-qualified-sym] (:renames n)
-                    :when (= m-qualified-sym var-sym)]
-              (env/ns-unmap comp-env n m-s))
-            (@cljs-eval-cljs-form
-             (:repl-env &env)
-             `(try
-                (cljs.core/js-delete ~(symbol "js" (str var-ns-sym))
+      (when cljs-env?
+        (doseq [[m-s m-ns-sym] (:uses n)
+                :when (= m-ns-sym var-ns-sym)]
+          (env/ns-unmap comp-env n m-s))
+        (doseq [[m-s m-qualified-sym] (:renames n)
+                :when (= m-qualified-sym var-sym)]
+          (env/ns-unmap comp-env n m-s))
+        (when shadow-env?
+          (swap! @@shadow-build-state assoc :compiler-env @@@shadow-compiler-env))
+        (let [delete-form `(try
+                             (cljs.core/js-delete ~(symbol "js" (str var-ns-sym))
                                      ~(@cljs-munge (-> var-sym name)))
-                (catch js/Error _# nil))))
-        (do (doseq [[m-s m-var] (ns-refers n)
-                    :when (identical? m-var the-var)]
-              (ns-unmap n m-s))
-            (when (and (find-ns 'replique.repl-cljs)
-                       (realized? @cljs-compiler-env))
-              (doseq [n (env/all-ns (env/->CljsCompilerEnv @@cljs-compiler-env))]
+                             (catch js/Error _# nil))]
+          (if shadow-env?
+            (@shadow-eval-cljs-form delete-form)
+            (@cljs-eval-cljs-form (:repl-env &env) delete-form))))
+      (do (doseq [[m-s m-var] (ns-refers n)
+                  :when (identical? m-var the-var)]
+            (ns-unmap n m-s))
+          (when (or
+                 (and (find-ns 'replique.shadow-repl)
+                      (realized? @shadow-compiler-env))
+                 (and (find-ns 'replique.repl-cljs)
+                      (realized? @cljs-compiler-env)))
+            (let [all-ns (cond (and (find-ns 'replique.shadow-repl)
+                                    (realized? @shadow-compiler-env))
+                               (env/all-ns (env/->CljsCompilerEnv @@shadow-compiler-env))
+                               (and (find-ns 'replique.repl-cljs)
+                                    (realized? @cljs-compiler-env))
+                               (env/all-ns (env/->CljsCompilerEnv @@cljs-compiler-env))
+                               :else
+                               [])]
+              (doseq [n all-ns]
                 (doseq [[m-s m-ns-sym] (:use-macros n)
                         :when (= m-ns-sym var-ns-sym)]
                   (env/ns-unmap comp-env n m-s))
@@ -205,9 +252,11 @@
   (@log4j2-reload* file-url))
 
 (defn eval-js [repl-env js]
-  (let [ret ((resolve 'cljs.repl/-evaluate)
-             repl-env "<cljs repl>" 1
-             js)]
+  (let [ret (if repl-env
+              ((resolve 'cljs.repl/-evaluate)
+               repl-env "<cljs repl>" 1
+               js)
+              ((resolve 'replique.shadow-repl/evaluate-form) js))]
     (case (:status ret)
       :error (throw
               (ex-info (:value ret)

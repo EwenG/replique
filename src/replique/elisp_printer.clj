@@ -422,6 +422,8 @@
 
   (with-out-str (pr (tagged-literal 'e 44)))
 
+  (with-out-str (pr "e\"e"))
+
   (with-out-str (binding [*print-level* 1]
                   (pr 
                    {:e [{:f "f"}]})))
