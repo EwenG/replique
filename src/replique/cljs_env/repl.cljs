@@ -206,3 +206,5 @@
    (send-result (eval-connection url) url
                 (wrap-message :ready {:main-ns main-ns}))
    url))
+
+(defonce ^:dynamic *process-id* nil)
