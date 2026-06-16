@@ -24,8 +24,7 @@
            [java.nio.file Paths Path]
            [java.net URL]
            [java.util.concurrent Executors SynchronousQueue TimeUnit
-            RejectedExecutionException ExecutorService TimeoutException CancellationException]
-           [com.google.common.base Throwables]))
+            RejectedExecutionException ExecutorService TimeoutException CancellationException]))
 
 (let [{cljs-major :major
        cljs-minor :minor
@@ -56,7 +55,8 @@
           :install-deps false
           :npm-deps false
           :language-in :ecmascript-next
-          :language-out :no-transpile}
+          :language-out :no-transpile
+          :closure-defines {'USE-ESM-LAZY false}}
          @custom-compiler-opts))
 
 (defn dispatch-request-init [{{host :host} :headers} callback]
@@ -212,6 +212,12 @@ replique.cljs_env.repl.connect(\"" url "\");
                (str (when function (str function " "))
                     "(" file (when line (str ":" line)) (when column (str ":" column)) ")")))))
 
+(defn- throwable->string [^Throwable t]
+  (let [sw (java.io.StringWriter.)
+        pw (java.io.PrintWriter. sw)]
+    (.printStackTrace t pw)
+    (str sw)))
+
 ;; resolve the stacktrace using sourcemaps when the evaluation result contains a stacktrace
 (defn handle-stacktrace [repl-env ret]
   (if (= :success (:status ret))
@@ -225,7 +231,7 @@ replique.cljs_env.repl.connect(\"" url "\");
           ret))
       (catch Throwable e
         {:status :error
-         :value (Throwables/getStackTraceAsString e)}))
+         :value (throwable->string e)}))
     ret))
 
 (defn evaluate-form [repl-env js & {:keys [timeout-before-submitted]}]
