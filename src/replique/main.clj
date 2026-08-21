@@ -12,7 +12,7 @@
          http-port (System/getProperty "replique.http-server.port" (str utils/http-port))
          {:keys [major minor incremental qualifier]} *clojure-version*]
      (if (and (<= major 1) (< minor 8))
-       (print (format "Replique is compatible with clojure 1.8+, current version is: %s.%s.%s%s" major minor incremental (if qualifier (str "-" qualifier) "")))
+       (print (format "Replique is compatible with clojure 1.12+, current version is: %s.%s.%s%s" major minor incremental (if qualifier (str "-" qualifier) "")))
        (do (require 'replique.interactive)
            (require 'replique.source-meta)
            ((resolve 'replique.repl/start-repl-process)
