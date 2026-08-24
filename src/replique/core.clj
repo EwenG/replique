@@ -72,13 +72,17 @@
     (when-not (Files/exists dir (make-array LinkOption 0))
       (Files/createDirectories dir (make-array FileAttribute 0))
       (set-permissions! dir "rwx------"))
-    (Files/write tmp (.getBytes (str (json/write-str content) "\n")
-                                StandardCharsets/UTF_8)
-                 open-opts)
-    (set-permissions! tmp "rw-------")
-    (Files/move tmp port-file
-                (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING]))
-    port-file))
+    (try
+      (Files/write tmp (.getBytes (str (json/write-str content) "\n")
+                                  StandardCharsets/UTF_8)
+                   open-opts)
+      (set-permissions! tmp "rw-------")
+      (Files/move tmp port-file
+                  (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING]))
+      port-file
+      (catch Throwable t
+        (try (Files/deleteIfExists tmp) (catch Exception _))
+        (throw t)))))
 
 (defn- delete-port-file! [^Path port-file]
   (try (Files/deleteIfExists port-file) (catch Exception _)))

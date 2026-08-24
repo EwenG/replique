@@ -90,7 +90,10 @@
              conn (protocol/error nil :malformed-message
                                   (str "Could not read an EDN message, skipping "
                                        "to the end of the line: "
-                                       (.getMessage ^Throwable msg))))
+                                       ;; StackOverflowError, on a deeply nested
+                                       ;; value, has no message
+                                       (or (.getMessage ^Throwable msg)
+                                           (.getName (class msg))))))
             (when (skip-line! conn) (recur)))
 
         (not (map? msg))

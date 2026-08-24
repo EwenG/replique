@@ -7,7 +7,8 @@
   (let [info (state/info)]
     (assoc info
            :connection (:id conn)
-           :uptime (- (System/currentTimeMillis) (:started-at info)))))
+           :uptime (when-let [started-at (:started-at info)]
+                     (- (System/currentTimeMillis) started-at)))))
 
 ;; Protocol smoke test. :value comes back both as JSON - which is lossy, EDN
 ;; keywords and symbols become strings - and as the EDN the process read, which
