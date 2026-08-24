@@ -11,7 +11,8 @@
     event - unsolicited (tap, output, ...)"
   (:require [clojure.edn :as edn]
             [replique.json :as json])
-  (:import [java.io Writer PushbackReader]
+  (:import [clojure.lang LineNumberingPushbackReader]
+           [java.io IOException PushbackReader StringReader Writer]
            [java.util.concurrent.locks ReentrantLock]))
 
 (def ^:private eof ::eof)
@@ -23,14 +24,39 @@
    ;; keeps the connection alive.
    :default (fn [tag value] {:replique/unknown-tag (str tag) :replique/value value})})
 
-(defn read-message
-  "Read one EDN message from the connection. Returns ::eof on a clean
-  disconnection. Throws when the input is not readable EDN."
-  [{:keys [in]}]
-  (edn/read read-opts ^PushbackReader in))
-
 (defn eof? [msg]
   (identical? eof msg))
+
+(defn read-line!
+  "Read one line from the connection. Returns ::eof when the client is gone.
+
+  Messages are framed by newlines: the EDN reader is handed one line at a
+  time, never the socket itself. A malformed message can then not reach past
+  its own newline."
+  [{:keys [^LineNumberingPushbackReader in]}]
+  (try (or (.readLine in) eof)
+       ;; The client is gone, or the connection is being closed
+       (catch IOException _ eof)))
+
+(defn read-messages
+  "Read the EDN messages a line holds - usually exactly one. Returns
+  [messages error]: error is nil when the whole line could be read, otherwise
+  it is what the reader threw and the rest of the line is abandoned. Messages
+  read before an error are kept."
+  [^String line]
+  (let [r (PushbackReader. (StringReader. line))]
+    (loop [messages []]
+      (let [msg (try (edn/read read-opts r) (catch Throwable t t))]
+        (cond
+          (eof? msg) [messages nil]
+          (instance? Throwable msg) [messages msg]
+          :else (recur (conj messages msg)))))))
+
+(defn read-error-message
+  "The text of a reader failure. StackOverflowError, on a deeply nested value,
+  has no message."
+  ^String [^Throwable t]
+  (or (.getMessage t) (.getName (class t))))
 
 (defn valid-id?
   "Correlation ids travel back to the client as JSON. Anything else than a

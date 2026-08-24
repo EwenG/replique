@@ -12,8 +12,7 @@
   (:require [replique.protocol :as protocol]
             [replique.state :as state]
             ;; loads the op implementations
-            [replique.ops])
-  (:import [java.io Reader]))
+            [replique.ops]))
 
 (defn- error-frame [msg ^Throwable t]
   (let [kind (:replique/error (ex-data t))]
@@ -35,12 +34,17 @@
       (protocol/write-frame! conn (error-frame msg t)))))
 
 (defn- dispatch! [conn msg]
-  (let [op (protocol/normalize-op (:op msg))
+  (let [raw-op (:op msg)
+        op (protocol/normalize-op raw-op)
         msg (assoc msg :op op)]
     (cond
       (nil? op)
       (protocol/write-frame!
-       conn (protocol/error msg :invalid-message "A request must have an :op"))
+       conn (protocol/error msg :invalid-message
+                            (if (nil? raw-op)
+                              "A request must have an :op"
+                              (str "An :op must be a keyword, a string or a symbol, got: "
+                                   (pr-str raw-op)))))
       (not (protocol/valid-id? (:id msg)))
       (protocol/write-frame!
        conn (protocol/error (dissoc msg :id) :invalid-message
@@ -52,58 +56,33 @@
                             "The connection is already established"))
       :else (handle-request conn msg))))
 
-(defn- skip-line!
-  "Drop what is left of the current line. Messages are written one per line by
-  convention, thus this is where the next one starts. Returns false at eof.
-
-  Always consumes at least one character, which is what makes the recovery
-  loop of control-loop terminate."
-  [{:keys [^Reader in]}]
-  (loop []
-    (let [c (.read in)]
-      (cond
-        (== c -1) false
-        (== c 10) true
-        :else (recur)))))
+(defn- handle-message! [conn msg]
+  (if (map? msg)
+    (dispatch! conn msg)
+    (protocol/write-frame!
+     conn (protocol/error nil :invalid-message
+                          (str "A request must be a map, got: " (pr-str (type msg)))))))
 
 (defn control-loop
-  "Read EDN messages until the client disconnects.
+  "Read one line at a time until the client disconnects, and handle the
+  messages it holds - usually exactly one.
 
-  A message that is not a map is rejected but the connection survives: the
-  reader is still in sync. Input that is not readable EDN is reported, then
-  the rest of the line is dropped and reading resumes. The resynchronization
-  is best effort - a malformed message that spans several lines leaves the
-  beginning of the next line as garbage, which is reported in turn - but it
-  beats closing a connection because of one bad message."
+  A message that is not a map is rejected but the connection survives: it was
+  read whole. A line that is not readable EDN is reported and abandoned, and
+  reading resumes on the next line."
   [conn]
   (loop []
-    (let [msg (try (protocol/read-message conn)
-                   (catch Throwable t t))]
-      (cond
-        (protocol/eof? msg) nil
-
-        ;; The client is gone, or the connection is being closed
-        (instance? java.io.IOException msg) nil
-
-        (instance? Throwable msg)
-        (do (protocol/write-frame!
+    (let [line (protocol/read-line! conn)]
+      (when-not (protocol/eof? line)
+        (let [[messages error] (protocol/read-messages line)]
+          (run! #(handle-message! conn %) messages)
+          (when error
+            (protocol/write-frame!
              conn (protocol/error nil :malformed-message
-                                  (str "Could not read an EDN message, skipping "
-                                       "to the end of the line: "
-                                       ;; StackOverflowError, on a deeply nested
-                                       ;; value, has no message
-                                       (or (.getMessage ^Throwable msg)
-                                           (.getName (class msg))))))
-            (when (skip-line! conn) (recur)))
-
-        (not (map? msg))
-        (do (protocol/write-frame!
-             conn (protocol/error nil :invalid-message
-                                  (str "A request must be a map, got: "
-                                       (pr-str (type msg)))))
-            (recur))
-
-        :else (do (dispatch! conn msg) (recur))))))
+                                  (str "Could not read an EDN message, the rest of "
+                                       "the line is ignored: "
+                                       (protocol/read-error-message error)))))
+          (recur))))))
 
 (defmethod protocol/accept-role :control [conn hello]
   (protocol/write-frame! conn (protocol/reply hello (assoc (state/info)

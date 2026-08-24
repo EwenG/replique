@@ -26,59 +26,76 @@
    conn (protocol/error hello :not-implemented
                         "The :repl role is not implemented yet")))
 
-(defn- handshake! [{:keys [process-id] :as conn}]
-  (let [msg (try (protocol/read-message conn)
-                 (catch Throwable t t))]
-    (cond
-      (protocol/eof? msg) nil
+(defn- accept-hello! [{:keys [process-id] :as conn} msg]
+  (if-not (map? msg)
+    (protocol/write-frame!
+     conn (protocol/error nil :invalid-message "The :hello message must be a map"))
+    (let [msg (assoc msg :op (protocol/normalize-op (:op msg)))
+          role (normalize-role (:role msg))]
+      (cond
+        (not (protocol/valid-id? (:id msg)))
+        (protocol/write-frame!
+         conn (protocol/error (dissoc msg :id) :invalid-message
+                              (str "An :id must be a string or a number, got: "
+                                   (pr-str (:id msg)))))
 
-      ;; The client is gone, or the connection is being closed
-      (instance? java.io.IOException msg) nil
+        (not= :hello (:op msg))
+        (protocol/write-frame!
+         conn (protocol/error msg :expected-hello
+                              "The first message of a connection must be :hello"))
 
-      (instance? Throwable msg)
-      (protocol/write-frame!
-       conn (protocol/error nil :malformed-message
-                            (str "Could not read the :hello message: "
-                                 (.getMessage ^Throwable msg))))
+        ;; Guards against a client connecting to a process it did not expect,
+        ;; typically from a stale port file.
+        (and (:process-id msg) (not= (str (:process-id msg)) process-id))
+        (protocol/write-frame!
+         conn (protocol/error msg :process-id-mismatch
+                              (str "This process is " process-id)
+                              {:process-id process-id}))
 
-      (not (map? msg))
-      (protocol/write-frame!
-       conn (protocol/error nil :invalid-message "The :hello message must be a map"))
+        (nil? role)
+        (protocol/write-frame!
+         conn (protocol/error msg :invalid-role
+                              (if (nil? (:role msg))
+                                "The :hello message must have a :role"
+                                (str "A :role must be a keyword, a string or a symbol, got: "
+                                     (pr-str (:role msg))))))
 
-      :else
-      (let [msg (assoc msg :op (protocol/normalize-op (:op msg)))
-            role (normalize-role (:role msg))]
-        (cond
-          (not (protocol/valid-id? (:id msg)))
-          (protocol/write-frame!
-           conn (protocol/error (dissoc msg :id) :invalid-message
-                                (str "An :id must be a string or a number, got: "
-                                     (pr-str (:id msg)))))
+        (not (contains? (methods protocol/accept-role) role))
+        (protocol/write-frame!
+         conn (protocol/error msg :unsupported-role
+                              (str "Unsupported role: " role)
+                              {:supported-roles (vec (sort (keys (methods protocol/accept-role))))}))
 
-          (not= :hello (:op msg))
-          (protocol/write-frame!
-           conn (protocol/error msg :expected-hello
-                                "The first message of a connection must be :hello"))
+        :else (protocol/accept-role conn (assoc msg :role role))))))
 
-          ;; Guards against a client connecting to a process it did not expect,
-          ;; typically from a stale port file.
-          (and (:process-id msg) (not= (str (:process-id msg)) process-id))
-          (protocol/write-frame!
-           conn (protocol/error msg :process-id-mismatch
-                                (str "This process is " process-id)
-                                {:process-id process-id}))
+(defn- handshake!
+  "Read the first line of the connection, which must hold the :hello message
+  and nothing else - what follows it on that line would be lost, a :repl
+  connection reads the rest of the stream itself.
 
-          (nil? role)
-          (protocol/write-frame!
-           conn (protocol/error msg :invalid-role "The :hello message must have a :role"))
+  The handshake is stricter than the control loop: a connection that cannot
+  produce a readable :hello is not speaking this protocol and is closed."
+  [conn]
+  (loop []
+    (let [line (protocol/read-line! conn)]
+      (when-not (protocol/eof? line)
+        (let [[messages error] (protocol/read-messages line)]
+          (cond
+            error
+            (protocol/write-frame!
+             conn (protocol/error nil :malformed-message
+                                  (str "Could not read the :hello message: "
+                                       (protocol/read-error-message error))))
 
-          (not (contains? (methods protocol/accept-role) role))
-          (protocol/write-frame!
-           conn (protocol/error msg :unsupported-role
-                                (str "Unsupported role: " role)
-                                {:supported-roles (vec (sort (keys (methods protocol/accept-role))))}))
+            ;; blank lines before the handshake are ignored
+            (empty? messages) (recur)
 
-          :else (protocol/accept-role conn (assoc msg :role role)))))))
+            (next messages)
+            (protocol/write-frame!
+             conn (protocol/error nil :invalid-message
+                                  "The :hello message must be alone on its line"))
+
+            :else (accept-hello! conn (first messages))))))))
 
 (defn- connection [server ^Socket socket client-id]
   {:id client-id
