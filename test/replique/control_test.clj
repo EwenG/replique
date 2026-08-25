@@ -1,7 +1,9 @@
 (ns replique.control-test
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.data.json :as djson]
-            [replique.core :as core])
+            [clojure.string :as string]
+            [replique.core :as core]
+            [replique.protocol :as protocol])
   (:import [java.io BufferedReader BufferedWriter InputStreamReader OutputStreamWriter]
            [java.net Socket]
            [java.nio.charset StandardCharsets]
@@ -55,6 +57,16 @@
          ~info-sym (core/start! (merge {:directory dir#} ~opts))]
      (try ~@body
           (finally (core/stop!) (delete-recursively dir#)))))
+
+(defn- with-lock-held
+  "Run f while another thread owns the connection. The lock is reentrant, so
+  holding it on the calling thread would not make the connection look busy."
+  [{:keys [^java.util.concurrent.locks.ReentrantLock lock]} f]
+  (let [held (java.util.concurrent.CountDownLatch. 1)
+        release (java.util.concurrent.CountDownLatch. 1)
+        holder (future (.lock lock) (.countDown held) (.await release) (.unlock lock))]
+    (.await held)
+    (try (f) (finally (.countDown release) @holder))))
 
 (defn- control-client [info]
   (let [client (connect info)
@@ -219,6 +231,101 @@
           (is (= 5 (:id (request! client {:op :echo :id 5 :value 1})))))
         (finally (disconnect client))))))
 
+(defn- written [^java.io.StringWriter out]
+  (if (= "" (str out))
+    []
+    (mapv #(djson/read-str % :key-fn keyword) (string/split-lines (str out)))))
+
+(deftest events-never-pause-their-producer
+  (testing "an event comes from a thread of the application being worked on -
+  a background thread printing, a tapped value. It must never wait for
+  whoever owns the connection."
+    (testing "a short burst against a busy connection is not lost, it waits"
+      (let [out (java.io.StringWriter.)
+            conn (merge {:out out} (protocol/outbox))]
+        (with-lock-held conn
+          (fn [] (dotimes [i 10]
+                   (protocol/emit-event! conn (protocol/event "out" {:line i})))))
+        (is (= "" (str out)) "nothing was written, and nothing waited")
+        (protocol/try-flush! conn)
+        (let [frames (written out)]
+          (is (= 10 (count frames)))
+          (is (= (range 10) (map :line frames))))))
+
+    (testing "only a client that stays behind loses events, and the loss is
+    reported after everything that survived - so the gap can be rendered in
+    place"
+      (let [out (java.io.StringWriter.)
+            conn (merge {:out out} (protocol/outbox))
+            extra 500]
+        (with-lock-held conn
+          (fn [] (dotimes [i (+ protocol/max-queued-events extra)]
+                   (protocol/emit-event! conn (protocol/event "out" {:line i})))))
+        (is (= "" (str out)))
+        (protocol/try-flush! conn)
+        (let [frames (written out)]
+          (is (= (inc protocol/max-queued-events) (count frames)))
+          (is (= (range protocol/max-queued-events) (map :line (butlast frames))))
+          (is (= "dropped" (:event (last frames))))
+          (is (= extra (:count (last frames)))))))))
+
+(deftest nothing-is-lost-or-torn-under-concurrency
+  (testing "many producers contend for one connection: every line must be a
+  whole frame, no reply may go missing, and every event must be either written
+  or counted as dropped"
+    (let [out (java.io.StringWriter.)
+          conn (merge {:out out} (protocol/outbox))
+          producers 8
+          per-producer 500
+          replies 200
+          threads (conj (vec (for [_ (range producers)]
+                               (future (dotimes [i per-producer]
+                                         (protocol/emit-event! conn
+                                          (protocol/event "out" {:line i}))))))
+                        (future (dotimes [i replies]
+                                  (protocol/write-frame! conn
+                                   (protocol/reply {:id i :op :echo} {:value i})))))]
+      (run! deref threads)
+      (protocol/try-flush! conn)
+      (let [frames (written out)
+            by-tag (frequencies (map :tag frames))
+            dropped (reduce + 0 (keep #(when (= "dropped" (:event %)) (:count %)) frames))
+            markers (count (filter #(= "dropped" (:event %)) frames))]
+        (testing "every line parsed, so no frame was torn by another writer"
+          (is (= (count frames) (reduce + (vals by-tag)))))
+        (testing "no reply was lost"
+          (is (= replies (get by-tag "reply"))))
+        (testing "every event is accounted for, written or counted"
+          (is (= (* producers per-producer)
+                 (+ (- (get by-tag "event" 0) markers) dropped))))))))
+
+(deftest parked-frames-keep-the-order-they-were-produced-in
+  (testing "a reply must not overtake the output that came before it: in M1 a
+  REPL thread writes its out frames and then its result, and an editor showing
+  the result first would be showing a lie"
+    (let [out (java.io.StringWriter.)
+          conn (merge {:out out} (protocol/outbox))]
+      (with-lock-held conn
+        (fn []
+          (protocol/emit-event! conn (protocol/event "out" {:line "printed first"}))
+          (protocol/write-frame! conn (protocol/reply {:id 1 :op :eval} {:value "the result"}))
+          (protocol/emit-event! conn (protocol/event "out" {:line "printed last"}))))
+      (protocol/try-flush! conn)
+      (is (= ["event" "reply" "event"] (map :tag (written out)))))))
+
+(deftest replies-are-parked-not-dropped
+  (testing "a frame that must reach the client waits for the connection
+  however long it takes, and goes out on the next write"
+    (let [out (java.io.StringWriter.)
+          conn (merge {:out out} (protocol/outbox))]
+      (with-lock-held conn
+        (fn [] (protocol/write-frame! conn (protocol/reply {:id 1 :op :echo} {:value 1}))))
+      (is (= "" (str out)) "parked, not written and not dropped")
+      (protocol/try-flush! conn)
+      (let [frame (first (written out))]
+        (is (= "reply" (:tag frame)))
+        (is (= 1 (:id frame)))))))
+
 (deftest several-messages-may-share-a-line
   (with-process [info nil]
     (let [client (control-client info)]
@@ -367,29 +474,26 @@
             (is (not (contains? reply :error))))
           (finally (disconnect client)))))))
 
-(deftest a-blocked-connection-does-not-block-another
-  (testing "requests are handled serially, on the thread that reads the
-  connection: concurrency is obtained by opening a second control connection,
-  and one connection whose client stopped reading must not affect the other"
+(deftest a-client-that-stops-reading-stalls-only-its-own-connection
+  (testing "each connection has its own socket and its own lock, so a client
+  that stops reading stalls its own connection and nothing else"
     (with-process [info nil]
       (let [a (control-client info)
             b (control-client info)
             big (apply str (repeat 20000 \x))]
-        ;; a never reads its replies: the socket buffer fills up and the
-        ;; process ends up blocked writing to a. Flooding from another thread,
-        ;; because a's own send! blocks too once the buffer is full - which is
-        ;; exactly the backpressure this test is about.
-        (let [flood (future (try (dotimes [i 500]
-                                   (send! a {:op :echo :id i :value big}))
-                                 (catch Exception _ :disconnected)))]
-          (try
-            (Thread/sleep 500)
-            (is (not (realized? flood)) "a is blocked, which is the point")
-            (is (= "reply" (:tag (request! b {:op :echo :id "b" :value 1}))))
-            (is (= 42 (:id (request! b {:op :echo :id 42 :value 1}))))
-            (finally
-              ;; closing a unblocks the flooding thread
-              (disconnect a) (disconnect b) (deref flood 5000 :timeout))))))))
+        (try
+          ;; a sends and never reads. From another thread, because once the
+          ;; replies fill a's socket buffer a's own send! blocks too.
+          (let [flood (future (try (dotimes [i 200] (send! a {:op :echo :id i :value big}))
+                                   :sent
+                                   (catch Exception _ :disconnected)))]
+            (try
+              (is (= "reply" (:tag (request! b {:op :echo :id "b" :value 1}))))
+              (is (= 42 (:id (request! b {:op :echo :id 42 :value 1}))))
+              (finally
+                ;; closing a unblocks the flooding thread
+                (disconnect a) (disconnect b) (deref flood 5000 :timeout))))
+          (finally (disconnect a) (disconnect b)))))))
 
 (deftest concurrent-connections
   (with-process [info nil]

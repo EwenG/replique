@@ -1,14 +1,12 @@
 (ns replique.control
   "The control connection: the channel the editor uses for everything that is
-  not a REPL. It is a message loop, not a REPL with a discarded prompt:
-  requests are an explicit, versioned set of ops and they are correlated by
+  not a REPL. Requests are an explicit, versioned set of ops and they are correlated by
   :id.
 
   Requests are handled serially, on the thread that reads the connection, so
-  that replies come back in request order and no reply can outlive the
-  connection. An op that may take long enough to matter answers immediately
-  and reports its progress as events, rather than holding the channel; a
-  client that wants two requests in flight opens a second control connection."
+  that replies come back in request order. An op that may take long enough to matter answers immediately
+  and reports its progress as events, rather than holding the channel."
+
   (:require [replique.protocol :as protocol]
             [replique.state :as state]
             ;; loads the op implementations
@@ -72,6 +70,8 @@
   reading resumes on the next line."
   [conn]
   (loop []
+    ;; a frame parked by a busy producer must not wait for the next request
+    (protocol/try-flush! conn)
     (let [line (protocol/read-line! conn)]
       (when-not (protocol/eof? line)
         (let [[messages error] (protocol/read-messages line)]

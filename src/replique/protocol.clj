@@ -13,6 +13,8 @@
             [replique.json :as json])
   (:import [clojure.lang LineNumberingPushbackReader]
            [java.io IOException PushbackReader StringReader Writer]
+           [java.util.concurrent ConcurrentLinkedQueue]
+           [java.util.concurrent.atomic AtomicInteger AtomicLong]
            [java.util.concurrent.locks ReentrantLock]))
 
 (def ^:private eof ::eof)
@@ -26,6 +28,19 @@
 
 (defn eof? [msg]
   (identical? eof msg))
+
+(defn drain!
+  "Consume the input the client has already sent. Closing a socket that still
+  holds unread input resets the connection, and the client then loses the
+  error frame that was just written to it - which is the frame that says why
+  it is being closed. Never waits for more input, and gives up on a client
+  that keeps sending."
+  [{:keys [^LineNumberingPushbackReader in]}]
+  (try
+    (loop [n 0]
+      (when (and (< n 1000000) (.ready in) (not (neg? (.read in))))
+        (recur (inc n))))
+    (catch IOException _ nil)))
 
 (defn read-line!
   "Read one line from the connection. Returns ::eof when the client is gone.
@@ -133,21 +148,105 @@
                                 :error "unserializable-frame"
                                 :message "Could not serialize a frame"})))))))
 
+(def max-queued-events
+  "How many events may wait for a busy connection before they start being
+  dropped. Replies are never dropped, they are not bounded."
+  1024)
+
+(defn outbox
+  "The state a connection needs to be written to. There is no writer thread:
+  whichever thread produces a frame writes it, if it can take the lock, and
+  parks it otherwise - whoever takes the lock next writes what is waiting."
+  []
+  {:lock (ReentrantLock.)
+   ;; frames that found the connection busy, in the order they were produced.
+   ;; One queue for both kinds, because a reply must not overtake the output
+   ;; that came before it - only the events in it count against the bound.
+   :queue (ConcurrentLinkedQueue.)
+   :queued-events (AtomicInteger. 0)
+   :dropped (AtomicLong. 0)})
+
+(defn- write-line! [{:keys [^Writer out]} ^String line]
+  (.write out line)
+  (.write out "\n")
+  (.flush out))
+
+(defn- flush-locked!
+  "Write what is waiting. Must be called with the lock held."
+  [{:keys [^ConcurrentLinkedQueue queue ^AtomicInteger queued-events
+           ^AtomicLong dropped] :as conn}]
+  (loop []
+    (when-let [[kind ^String line] (.poll queue)]
+      (when (identical? :event kind)
+        (.decrementAndGet queued-events))
+      (write-line! conn line)
+      (recur)))
+  ;; last, which is where the gap is: everything that survived has just been
+  ;; written, so the client can render the loss in place
+  (let [n (.getAndSet dropped 0)]
+    (when (pos? n)
+      (write-line! conn (frame->line (event "dropped" {:count n}))))))
+
+(defn- writable? [{:keys [^ConcurrentLinkedQueue queue ^AtomicLong dropped]}]
+  (or (not (.isEmpty queue)) (pos? (.get dropped))))
+
+(defn try-flush!
+  "Write the frames that are waiting, if the connection is free. The
+  connection thread calls it before blocking on its next read, so that a frame
+  parked while a producer held the lock does not wait for the next request.
+
+  Loops, because a frame parked while this very flush was running would
+  otherwise be stranded until something else happens on the connection. Gives
+  up as soon as the lock is contended: whoever holds it flushes in turn."
+  [{:keys [^ReentrantLock lock] :as conn}]
+  (loop []
+    (when (and (writable? conn) (.tryLock lock))
+      (let [written? (try (flush-locked! conn)
+                          true
+                          ;; The client is gone or is not reading anymore. Stop
+                          ;; rather than retry every queued frame: the
+                          ;; connection loop will notice on its next read.
+                          (catch IOException _ false)
+                          (finally (.unlock lock)))]
+        (when written? (recur))))))
+
 (defn write-frame!
-  "Serialize the frame, then write it - followed by a newline - to the
-  connection. Serializing before taking the lock guarantees that a frame that
-  cannot be serialized does not leave a truncated line on the wire."
-  [{:keys [^Writer out ^ReentrantLock lock] :as conn} f]
+  "Write a frame that must reach the client - a reply, an error. When another
+  thread owns the connection the frame is parked rather than dropped, and goes
+  out with the next write."
+  [{:keys [^ReentrantLock lock ^ConcurrentLinkedQueue queue] :as conn} f]
   (let [^String line (frame->line f)]
-    (.lock lock)
-    (try
-      (.write out line)
-      (.write out "\n")
-      (.flush out)
-      ;; The client is gone or is not reading anymore. Nothing useful can be
-      ;; done here, the connection loop will notice on its next read.
-      (catch java.io.IOException _)
-      (finally (.unlock lock)))))
+    (if (.tryLock lock)
+      (do (try (flush-locked! conn)
+               (write-line! conn line)
+               (catch IOException _ nil)
+               (finally (.unlock lock)))
+          ;; a producer may have parked something while we held the lock
+          (try-flush! conn))
+      (.add queue [:reply line]))))
+
+(defn emit-event!
+  "Write an unsolicited frame if the connection is free, drop and count it
+  otherwise. The producer is a thread of the application being worked on - a
+  background thread printing, a tapped value - and dropping is the only thing
+  that never pauses it."
+  [{:keys [^ReentrantLock lock ^ConcurrentLinkedQueue queue
+           ^AtomicInteger queued-events ^AtomicLong dropped] :as conn} f]
+  (if (.tryLock lock)
+    (do (try (flush-locked! conn)
+             (write-line! conn (frame->line f))
+             (catch IOException _ nil)
+             (finally (.unlock lock)))
+        ;; a producer may have parked something while we held the lock
+        (try-flush! conn))
+    ;; The connection is busy - usually for the moment it takes to write one
+    ;; frame. Wait in the queue rather than be lost, and count the loss only
+    ;; when the client is durably behind. The bound is checked before
+    ;; serializing: a flood must stay cheap for the thread producing it.
+    (if (<= (.incrementAndGet queued-events) max-queued-events)
+      (.add queue [:event (frame->line f)])
+      (do (.decrementAndGet queued-events)
+          (.incrementAndGet dropped)))))
 
 ;;; Dispatch
 

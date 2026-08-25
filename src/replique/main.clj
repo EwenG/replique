@@ -17,6 +17,11 @@
         {min-major :major min-minor :minor} min-clojure-version]
     (or (> major min-major) (and (= major min-major) (>= minor min-minor)))))
 
+(defn- unsupported-runtime []
+  (when-not (clojure-version-ok?)
+    (format "Replique requires clojure %s.%s+, this process runs %s"
+            (:major min-clojure-version) (:minor min-clojure-version) (clojure-version))))
+
 (defn- system-property-opts []
   (let [prop (fn [k] (System/getProperty (str "replique." (name k))))
         read-prop (fn [k] (when-let [v (prop k)] (edn/read-string v)))]
@@ -44,11 +49,8 @@
   (.flush *out*))
 
 (defn -main [& args]
-  (if-not (clojure-version-ok?)
-    (do (binding [*out* *err*]
-          (println (format "Replique requires clojure %s.%s+, this process runs %s"
-                           (:major min-clojure-version) (:minor min-clojure-version)
-                           (clojure-version))))
+  (if-let [unsupported (unsupported-runtime)]
+    (do (binding [*out* *err*] (println unsupported))
         (System/exit 1))
     (let [write-str (do (require 'replique.json)
                         (resolve 'replique.json/write-str))]

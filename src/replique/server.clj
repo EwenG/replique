@@ -11,8 +11,7 @@
   (:import [java.io BufferedWriter InputStreamReader IOException OutputStreamWriter]
            [java.net InetAddress ServerSocket Socket SocketException]
            [java.nio.charset StandardCharsets]
-           [java.util.concurrent.atomic AtomicLong]
-           [java.util.concurrent.locks ReentrantLock]))
+           [java.util.concurrent.atomic AtomicLong]))
 
 (defn- normalize-role [role]
   (cond
@@ -98,14 +97,15 @@
             :else (accept-hello! conn (first messages))))))))
 
 (defn- connection [server ^Socket socket client-id]
-  {:id client-id
-   :socket socket
-   :in (clojure.lang.LineNumberingPushbackReader.
-        (InputStreamReader. (.getInputStream socket) StandardCharsets/UTF_8))
-   :out (BufferedWriter.
-         (OutputStreamWriter. (.getOutputStream socket) StandardCharsets/UTF_8))
-   :lock (ReentrantLock.)
-   :process-id (:process-id server)})
+  (merge
+   {:id client-id
+    :socket socket
+    :in (clojure.lang.LineNumberingPushbackReader.
+         (InputStreamReader. (.getInputStream socket) StandardCharsets/UTF_8))
+    :out (BufferedWriter.
+          (OutputStreamWriter. (.getOutputStream socket) StandardCharsets/UTF_8))
+    :process-id (:process-id server)}
+   (protocol/outbox)))
 
 (defn- close-connection! [server {:keys [id ^Socket socket]}]
   (swap! (:connections server) dissoc id)
@@ -121,7 +121,12 @@
                        (catch Throwable t
                          (try (protocol/write-frame! conn (protocol/exception-error nil t))
                               (catch Throwable _)))
-                       (finally (close-connection! server conn))))
+                       (finally
+                         ;; the last frame is usually the one that says why we
+                         ;; close - get it out before the socket goes
+                         (try (protocol/try-flush! conn) (catch Throwable _))
+                         (try (protocol/drain! conn) (catch Throwable _))
+                         (close-connection! server conn))))
                    (str "replique-connection-" client-id))
       (.setDaemon true)
       (.start))))
