@@ -62,15 +62,20 @@
         (finally (disconnect client))))))
 
 (deftest hello-must-be-alone-on-its-line
-  (testing "what follows the :hello on its line would be lost - a :repl
-  connection reads the rest of the stream itself"
+  (testing "a line holding more than the :hello is rejected rather than
+  half read. What follows the handshake on a :repl connection is code, not a
+  message, so a client batching the two has misunderstood the connection -
+  and evaluating the batched form, or silently dropping it, would both be
+  worse than saying so."
     (with-process [info nil]
-      (let [client (connect info)]
-        (try
-          (send! client "{:op :hello :role :control :id 1}{:op :echo :id 2 :value 1}")
-          (is (= "invalid-message" (:error (recv client))))
-          (is (= :eof (recv client)))
-          (finally (disconnect client)))))))
+      (doseq [line ["{:op :hello :role :control :id 1}{:op :echo :id 2 :value 1}"
+                    "{:op :hello :role :repl :id 1} (+ 40 2)"]]
+        (let [client (connect info)]
+          (try
+            (send! client line)
+            (is (= "invalid-message" (:error (recv client))) line)
+            (is (= :eof (recv client)) line)
+            (finally (disconnect client))))))))
 
 (deftest process-id-mismatch
   (with-process [info nil]

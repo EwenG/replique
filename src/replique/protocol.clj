@@ -119,16 +119,32 @@
         (str "Could not be printed: "
              (or (.getMessage t2) (.getName (class t2))))))))
 
+(def ^:private max-trace
+  "How many stack frames of one exception travel in a frame. The top of the
+  stack is where it was thrown, which is what a trace is read for."
+  64)
+
+(def ^:private max-cause-depth 8)
+
 (defn exception->data
   ([t] (exception->data t 0))
   ([^Throwable t depth]
-   (frame
-    {:class (.getName (class t))
-     :message (.getMessage t)
-     :data (printed-ex-data t)
-     :trace (mapv str (take 64 (.getStackTrace t)))
-     :cause (when (and (< depth 8) (.getCause t))
-              (exception->data (.getCause t) (inc depth)))})))
+   (let [trace (.getStackTrace t)
+         dropped (- (count trace) max-trace)
+         cause (.getCause t)
+         cut? (>= depth max-cause-depth)]
+     (frame
+      {:class (.getName (class t))
+       :message (.getMessage t)
+       :data (printed-ex-data t)
+       :trace (mapv str (take max-trace trace))
+       ;; What was left out is said rather than quietly dropped: an editor
+       ;; showing 64 frames of a 300 frame trace, or a chain whose root cause
+       ;; - the one the reported message names - was cut off, would otherwise
+       ;; show them as if they were whole.
+       :trace-dropped (when (pos? dropped) dropped)
+       :cause (when (and cause (not cut?)) (exception->data cause (inc depth)))
+       :cause-dropped (when (and cause cut?) true)}))))
 
 (defn reply
   "A reply frame for the request msg. m is merged into the frame - the framing

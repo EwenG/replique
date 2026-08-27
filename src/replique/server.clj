@@ -64,8 +64,10 @@
 
 (defn- handshake!
   "Read the first line of the connection, which must hold the :hello message
-  and nothing else - what follows it on that line would be lost, a :repl
-  connection reads the rest of the stream itself.
+  and nothing else: a line holding anything more is rejected. What follows
+  the handshake on a :repl connection is code, not a message, so a client
+  that batches the two has misunderstood the connection - and losing the
+  batched form silently would be the worse answer.
 
   The handshake is stricter than the control loop: a connection that cannot
   produce a readable :hello is not speaking this protocol and is closed."

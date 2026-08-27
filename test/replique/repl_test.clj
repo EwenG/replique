@@ -86,6 +86,45 @@
             (is (= "read-source" (:phase f)))))
         (finally (disconnect r))))))
 
+(deftest what-an-exception-frame-leaves-out-is-said
+  (testing "a frame carries a bounded piece of an exception - the top of the
+  trace, the outermost causes. A client that is handed 64 frames of a 300
+  frame trace, or a chain whose root cause was cut off, must be able to tell
+  that from a whole one: the root cause is the one the reported message
+  names."
+    (with-process [info nil]
+      (let [r (repl-client info)]
+        (try
+          (testing "a chain deeper than the frame carries"
+            (let [f (frame-tagged
+                     (eval! r (str "(throw (reduce (fn [c i] (ex-info (str \"level \" i) {} c))"
+                                   " nil (range 20)))"))
+                     "exception")]
+              (is (string/includes? (:message f) "level 0")
+                  "the reported message still names the root cause")
+              (let [chain (take-while some? (iterate :cause (:exception f)))]
+                (is (= 9 (count chain)))
+                (is (true? (:cause-dropped (last chain)))
+                    "the deepest one carried says the chain goes on")
+                (is (every? nil? (map :cause-dropped (butlast chain)))))))
+          (testing "a chain that fits says nothing"
+            (let [f (frame-tagged (eval! r "(throw (ex-info \"one\" {} (Exception. \"two\")))")
+                                  "exception")]
+              (is (nil? (:cause-dropped (:exception f))))
+              (is (nil? (:cause-dropped (:cause (:exception f)))))))
+          (testing "a trace longer than the frame carries"
+            (let [e (:exception (frame-tagged (eval! r "((fn f [n] (inc (f (inc n)))) 0)")
+                                              "exception"))]
+              (is (= 64 (count (:trace e))))
+              (is (pos? (:trace-dropped e))
+                  "how many frames were left out, so an editor can say so")))
+          (testing "a trace that fits says nothing"
+            (let [e (:exception (frame-tagged (eval! r "(throw (Exception. \"shallow\"))")
+                                              "exception"))]
+              (is (< (count (:trace e)) 64))
+              (is (nil? (:trace-dropped e)))))
+          (finally (disconnect r)))))))
+
 (deftest an-ex-data-that-cannot-be-printed-does-not-replace-the-exception
   (testing "ex-data travels as printed text and printing a value can fail.
   Reporting that failure in its place shows the editor the trouble replique
