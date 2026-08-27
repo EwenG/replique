@@ -20,11 +20,6 @@
     (symbol? role) (keyword (str role))
     :else nil))
 
-(defmethod protocol/accept-role :repl [conn hello]
-  (protocol/write-frame!
-   conn (protocol/error hello :not-implemented
-                        "The :repl role is not implemented yet")))
-
 (defn- accept-hello! [{:keys [process-id] :as conn} msg]
   (if-not (map? msg)
     (protocol/write-frame!
@@ -96,10 +91,46 @@
 
             :else (accept-hello! conn (first messages))))))))
 
+(defn set-role!
+  "Record what the connection turned out to be, once the handshake accepted
+  it. Whoever broadcasts an event needs to tell the control connections from
+  the repls."
+  [{:keys [role]} kind]
+  (reset! role kind))
+
+(defn evaluating!
+  "Mark the calling thread as the one :interrupt targets on this connection."
+  [{:keys [eval-thread]}]
+  (locking eval-thread (reset! eval-thread (Thread/currentThread))))
+
+(defn done-evaluating! [{:keys [eval-thread]}]
+  (locking eval-thread
+    (reset! eval-thread nil)
+    ;; An interrupt that arrived at the very end of the evaluation must not
+    ;; leak into the next read. The interrupter takes the same lock, so it
+    ;; either interrupted before this point - and the flag is cleared here -
+    ;; or it found the connection idle and did nothing.
+    (Thread/interrupted)))
+
+(defn interrupt!
+  "Interrupt what the connection is evaluating. Returns false when it is idle.
+
+  This only stops code that blocks or checks the interrupt flag: Thread.stop
+  is gone since jdk 20 and the jvm offers nothing else."
+  [{:keys [eval-thread]}]
+  (locking eval-thread
+    (if-let [^Thread thread @eval-thread]
+      (do (.interrupt thread) true)
+      false)))
+
 (defn- connection [server ^Socket socket client-id]
   (merge
    {:id client-id
     :socket socket
+    ;; nil until the handshake accepted the connection
+    :role (atom nil)
+    ;; the thread evaluating right now, nil when idle
+    :eval-thread (atom nil)
     :in (clojure.lang.LineNumberingPushbackReader.
          (InputStreamReader. (.getInputStream socket) StandardCharsets/UTF_8))
     :out (BufferedWriter.

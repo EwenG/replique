@@ -3,60 +3,15 @@
             [clojure.data.json :as djson]
             [clojure.string :as string]
             [replique.core :as core]
-            [replique.protocol :as protocol])
-  (:import [java.io BufferedReader BufferedWriter InputStreamReader OutputStreamWriter]
-           [java.net Socket]
-           [java.nio.charset StandardCharsets]
+            [replique.protocol :as protocol]
+            [replique.test-client :as client
+             :refer [connect send! recv request! disconnect with-process
+                     temp-dir delete-recursively]])
+  (:import [java.net Socket]
            [java.nio.file Files Path Paths]
            [java.nio.file.attribute FileAttribute]))
 
-;;; Test client - the reference implementation of what an editor does:
-;;; write EDN, read newline delimited JSON.
-
-(defn connect [{:keys [host port]}]
-  (let [socket (doto (Socket. ^String host (int port))
-                 (.setSoTimeout 10000))]
-    {:socket socket
-     :in (BufferedReader. (InputStreamReader. (.getInputStream socket)
-                                              StandardCharsets/UTF_8))
-     :out (BufferedWriter. (OutputStreamWriter. (.getOutputStream socket)
-                                                StandardCharsets/UTF_8))}))
-
-(defn send! [{:keys [^BufferedWriter out]} msg]
-  (.write out (if (string? msg) msg (pr-str msg)))
-  (.write out "\n")
-  (.flush out)
-  nil)
-
-(defn recv
-  "Read one frame. Returns :eof when the process closed the connection."
-  [{:keys [^BufferedReader in]}]
-  (if-let [line (.readLine in)]
-    (djson/read-str line :key-fn keyword)
-    :eof))
-
-(defn request! [client msg]
-  (send! client msg)
-  (recv client))
-
-(defn disconnect [{:keys [^Socket socket]}]
-  (try (.close socket) (catch Exception _)))
-
-(defn- temp-dir []
-  (str (Files/createTempDirectory "replique-test" (make-array FileAttribute 0))))
-
-(defn- delete-recursively [dir]
-  (doseq [p (reverse (iterator-seq (.iterator (Files/walk (Paths/get (str dir) (make-array String 0))
-                                                          (make-array java.nio.file.FileVisitOption 0)))))]
-    (try (Files/deleteIfExists ^Path p) (catch Exception _))))
-
-(defmacro with-process
-  "Start a process, bind its info, stop it - and clean up its directory."
-  [[info-sym opts] & body]
-  `(let [dir# (temp-dir)
-         ~info-sym (core/start! (merge {:directory dir#} ~opts))]
-     (try ~@body
-          (finally (core/stop!) (delete-recursively dir#)))))
+(defn- control-client [info] (client/control-client info))
 
 (defn- with-lock-held
   "Run f while another thread owns the connection. The lock is reentrant, so
@@ -67,11 +22,6 @@
         holder (future (.lock lock) (.countDown held) (.await release) (.unlock lock))]
     (.await held)
     (try (f) (finally (.countDown release) @holder))))
-
-(defn- control-client [info]
-  (let [client (connect info)
-        hello (request! client {:op :hello :role :control :id 0})]
-    (assoc client :hello hello)))
 
 ;;; Handshake
 
@@ -108,14 +58,6 @@
         (let [reply (request! client {:op :hello :role :nope :id 1})]
           (is (= "unsupported-role" (:error reply)))
           (is (= ["control" "repl"] (:supported-roles reply))))
-        (finally (disconnect client))))))
-
-(deftest repl-role-is-not-implemented-yet
-  (with-process [info nil]
-    (let [client (connect info)]
-      (try
-        (let [reply (request! client {:op :hello :role :repl :id 1})]
-          (is (= "not-implemented" (:error reply))))
         (finally (disconnect client))))))
 
 (deftest hello-must-be-alone-on-its-line

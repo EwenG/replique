@@ -8,6 +8,7 @@
   and reports its progress as events, rather than holding the channel."
 
   (:require [replique.protocol :as protocol]
+            [replique.server :as server]
             [replique.state :as state]
             ;; loads the op implementations
             [replique.ops]))
@@ -85,6 +86,7 @@
           (recur))))))
 
 (defmethod protocol/accept-role :control [conn hello]
+  (server/set-role! conn :control)
   (protocol/write-frame! conn (protocol/reply hello (assoc (state/info)
                                                            :role "control"
                                                            :connection (:id conn))))

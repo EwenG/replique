@@ -28,3 +28,12 @@
      :clojure-version (clojure-version)
      :java-version (System/getProperty "java.version")
      :started-at started-at}))
+
+(defn connections
+  "The connections the server currently holds, by id. Whoever broadcasts an
+  event reads them from here rather than keeping references of its own: a
+  connection that is closed is removed, and frames stop being queued for it."
+  []
+  (if-let [server (:server @process)]
+    @(:connections server)
+    {}))

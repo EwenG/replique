@@ -1,13 +1,14 @@
 (ns replique.core
-  "Starting and stopping a replique process. Also usable from an already
-  running application:
-
-    (require '[replique.core :as replique])
-    (replique/start! {:port 0})"
+  "Starting and stopping a replique process. Replique owns the process it
+  runs in - it is started by replique.main, never hosted by an application -
+  so stopping is really only what a test does between two processes."
   (:require [replique.json :as json]
+            [replique.output :as output]
             [replique.server :as server]
             [replique.state :as state]
-            [replique.control])
+            ;; load the roles: they register themselves
+            [replique.control]
+            [replique.repl])
   (:import [java.nio.charset StandardCharsets]
            [java.nio.file CopyOption Files LinkOption OpenOption Path Paths
             StandardCopyOption]
@@ -41,8 +42,11 @@
     :host       host to bind to, defaults to the loopback address
     :port       0 (the default) binds to a free port
     :directory  where the port file is written, defaults to the working dir
-    :port-file  overrides the port file location"
-  [{:keys [process-id host port directory port-file]}]
+    :port-file  overrides the port file location
+    :tee-output report what the process prints to the control connections,
+                true by default"
+  [{:keys [process-id host port directory port-file tee-output]
+    :or {tee-output true}}]
   (let [process-id (if (some? process-id)
                      (validate-process-id process-id)
                      (str (UUID/randomUUID)))
@@ -51,6 +55,7 @@
      :host (or host "127.0.0.1")
      :port (validate-port (or port 0))
      :directory directory
+     :tee-output (boolean tee-output)
      ;; absolute: the port file must not move when the working directory of
      ;; the process changes, and it always has a parent directory
      :port-file (.toAbsolutePath
@@ -94,7 +99,7 @@
   ([opts]
    (when (state/started?)
      (throw (ex-info "This process is already started" {:process-info (state/info)})))
-   (let [{:keys [process-id host port directory port-file]} (normalize-opts opts)
+   (let [{:keys [process-id host port directory port-file tee-output]} (normalize-opts opts)
          server (server/start-server {:host host
                                       :port port
                                       :name "replique"
@@ -111,6 +116,9 @@
                             :server server
                             :shutdown-hook hook})
      (.addShutdownHook (Runtime/getRuntime) hook)
+     ;; after the process is registered: broadcasting an event reads the
+     ;; connections from there
+     (output/install! {:tee-output tee-output})
      (try
        (write-port-file! port-file (state/info))
        (catch Throwable t
@@ -126,6 +134,7 @@
     (when shutdown-hook
       (try (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
            (catch IllegalStateException _)))
+    (output/uninstall!)
     (when server (server/stop-server! server))
     (delete-port-file! port-file)
     (reset! state/process nil)

@@ -30,7 +30,8 @@
       (prop :host) (assoc :host (prop :host))
       (prop :port) (assoc :port (read-prop :port))
       (prop :directory) (assoc :directory (prop :directory))
-      (prop :port-file) (assoc :port-file (prop :port-file)))))
+      (prop :port-file) (assoc :port-file (prop :port-file))
+      (prop :tee-output) (assoc :tee-output (read-prop :tee-output)))))
 
 (defn- parse-args [args]
   (case (count args)
