@@ -91,14 +91,41 @@
    (reduce-kv (fn [acc k v] (if (nil? v) acc (assoc! acc k v)))
               (transient {}) m)))
 
+(def ^:private max-printed-length
+  "How much of an ex-data is printed into an error frame when the repl has
+  set no limit of its own. The printer marks what it left out."
+  1000)
+
+(def ^:private max-printed-level 25)
+
+(defn- printed-ex-data
+  "ex-data travels as a string printed by the clojure printer, and printing a
+  value can fail: a lazy seq that throws when it is realized, an object whose
+  toString throws, a closed resource. That failure must not take the place of
+  the exception being reported - what the editor would then show is the
+  trouble replique had describing the problem rather than the problem."
+  [t]
+  (when (instance? clojure.lang.IExceptionInfo t)
+    (try
+      ;; Bounded, unless the repl was told otherwise. clojure.main does not
+      ;; print ex-data when it reports an exception, so an ex-data holding a
+      ;; seq that never ends - (ex-info "..." {:rows (map parse lines)}) is an
+      ;; ordinary thing to write - would wedge the connection here where a
+      ;; terminal repl prints the message and moves on.
+      (binding [*print-length* (or *print-length* max-printed-length)
+                *print-level* (or *print-level* max-printed-level)]
+        (pr-str (ex-data t)))
+      (catch Throwable t2
+        (str "Could not be printed: "
+             (or (.getMessage t2) (.getName (class t2))))))))
+
 (defn exception->data
   ([t] (exception->data t 0))
   ([^Throwable t depth]
    (frame
     {:class (.getName (class t))
      :message (.getMessage t)
-     :data (when (instance? clojure.lang.IExceptionInfo t)
-             (pr-str (ex-data t)))
+     :data (printed-ex-data t)
      :trace (mapv str (take 64 (.getStackTrace t)))
      :cause (when (and (< depth 8) (.getCause t))
               (exception->data (.getCause t) (inc depth)))})))

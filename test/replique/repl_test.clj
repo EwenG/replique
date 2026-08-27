@@ -86,6 +86,38 @@
             (is (= "read-source" (:phase f)))))
         (finally (disconnect r))))))
 
+(deftest an-ex-data-that-cannot-be-printed-does-not-replace-the-exception
+  (testing "ex-data travels as printed text and printing a value can fail.
+  Reporting that failure in its place shows the editor the trouble replique
+  had describing the problem rather than the problem"
+    (with-process [info nil]
+      (let [r (repl-client info)]
+        (try
+          (eval! r (str "(def bad (reify Object (toString [_] "
+                        "(throw (RuntimeException. (str \"cannot print me\"))))))"))
+          (let [f (frame-tagged (eval! r "(throw (ex-info (str \"boom\") {:bad bad}))")
+                                "exception")]
+            (is (= "clojure.lang.ExceptionInfo" (:class (:exception f))))
+            (is (= "boom" (:message (:exception f))))
+            (is (string/includes? (:data (:exception f)) "Could not be printed")))
+          (testing "and *e is what was thrown"
+            (is (= "\"boom\"" (:value (frame-tagged (eval! r "(ex-message *e)") "ret")))))
+          (finally (disconnect r)))))))
+
+(deftest an-ex-data-that-never-ends-does-not-wedge-the-connection
+  (testing "clojure.main prints no ex-data at all when it reports an
+  exception, so printing it here must not turn an ordinary
+  (ex-info \"...\" {:rows (map parse lines)}) into a repl that never answers"
+    (with-process [info nil]
+      (let [r (repl-client info)]
+        (try
+          (let [f (frame-tagged (eval! r "(throw (ex-info (str \"failed\") {:rows (range)}))")
+                                "exception")]
+            (is (= "failed" (:message (:exception f))))
+            (testing "the printer marks what it left out"
+              (is (string/includes? (:data (:exception f)) "..."))))
+          (finally (disconnect r)))))))
+
 (deftest the-prompt-describes-the-repl
   (with-process [info nil]
     (let [r (repl-client info)]

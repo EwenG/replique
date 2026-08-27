@@ -3,6 +3,7 @@
             [clojure.data.json :as djson]
             [clojure.string :as string]
             [replique.core :as core]
+            [replique.main]
             [replique.protocol :as protocol]
             [replique.test-client :as client
              :refer [connect send! recv request! disconnect with-process
@@ -315,6 +316,16 @@
               (is (seq frames))
               (is (every? #(= "error" (:tag %)) frames))))
           (finally (disconnect client)))))))
+
+(deftest the-startup-line-is-utf8-whatever-the-terminal-encoding-is
+  (testing "a client reads the startup line to find the process it started.
+  Written through *out* it would follow the locale, and a process started
+  without one announces a directory holding an accent as question marks"
+    (let [seen (java.io.ByteArrayOutputStream.)
+          ascii (java.io.PrintStream. seen true java.nio.charset.StandardCharsets/US_ASCII)
+          line (str "{\"directory\":\"caf" (char 233) "\"}")]
+      (#'replique.main/print-line! ascii line)
+      (is (= (str line "\n") (.toString seen "UTF-8"))))))
 
 ;;; Port file
 
