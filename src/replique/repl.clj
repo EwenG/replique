@@ -101,10 +101,23 @@
 (defrecord SourceDirective [file line])
 
 (defn- source-directive [m]
-  (if (map? m)
-    (->SourceDirective (:file m) (:line m))
-    (throw (ex-info (str "#replique/src takes a map, got: " (pr-str m))
-                    {:replique/error :invalid-source-directive}))))
+  (let [bad (fn [message]
+              (throw (ex-info message {:replique/error :invalid-source-directive})))]
+    (cond
+      (not (map? m))
+      (bad (str "#replique/src takes a map, got: " (pr-str m)))
+
+      ;; Checked here rather than left to fail later: *file* and the file name
+      ;; the compiler records are both strings, and a client sending anything
+      ;; else would otherwise get a ClassCastException pointing inside
+      ;; replique instead of at the message it sent.
+      (not (or (nil? (:file m)) (string? (:file m))))
+      (bad (str "#replique/src :file must be a string, got: " (pr-str (:file m))))
+
+      (not (or (nil? (:line m)) (integer? (:line m))))
+      (bad (str "#replique/src :line must be an integer, got: " (pr-str (:line m))))
+
+      :else (->SourceDirective (:file m) (:line m)))))
 
 (defn- make-repl-read
   "The :read step: clojure.main/repl-read, plus #replique/src.
@@ -130,7 +143,7 @@
             :stream-end request-exit
             (let [{:keys [file line]} @pending
                   input (clojure.main/renumbering-read {:read-cond :allow} *in*
-                                                       (if (integer? line) line 1))]
+                                                       (or line 1))]
               (clojure.main/skip-if-eol *in*)
               (cond
                 (instance? SourceDirective input)

@@ -280,6 +280,46 @@
               (is (nil? (frame-tagged frames "exception")))))
           (finally (disconnect r1) (disconnect r2) (disconnect ctrl)))))))
 
+(deftest a-source-directive-that-cannot-be-used-says-why
+  (testing "the client is the editor being written against this protocol. A
+  directive it got wrong must name what is wrong with it, rather than fail
+  later inside replique with a cast error pointing at replique's own code"
+    (with-process [info nil]
+      (doseq [[code expected]
+              [["#replique/src 1" "#replique/src takes a map"]
+               ["#replique/src {:file 42}" ":file must be a string"]
+               ["#replique/src {:line :nope}" ":line must be an integer"]]]
+        (let [r (repl-client info)]
+          (try
+            (send! r (str code "\n(+ 1 1)"))
+            (let [f (frame-tagged (recv-until r "prompt") "exception")]
+              (is (= "read-source" (:phase f)))
+              (is (string/includes? (:message f) expected)))
+            (testing "and the form that followed it is still evaluated"
+              (is (= "2" (:value (frame-tagged (recv-until r "ret") "ret")))))
+            (finally (disconnect r))))))))
+
+(deftest an-evaluation-outlives-the-client-and-stays-interruptible
+  (testing "closing a repl buffer must not leave a runaway evaluation that
+  nothing can reach. The connection stays registered until its evaluation
+  ends, so :interrupt can still name it, and it is cleaned up afterwards"
+    (with-process [info nil]
+      (let [ctrl (control-client info)
+            r (repl-client info)
+            id (:connection (:hello r))]
+        (try
+          (eval-in-background! r "(do (Thread/sleep 30000) :never)")
+          (disconnect r)
+          (Thread/sleep 300)
+          (is (some? (get (replique.state/connections) id)))
+          (is (= true (:interrupted (request! ctrl {:op :interrupt :connection id :id 1}))))
+          (is (loop [n 0]
+                (cond
+                  (nil? (get (replique.state/connections) id)) true
+                  (< n 100) (do (Thread/sleep 20) (recur (inc n)))
+                  :else false)))
+          (finally (disconnect ctrl)))))))
+
 (deftest interrupt-needs-a-repl-connection
   (with-process [info nil]
     (let [ctrl (control-client info)]
