@@ -292,6 +292,28 @@
               (is (= "mine\n" (printed frames "out")))))
           (finally (disconnect r) (disconnect ctrl)))))))
 
+(deftest an-event-never-overtakes-the-handshake-reply
+  (testing "a connection only counts as a control connection once its :hello
+  reply is out. Recording it earlier means a process that emits events while
+  a client connects answers that client's handshake with an event, and every
+  client reads the frame after :hello as its reply"
+    (with-process [info nil]
+      (let [r (repl-client info)]
+        (try
+          (eval! r (str "(require '[replique.output :as output] "
+                        "'[replique.protocol :as protocol])"))
+          (eval! r "(def stop (atom false))")
+          (eval! r (str "(.start (Thread. (fn [] (while (not @stop) "
+                        "(output/broadcast-event! (protocol/event \"noise\" {}))))))"))
+          (let [tags (doall (for [_ (range 100)]
+                              (let [client (connect info)]
+                                (try (:tag (request! client {:op :hello :role :control :id 1}))
+                                     (finally (disconnect client))))))]
+            (is (= {"reply" 100} (frequencies tags))))
+          (finally
+            (eval! r "(reset! stop true)")
+            (disconnect r)))))))
+
 (deftest uncaught-exceptions-reach-the-control-connections
   (with-process [info {:tee-output true}]
     (let [ctrl (control-client info)

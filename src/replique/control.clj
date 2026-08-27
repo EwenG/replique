@@ -86,8 +86,11 @@
           (recur))))))
 
 (defmethod protocol/accept-role :control [conn hello]
-  (server/set-role! conn :control)
   (protocol/write-frame! conn (protocol/reply hello (assoc (state/info)
                                                            :role "control"
                                                            :connection (:id conn))))
+  ;; Only now, and not before the reply went out: an event broadcast to a
+  ;; connection that is still handshaking would reach a client that is
+  ;; waiting for its :hello reply, and reach it first.
+  (server/set-role! conn :control)
   (control-loop conn))

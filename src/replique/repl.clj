@@ -101,9 +101,14 @@
 
   The directive is remembered until a form consumes it, so that a blank line
   between the two does not drop it."
-  []
+  [conn]
   (let [pending (volatile! nil)]
     (fn [request-prompt request-exit]
+      ;; A frame parked by a producer that found the connection busy must not
+      ;; wait for the next form - the repl is about to block on the socket,
+      ;; possibly for a long time, and the parked frame may well be the
+      ;; prompt that says it is ready.
+      (protocol/try-flush! conn)
       (try
         (loop []
           (case (clojure.main/skip-whitespace *in*)
@@ -204,7 +209,7 @@
                  ;; project being worked on must keep working
                  (set! *data-readers* (assoc *data-readers*
                                              'replique/src #'source-directive)))
-         :read (make-repl-read)
+         :read (make-repl-read conn)
          :eval (fn [form] (interruptible conn #(eval form)))
          ;; The frame is built before the output is flushed: printing a value
          ;; may itself print - a print-method that says something - and that
@@ -227,8 +232,9 @@
         (finally (flush-output!))))))
 
 (defmethod protocol/accept-role :repl [conn hello]
-  (server/set-role! conn :repl)
   (protocol/write-frame! conn (protocol/reply hello (assoc (state/info)
                                                            :role "repl"
                                                            :connection (:id conn))))
+  ;; after the reply, as for a control connection
+  (server/set-role! conn :repl)
   (repl conn))
