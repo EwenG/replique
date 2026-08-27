@@ -314,6 +314,38 @@
             (eval! r "(reset! stop true)")
             (disconnect r)))))))
 
+(deftest a-surrogate-pair-is-never-split-across-frames
+  (testing "clojure prints a string one char at a time, so a long string
+  holding an emoji reaches the output buffer's size limit between the two
+  halves of a surrogate pair. Each half alone is not valid text and would go
+  out as U+FFFD at both ends of the split"
+    (with-process [info nil]
+      (let [r (repl-client info)]
+        (try
+          (eval! r (str "(def s (str (apply str (repeat 8191 (char 97))) "
+                        "(str (char 0xD83D) (char 0xDE00)) (str (char 33))))"))
+          (let [frames (eval! r "(do (doseq [ch s] (.write *out* (int ch))) (flush) :done)")
+                out (printed frames "out")]
+            (is (< 1 (count (frames-tagged frames "out"))))
+            (is (= 8194 (count out)))
+            (testing "the pair survives the frame boundary"
+              (is (= (str (char 0xD83D) (char 0xDE00)) (subs out 8191 8193)))))
+          (finally (disconnect r)))))))
+
+(deftest process-output-is-not-limited-by-the-terminal-encoding
+  (testing "the tee encodes in UTF-8 whatever stdout.encoding is. An unset
+  locale gives US-ASCII, and decoding what the terminal received would report
+  every accent and every emoji to the editor as a question mark"
+    (with-process [info {:tee-output true}]
+      (let [ctrl (control-client info)
+            r (repl-client info)]
+        (try
+          (eval! r (str "(.println System/out (str (char 233) (char 0xD83D) (char 0xDE00)))"))
+          (let [event (recv ctrl)]
+            (is (= "out" (:event event)))
+            (is (= (str (char 233) (char 0xD83D) (char 0xDE00) "\n") (:string event))))
+          (finally (disconnect r) (disconnect ctrl)))))))
+
 (deftest uncaught-exceptions-reach-the-control-connections
   (with-process [info {:tee-output true}]
     (let [ctrl (control-client info)

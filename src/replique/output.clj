@@ -8,7 +8,7 @@
             [replique.state :as state])
   (:import [java.io ByteArrayOutputStream OutputStream OutputStreamWriter
             PrintStream PrintWriter]
-           [java.nio.charset Charset]))
+           [java.nio.charset StandardCharsets]))
 
 (defn control-connections []
   (->> (state/connections)
@@ -26,52 +26,66 @@
 (def ^:private max-buffered-output 8192)
 
 (defn- tee-stream
-  "A PrintStream that writes to original and, at every flush, reports what
-  went through it as an event. The process keeps behaving as it did - what is
-  printed still reaches the terminal - the editor just gets to see it too."
+  "A PrintStream that reports what goes through it as an event, and passes it
+  on to original.
+
+  It encodes in UTF-8 whatever the terminal's encoding is, so that what the
+  editor is told is the text that was printed - a process whose
+  stdout.encoding is US-ASCII, which is what an unset locale gives, would
+  otherwise report every accent and every emoji as a question mark. The
+  terminal keeps its own encoding: what is written there is re-encoded by
+  original, so replique changes nothing about what a terminal shows."
   ^PrintStream [^PrintStream original ^String event-name]
-  (let [charset (.charset original)
-        buf (ByteArrayOutputStream.)
+  (let [buf (ByteArrayOutputStream.)
+        take-buffer! (fn []
+                       (locking buf
+                         (when (pos? (.size buf))
+                           (let [b (.toByteArray buf)]
+                             (.reset buf)
+                             b))))
         emit! (fn []
-                (let [^bytes bytes (locking buf
-                                     (when (pos? (.size buf))
-                                       (let [b (.toByteArray buf)]
-                                         (.reset buf)
-                                         b)))]
-                  (when bytes
-                    (try
-                      (broadcast-event!
-                       (protocol/event event-name
-                                       {:string (String. bytes ^Charset charset)}))
-                      (catch Throwable _ nil)))))
+                (when-let [^bytes bytes (take-buffer!)]
+                  ;; always decodable: the buffer is only ever cut where a
+                  ;; write ended, and an encoder does not split a character
+                  ;; across two writes
+                  (try (broadcast-event!
+                        (protocol/event event-name
+                                        {:string (String. bytes StandardCharsets/UTF_8)}))
+                       (catch Throwable _ nil))))
+        buffer! (fn [^long n] (when (>= n max-buffered-output) (emit!)))
         stream (proxy [OutputStream] []
                  (write
                    ([x]
                     (if (integer? x)
                       (let [b (int x)]
+                        ;; a raw byte passes through as it always did
                         (.write original b)
-                        (when (>= (long (locking buf (.write buf b) (.size buf)))
-                                  max-buffered-output)
-                          (emit!)))
+                        (buffer! (locking buf (.write buf b) (.size buf))))
                       (let [^bytes b x]
                         (.write ^OutputStream this b 0 (alength b)))))
                    ([b off len]
                     (let [^bytes b b]
-                      (.write original b (int off) (int len))
-                      (when (>= (long (locking buf
-                                        (.write buf b (int off) (int len))
-                                        (.size buf)))
-                                max-buffered-output)
-                        (emit!)))))
+                      ;; Forwarded as it is written, not at the next flush, so
+                      ;; that a line printed without a newline still shows up
+                      ;; when it used to. Decoded and re-printed rather than
+                      ;; copied: original encodes it the way it always did, so
+                      ;; a terminal that could not show an accent still shows
+                      ;; what it showed before.
+                      (try (.print original (String. b (int off) (int len)
+                                                     StandardCharsets/UTF_8))
+                           (catch Throwable _ nil))
+                      (buffer! (locking buf
+                                 (.write buf b (int off) (int len))
+                                 (.size buf))))))
                  (flush []
-                   (.flush original)
+                   (try (.flush original) (catch Throwable _ nil))
                    (emit!))
                  (close []
-                   (.flush original)
+                   (try (.flush original) (catch Throwable _ nil))
                    (emit!)))]
     ;; autoflush: a PrintStream flushes on println and on any newline, so an
     ;; event is one line of output rather than one write
-    (PrintStream. ^OutputStream stream true ^Charset charset)))
+    (PrintStream. ^OutputStream stream true StandardCharsets/UTF_8)))
 
 (defn- print-writer ^PrintWriter [^PrintStream stream]
   (PrintWriter. (OutputStreamWriter. stream (.charset stream)) true))

@@ -41,14 +41,28 @@
   developer just asked for, and the thread producing it is the repl itself."
   ^Writer [conn tag]
   (let [sb (StringBuilder.)
-        take-buffer! (fn []
-                       (locking sb
-                         (when (pos? (.length sb))
-                           (let [s (.toString sb)]
-                             (.setLength sb 0)
-                             s))))
-        emit! (fn []
-                (when-let [s (take-buffer!)]
+        take-buffer!
+        (fn [mid-output?]
+          (locking sb
+            (let [n (.length sb)
+                  ;; A surrogate pair must never be split across two frames:
+                  ;; each half alone is not valid text, and both would go out
+                  ;; as U+FFFD. clojure prints a string one char at a time, so
+                  ;; a long string holding an emoji lands on this. Only worth
+                  ;; holding back mid-output: a flush is the end of what was
+                  ;; printed, and a lone surrogate there is what the code
+                  ;; really wrote.
+                  n (if (and mid-output? (pos? n)
+                             (Character/isHighSurrogate (.charAt sb (dec n))))
+                      (dec n)
+                      n)]
+              (when (pos? n)
+                (let [n (int n)
+                      s (.substring sb 0 n)]
+                  (.delete sb (int 0) n)
+                  s)))))
+        emit! (fn [mid-output?]
+                (when-let [s (take-buffer! mid-output?)]
                   (protocol/write-frame! conn (protocol/frame {:tag tag :string s}))))
         append! (fn [x]
                   (locking sb
@@ -65,11 +79,11 @@
                           (.length sb)))]
     (proxy [Writer] []
       (write
-        ([x] (when (>= (long (append! x)) max-buffered-output) (emit!)))
+        ([x] (when (>= (long (append! x)) max-buffered-output) (emit! true)))
         ([x off len] (when (>= (long (append-range! x off len)) max-buffered-output)
-                       (emit!))))
-      (flush [] (emit!))
-      (close [] (emit!)))))
+                       (emit! true))))
+      (flush [] (emit! false))
+      (close [] (emit! false)))))
 
 ;;; Source metadata
 
