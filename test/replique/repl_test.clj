@@ -157,6 +157,34 @@
               (is (string/includes? (:data (:exception f)) "..."))))
           (finally (disconnect r)))))))
 
+(deftest printing-a-value-may-itself-print
+  (testing "a print-method can say something while it prints, and where that
+  goes is not the same for the two streams: ret-frame prints through pr-str,
+  which binds *out* to a StringWriter, so what a print-method prints there
+  ends up inside the value. *err* is left alone and reaches the connection -
+  which is why the result frame is built before the output is flushed, so that
+  such a warning comes out before the result it is about"
+    (with-process [info nil]
+      (let [r (repl-client info)]
+        (try
+          (eval! r "(defrecord Noisy [x])")
+          (testing "what it prints on *out* lands inside the value"
+            (eval! r (str "(defmethod print-method user.Noisy [v w] "
+                          "(println \"printing\") (.write w \"<noisy>\"))"))
+            (let [frames (eval! r "(->Noisy 1)")]
+              (is (= "printing\n<noisy>" (:value (frame-tagged frames "ret"))))
+              (is (empty? (frames-tagged frames "out")))))
+          (testing "what it prints on *err* is a frame of its own, before the result"
+            (eval! r (str "(defmethod print-method user.Noisy [v w] "
+                          "(binding [*out* *err*] (println \"warning\")) "
+                          "(.write w \"<noisy>\"))"))
+            (let [frames (eval! r "(->Noisy 1)")
+                  tags (mapv :tag frames)]
+              (is (= "warning\n" (printed frames "err")))
+              (is (= "<noisy>" (:value (frame-tagged frames "ret"))))
+              (is (< (.indexOf tags "err") (.indexOf tags "ret")))))
+          (finally (disconnect r)))))))
+
 (deftest the-prompt-describes-the-repl
   (with-process [info nil]
     (let [r (repl-client info)]

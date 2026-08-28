@@ -238,9 +238,12 @@
                                              'replique/src #'source-directive)))
          :read (make-repl-read conn)
          :eval (fn [form] (interruptible conn #(eval form)))
-         ;; The frame is built before the output is flushed: printing a value
-         ;; may itself print - a print-method that says something - and that
-         ;; output belongs before the result, not after it.
+         ;; The frame is built before the output is flushed: printing a
+         ;; value may itself print - a print-method warning about what it was
+         ;; handed - and that output belongs before the result, not after it.
+         ;; Only *err* is reachable that way: ret-frame prints through pr-str,
+         ;; which binds *out* to a StringWriter, so what a print-method prints
+         ;; there ends up inside the value.
          :print (fn [value]
                   (let [f (interruptible conn #(ret-frame value))]
                     (flush-output!)
