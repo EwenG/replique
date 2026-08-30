@@ -5,6 +5,8 @@
             [replique.core :as core]
             [replique.main]
             [replique.protocol :as protocol]
+            [replique.ops]
+            [replique.state :as state]
             [replique.test-client :as client
              :refer [connect send! recv request! disconnect with-process
                      temp-dir delete-recursively]])
@@ -350,6 +352,42 @@
         (is (Files/exists port-file (make-array java.nio.file.LinkOption 0)))
         (core/stop!))
       (finally (core/stop!) (delete-recursively dir)))))
+
+(deftest a-port-file-that-exists-is-not-taken
+  (testing "the port file is what a client finds a process by, so a second
+  process in one directory would take the name of the first - which would go
+  on running with nothing able to reach it"
+    (let [dir (temp-dir)
+          port-file (Paths/get (str dir) (into-array String [".replique" "processes"
+                                                             "taken.json"]))
+          written "{\"process-id\":\"taken\",\"port\":1}\n"]
+      (try
+        (Files/createDirectories (.getParent port-file) (make-array FileAttribute 0))
+        (spit (str port-file) written)
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"already registered"
+                              (core/start! {:directory dir :process-id "taken"})))
+        (testing "the file of the process that is registered is left as it was"
+          (is (= written (slurp (str port-file)))))
+        (testing "nothing was started, so there is nothing to unwind"
+          (is (not (state/started?))))
+        (finally (core/stop!) (delete-recursively dir))))))
+
+(deftest shutdown-answers-before-the-process-goes
+  (testing "a client that gets the reply knows the process accepted - the
+  reply is written before anything of the shutdown happens"
+    (with-process [info nil]
+      (let [ctrl (control-client info)
+            exited (promise)]
+        (try
+          ;; The tests run inside the process they test, so the exit is the
+          ;; one thing about the op that cannot be run here
+          (with-redefs [replique.ops/exit! (fn [] (deliver exited true))]
+            (let [reply (request! ctrl {:op :shutdown :id 1})]
+              (is (= "reply" (:tag reply)))
+              (is (= "shutdown" (:op reply)))
+              (is (true? (:stopping reply)))
+              (is (true? (deref exited 5000 nil)))))
+          (finally (disconnect ctrl)))))))
 
 (deftest ids-must-be-json-scalars
   (testing "an id that cannot travel back as JSON is rejected up front: it

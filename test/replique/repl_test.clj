@@ -405,7 +405,7 @@
 (deftest process-output-reaches-the-control-connections
   (testing "output produced outside of a repl belongs to no repl - it is
   broadcast to the editor as an event"
-    (with-process [info {:tee-output true}]
+    (with-process [info nil]
       (let [ctrl (control-client info)
             r (repl-client info)]
         (try
@@ -475,7 +475,7 @@
   (testing "the tee encodes in UTF-8 whatever stdout.encoding is. An unset
   locale gives US-ASCII, and decoding what the terminal received would report
   every accent and every emoji to the editor as a question mark"
-    (with-process [info {:tee-output true}]
+    (with-process [info nil]
       (let [ctrl (control-client info)
             r (repl-client info)]
         (try
@@ -486,7 +486,7 @@
           (finally (disconnect r) (disconnect ctrl)))))))
 
 (deftest uncaught-exceptions-reach-the-control-connections
-  (with-process [info {:tee-output true}]
+  (with-process [info nil]
     (let [ctrl (control-client info)
           r (repl-client info)]
       (try
@@ -498,25 +498,12 @@
           (is (= "clojure.lang.ExceptionInfo" (:class (:exception event)))))
         (finally (disconnect r) (disconnect ctrl))))))
 
-(deftest the-tee-can-be-turned-off
-  (with-process [info {:tee-output false}]
-    (let [ctrl (control-client info)
-          r (repl-client info)]
-      (try
-        (eval! r "(.println System/out \"quiet\")")
-        (testing "the next frame the control connection sees is its own reply,
-        not an event"
-          (let [reply (request! ctrl {:op :echo :value 1 :id 1})]
-            (is (= "reply" (:tag reply)))
-            (is (= 1 (:id reply)))))
-        (finally (disconnect r) (disconnect ctrl))))))
-
 (deftest stopping-the-process-puts-the-streams-back
   (let [out System/out
         err System/err
         dir (client/temp-dir)]
     (try
-      (client/with-process [_info {:tee-output true}]
+      (client/with-process [_info nil]
         (is (not (identical? out System/out)))
         (is (not (identical? err System/err))))
       (is (identical? out System/out))

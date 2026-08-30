@@ -117,12 +117,12 @@
 (defonce ^:private installed (atom nil))
 
 (defn install!
-  "Take over the process wide output. opts:
-    :tee-output  report stdout and stderr to the control connections
+  "Take over the process wide output: stdout and stderr are reported to the
+  control connections as events, and passed on to the streams they replaced.
 
   Undone by uninstall!, which is what lets a test start and stop several
   processes in one jvm - a real replique process is stopped by exiting."
-  [{:keys [tee-output]}]
+  []
   (when-not @installed
     (let [out System/out
           err System/err
@@ -132,16 +132,15 @@
                  :err-var (.getRawRoot #'*err*)
                  :handler (Thread/getDefaultUncaughtExceptionHandler)}]
       (reset! installed state)
-      (when tee-output
-        (let [tee-out (tee-stream out "out")
-              tee-err (tee-stream err "err")]
-          (System/setOut tee-out)
-          (System/setErr tee-err)
-          ;; The root bindings of *out* and *err* wrap the streams that were
-          ;; captured when clojure booted, so replacing System/out is not
-          ;; enough for (future (println ...)) to be seen.
-          (alter-var-root #'*out* (constantly (print-writer tee-out)))
-          (alter-var-root #'*err* (constantly (print-writer tee-err)))))
+      (let [tee-out (tee-stream out "out")
+            tee-err (tee-stream err "err")]
+        (System/setOut tee-out)
+        (System/setErr tee-err)
+        ;; The root bindings of *out* and *err* wrap the streams that were
+        ;; captured when clojure booted, so replacing System/out is not
+        ;; enough for (future (println ...)) to be seen.
+        (alter-var-root #'*out* (constantly (print-writer tee-out)))
+        (alter-var-root #'*err* (constantly (print-writer tee-err))))
       (Thread/setDefaultUncaughtExceptionHandler
        (uncaught-exception-handler err)))))
 

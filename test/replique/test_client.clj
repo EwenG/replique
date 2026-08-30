@@ -49,12 +49,16 @@
 (defmacro with-process
   "Start a process, bind its info, stop it - and clean up its directory.
 
-  Output is not teed unless the test asks for it: it would turn everything
-  the test runner prints into events on the control connections."
+  The body prints to the streams the process replaced: a test runs inside
+  the process it is testing, which no editor does, and what clojure.test
+  prints would otherwise be broadcast as output events - arriving on the
+  control connections the test is reading frames from."
   [[info-sym opts] & body]
   `(let [dir# (temp-dir)
-         ~info-sym (core/start! (merge {:directory dir# :tee-output false} ~opts))]
-     (try ~@body
+         out# *out*
+         err# *err*
+         ~info-sym (core/start! (merge {:directory dir#} ~opts))]
+     (try (binding [*out* out# *err* err#] ~@body)
           (finally (core/stop!) (delete-recursively dir#)))))
 
 (defn control-client [info]

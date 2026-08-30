@@ -32,8 +32,7 @@
       (prop :host) (assoc :host (prop :host))
       (prop :port) (assoc :port (read-prop :port))
       (prop :directory) (assoc :directory (prop :directory))
-      (prop :port-file) (assoc :port-file (prop :port-file))
-      (prop :tee-output) (assoc :tee-output (read-prop :tee-output)))))
+      (prop :port-file) (assoc :port-file (prop :port-file)))))
 
 (defn- parse-args [args]
   (case (count args)
@@ -58,6 +57,20 @@
     (.write stdout bytes 0 (alength bytes))
     (.flush stdout)))
 
+(defn- exception-data
+  "The structured exception, when replique got far enough to have the code
+  that builds one.
+
+  A start can fail before replique.protocol is loadable at all - a
+  classpath without replique on it is the usual way - so this is best
+  effort: the trace on stderr is what always says what happened, and this
+  is what lets a client show it the way it shows any other exception."
+  [t]
+  (try
+    (require 'replique.protocol)
+    ((resolve 'replique.protocol/exception->data) t)
+    (catch Throwable _ nil)))
+
 (defn -main [& args]
   ;; before anything of replique's wraps it
   (let [stdout System/out]
@@ -73,9 +86,14 @@
               info (start! opts)]
           (print-line! stdout (write-str (assoc info :tag "started"))))
         (catch Throwable t
-          (print-line! stdout (write-str {:tag "error"
+          ;; the same object every other exception of the protocol carries, so
+          ;; that a client has one way of showing all of them
+          (let [data (exception-data t)]
+            (print-line! stdout (write-str
+                                 (cond-> {:tag "error"
                                           :error "start-failed"
-                                          :message (or (.getMessage t) (str (class t)))}))
+                                          :message (or (.getMessage t) (str (class t)))}
+                                   data (assoc :exception data)))))
           (binding [*out* *err*]
             (println "Replique could not start:")
             (clojure.stacktrace/print-cause-trace t))

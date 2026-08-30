@@ -43,10 +43,8 @@
     :port       0 (the default) binds to a free port
     :directory  where the port file is written, defaults to the working dir
     :port-file  overrides the port file location
-    :tee-output report what the process prints to the control connections,
                 true by default"
-  [{:keys [process-id host port directory port-file tee-output]
-    :or {tee-output true}}]
+  [{:keys [process-id host port directory port-file]}]
   (let [process-id (if (some? process-id)
                      (validate-process-id process-id)
                      (str (UUID/randomUUID)))
@@ -55,7 +53,6 @@
      :host (or host "127.0.0.1")
      :port (validate-port (or port 0))
      :directory directory
-     :tee-output (boolean tee-output)
      ;; absolute: the port file must not move when the working directory of
      ;; the process changes, and it always has a parent directory
      :port-file (.toAbsolutePath
@@ -82,8 +79,10 @@
                                   StandardCharsets/UTF_8)
                    open-opts)
       (set-permissions! tmp "rw-------")
-      (Files/move tmp port-file
-                  (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING]))
+      ;; Without REPLACE_EXISTING: the move is the claim, so two processes
+      ;; racing for one directory cannot both believe they took it - the
+      ;; check start! makes is what says why, not what makes it safe
+      (Files/move tmp port-file (make-array CopyOption 0))
       port-file
       (catch Throwable t
         (try (Files/deleteIfExists tmp) (catch Exception _))
@@ -94,12 +93,26 @@
 
 (defn start!
   "Start the replique process. See normalize-opts for the options. Returns the
-  process info - the same map that is written to the port file."
+  process info - the same map that is written to the port file.
+
+  Refuses to start where a port file already exists: it names the process a
+  client would find in this directory, and there can be only one of those."
   ([] (start! nil))
   ([opts]
    (when (state/started?)
      (throw (ex-info "This process is already started" {:process-info (state/info)})))
-   (let [{:keys [process-id host port directory port-file tee-output]} (normalize-opts opts)
+   (let [{:keys [process-id host port directory port-file]} (normalize-opts opts)
+         ;; Before the server is bound and before anything is installed, so
+         ;; that a refusal costs nothing and unwinds nothing.  The port file
+         ;; is how anything finds a process: a second process here would take
+         ;; the name of the first, which would go on running with nothing
+         ;; able to reach it.  A file whose process is gone says something
+         ;; wrong about this directory - what is there is what a client finds
+         ;; out by connecting, and it is deleted there
+         _ (when (Files/exists port-file (make-array LinkOption 0))
+             (throw (ex-info (str "A process is already registered in this directory: "
+                                  port-file " exists. Delete that file if its process is gone.")
+                             {:port-file (str port-file)})))
          server (server/start-server {:host host
                                       :port port
                                       :name "replique"
@@ -118,7 +131,7 @@
      (.addShutdownHook (Runtime/getRuntime) hook)
      ;; after the process is registered: broadcasting an event reads the
      ;; connections from there
-     (output/install! {:tee-output tee-output})
+     (output/install!)
      (try
        (write-port-file! port-file (state/info))
        (catch Throwable t

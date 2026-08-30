@@ -253,6 +253,21 @@
                           (finally (.unlock lock)))]
         (when written? (recur))))))
 
+(defn flush-blocking!
+  "Write everything waiting, waiting for the connection when another thread is
+  writing to it.
+
+  Only what is about to stop the process does this. Everywhere else a producer
+  parks its frame and moves on - a thread of the application must never be
+  paused by an editor - but a frame parked on the way out is a frame the
+  client never gets, and the reply saying the process is going is one it has
+  to get."
+  [{:keys [^ReentrantLock lock] :as conn}]
+  (.lock lock)
+  (try (flush-locked! conn)
+       (catch IOException _ nil)
+       (finally (.unlock lock))))
+
 (defn write-frame!
   "Write a frame that must reach the client - a reply, an error. When another
   thread owns the connection the frame is parked rather than dropped, and goes

@@ -44,3 +44,25 @@
                       {:replique/error :not-a-repl}))
 
       :else {:connection id :interrupted (server/interrupt! target)})))
+
+;; Stopping the process. A client that started one can signal it; a client
+;; that connected to one cannot - it is not a child of that editor, and after
+;; the editor restarts none of them are. Asking is the way that works for
+;; both, and it is also the graceful one: the process exits through its
+;; shutdown hook, which is what deletes the port file.
+(defn exit!
+  "End the process. A var of its own so that a test can run the op without
+  taking the test runner with it - the tests run inside the process they
+  test."
+  []
+  (System/exit 0))
+
+(defmethod protocol/handle :shutdown [conn msg]
+  ;; Written and waited on here rather than returned to be written: what
+  ;; comes after it is the process going away, and a reply that found the
+  ;; connection busy - a thread of the application printing is enough - would
+  ;; be parked, and would go with it
+  (protocol/write-frame! conn (protocol/reply msg {:stopping true}))
+  (protocol/flush-blocking! conn)
+  (exit!)
+  protocol/no-reply)
