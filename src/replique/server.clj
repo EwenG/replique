@@ -30,8 +30,7 @@
         (not (protocol/valid-id? (:id msg)))
         (protocol/write-frame!
          conn (protocol/error (dissoc msg :id) :invalid-message
-                              (str "An :id must be a string or a number, got: "
-                                   (pr-str (:id msg)))))
+                              (protocol/invalid-id-message (:id msg))))
 
         (not= :hello (:op msg))
         (protocol/write-frame!

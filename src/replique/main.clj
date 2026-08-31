@@ -71,30 +71,55 @@
     ((resolve 'replique.protocol/exception->data) t)
     (catch Throwable _ nil)))
 
+(defn- exit!
+  "End the process. A var of its own so that a test can run -main without
+  taking the test runner with it."
+  [status]
+  (System/exit status))
+
+(defn- report-start-failure!
+  "Say on stdout that the process did not come up, in the shape every start
+  failure has. A client that spawned the process reads stdout and nothing
+  else: stderr is where the trace goes, which is for a human.
+
+  Best effort, like exception-data - a start can fail before replique.json is
+  loadable at all, and the trace on stderr is what always says what happened."
+  [^PrintStream stdout ^String message data]
+  (try
+    (require 'replique.json)
+    (print-line! stdout ((resolve 'replique.json/write-str)
+                         (cond-> {:tag "error"
+                                  :error "start-failed"
+                                  :message message}
+                           data (assoc :exception data))))
+    (catch Throwable _ nil)))
+
 (defn -main [& args]
   ;; before anything of replique's wraps it
   (let [stdout System/out]
-   (if-let [unsupported (unsupported-runtime)]
-    (do (binding [*out* *err*] (println unsupported))
-        (System/exit 1))
-    (let [write-str (do (require 'replique.json)
-                        (resolve 'replique.json/write-str))]
+    (if-let [unsupported (unsupported-runtime)]
+      (do
+        ;; On stdout too, and not on stderr alone. This is the one start
+        ;; failure replique knows everything about before it has loaded
+        ;; anything, and reporting it only to a human would leave the client
+        ;; that spawned the process with an exit code to guess from.
+        (report-start-failure! stdout unsupported nil)
+        (binding [*out* *err*] (println unsupported))
+        (exit! 1))
       (try
         (let [opts (merge (system-property-opts) (parse-args args))
-              _ (require 'replique.core)
-              start! (resolve 'replique.core/start!)
-              info (start! opts)]
-          (print-line! stdout (write-str (assoc info :tag "started"))))
+              ;; inside the try: a classpath that cannot load replique is one
+              ;; of the ways a start fails, and it is reported like the others
+              _ (require 'replique.core 'replique.json)
+              info ((resolve 'replique.core/start!) opts)]
+          (print-line! stdout ((resolve 'replique.json/write-str)
+                               (assoc info :tag "started"))))
         (catch Throwable t
-          ;; the same object every other exception of the protocol carries, so
-          ;; that a client has one way of showing all of them
-          (let [data (exception-data t)]
-            (print-line! stdout (write-str
-                                 (cond-> {:tag "error"
-                                          :error "start-failed"
-                                          :message (or (.getMessage t) (str (class t)))}
-                                   data (assoc :exception data)))))
+          ;; the same exception object every other exception of the protocol
+          ;; carries, so that a client has one way of showing all of them
+          (report-start-failure! stdout (or (.getMessage t) (str (class t)))
+                                 (exception-data t))
           (binding [*out* *err*]
             (println "Replique could not start:")
             (clojure.stacktrace/print-cause-trace t))
-          (System/exit 1)))))))
+          (exit! 1))))))

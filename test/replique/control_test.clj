@@ -346,6 +346,35 @@
               (is (every? #(= "error" (:tag %)) frames))))
           (finally (disconnect client)))))))
 
+(deftest a-runtime-replique-refuses-is-reported-on-stdout
+  (testing "the doc promises a start-failed line on stdout whenever the
+  process does not come up, and a client that spawned it reads stdout and
+  nothing else. The clojure version is the one refusal replique can describe
+  before it has loaded anything of its own, and reporting it to stderr alone
+  would leave that client with an exit code to guess from"
+    (let [seen (java.io.ByteArrayOutputStream.)
+          real-out System/out
+          exited (atom nil)]
+      (try
+        (System/setOut (java.io.PrintStream. seen true
+                                             java.nio.charset.StandardCharsets/UTF_8))
+        (with-redefs [replique.main/exit! (fn [status] (reset! exited status))]
+          (binding [*clojure-version* {:major 1 :minor 8 :incremental 0}
+                    ;; the sentence for the human, which is not what is
+                    ;; under test and does not belong in the suite's output
+                    *err* (java.io.StringWriter.)]
+            (replique.main/-main)))
+        (finally (System/setOut real-out)))
+      (let [line (djson/read-str (first (string/split-lines (.toString seen "UTF-8")))
+                                 :key-fn keyword)]
+        (is (= "error" (:tag line)))
+        (is (= "start-failed" (:error line)))
+        (is (re-find #"requires clojure 1\.12" (:message line)))
+        (testing "with no exception object: there is no exception, the runtime
+        is simply not one replique runs on"
+          (is (not (contains? line :exception)))))
+      (is (= 1 @exited) "the exit code a client reads when it does not read stdout"))))
+
 (deftest the-startup-line-is-utf8-whatever-the-terminal-encoding-is
   (testing "a client reads the startup line to find the process it started.
   Written through *out* it would follow the locale, and a process started
@@ -427,6 +456,20 @@
             (is (= "error" (:tag reply)))
             (is (= "invalid-message" (:error reply)))
             (is (not (contains? reply :id))))
+          (testing "a number JSON cannot carry is one of those ids. number?
+          lets a ratio, a NaN and an infinity through, and the frame that
+          would report the failure is built around that same id - so it does
+          not serialize either, and what the client gets back carries no id
+          at all: the request it cannot match to anything is the one it is
+          waiting on"
+            (doseq [id ["1/2" "##NaN" "##Inf"]]
+              (let [reply (request! client (str "{:op :echo :id " id " :value 1}"))]
+                (is (= "error" (:tag reply)) id)
+                (is (= "invalid-message" (:error reply)) id)
+                (is (not (contains? reply :id)) id)
+                (is (re-find #"An :id must be" (:message reply)) id))))
+          (testing "a double that JSON can carry is still an id"
+            (is (= 3.5 (:id (request! client {:op :echo :id 3.5 :value 1})))))
           (testing "the connection is still usable"
             (is (= 1 (:id (request! client {:op :echo :id 1 :value 1})))))
           (finally (disconnect client)))))))
@@ -483,6 +526,40 @@
                (java.nio.file.attribute.PosixFilePermissions/toString
                 (Files/getPosixFilePermissions shared (make-array java.nio.file.LinkOption 0)))))
         (finally (core/stop!) (delete-recursively dir))))))
+
+(deftest a-relative-directory-is-made-absolute
+  (testing "the directory travels to the editor, in the port file and in the
+  reply to every handshake. A \".\" there names the working directory of
+  whoever reads it rather than the one the process was started in"
+    (let [here (str (.normalize (.toAbsolutePath
+                                 (Paths/get (System/getProperty "user.dir")
+                                            (into-array String [])))))
+          {:keys [directory port-file]} (core/normalize-opts {:directory "."
+                                                              :process-id "rel"})]
+      (is (= here directory))
+      (testing "and the port file under it has no . left in its name either -
+      it is the string a client compares to know which process it is looking at"
+        (is (= (str (Paths/get here (into-array String [".replique" "processes"
+                                                        "rel.json"])))
+               (str port-file)))))))
+
+(deftest an-option-that-is-not-one-is-refused
+  (testing "dropping it would start a process, successfully, under a name the
+  client did not ask for - a misspelt :process-id gives a random uuid - and
+  the editor would then wait for a process that is running and cannot be
+  found"
+    (let [t (try (core/normalize-opts {:proces-id "my-project"})
+                 nil
+                 (catch clojure.lang.ExceptionInfo t t))]
+      (is (some? t))
+      (is (re-find #"Unknown option: :proces-id" (.getMessage ^Throwable t)))
+      (is (= [:proces-id] (:unknown-options (ex-data t))))
+      (testing "and it says what the options are, which is what the client
+      needs to find its mistake"
+        (is (re-find #":process-id" (.getMessage ^Throwable t))))))
+  (testing "the options themselves are still options"
+    (is (= "ok" (:process-id (core/normalize-opts {:process-id "ok" :host "127.0.0.1"
+                                                   :port 0 :directory (temp-dir)}))))))
 
 (deftest framing-keys-cannot-be-overridden
   (testing "a request cannot inject its own tag - framing must stay trustworthy
@@ -600,8 +677,15 @@
              (spit (str pf) winner)
              (throw (java.nio.file.FileAlreadyExistsException. (str pf))))}
           (fn []
-            (is (thrown? clojure.lang.ExceptionInfo
-                         (core/start! {:directory dir :process-id "contested"})))))
+            (let [t (try (core/start! {:directory dir :process-id "contested"})
+                         nil
+                         (catch clojure.lang.ExceptionInfo t t))]
+              (is (some? t))
+              (testing "and it is told what the check would have told it. The
+              claim is the same refusal found late, and a client that spawns
+              processes must not have to read two messages to learn one thing"
+                (is (re-find #"process-id \"contested\" is taken" (.getMessage ^Throwable t)))
+                (is (= "contested" (:process-id (ex-data t))))))))
         (testing "the winner's port file is where the winner left it"
           (is (Files/exists port-file (make-array java.nio.file.LinkOption 0))
               "the loser deleted the file it failed to claim")

@@ -73,12 +73,30 @@
   ^String [^Throwable t]
   (or (.getMessage t) (.getName (class t))))
 
+(defn- json-number?
+  "The numbers the json writer accepts. A ratio has no JSON representation,
+  and neither has a NaN or an infinity - number? alone lets all three through."
+  [x]
+  (cond
+    (ratio? x) false
+    (or (instance? Double x) (instance? Float x)) (Double/isFinite (double x))
+    :else (number? x)))
+
 (defn valid-id?
   "Correlation ids travel back to the client as JSON. Anything else than a
-  string or a number would either come back as something the client cannot
-  match - a keyword becomes a string - or not come back at all."
+  string or a number JSON can carry would either come back as something the
+  client cannot match - a keyword becomes a string - or not come back at all:
+  the reply frame would not serialize, and neither would the error frame that
+  says so, which is built around that same id."
   [id]
-  (or (nil? id) (string? id) (number? id)))
+  (or (nil? id) (string? id) (json-number? id)))
+
+(defn invalid-id-message
+  "Said in one place: the handshake and the control loop both check the id,
+  and a client told two different things about one rule has to guess which of
+  them is the rule."
+  ^String [id]
+  (str "An :id must be a string or a number JSON can carry, got: " (pr-str id)))
 
 ;;; Frames
 

@@ -23,6 +23,13 @@
 (defn- path ^Path [dir & more]
   (Paths/get (str dir) (into-array String (map str more))))
 
+(defn- absolute
+  "Resolved against the working directory, with the . and .. a client wrote
+  taken out. Lexical: a symlink is left as the name it was given, which is
+  the name the client knows the directory under."
+  ^Path [^Path p]
+  (.normalize (.toAbsolutePath p)))
+
 (defn- validate-process-id [process-id]
   (let [s (if (string? process-id) process-id (str process-id))]
     (when-not (re-matches process-id-pattern s)
@@ -37,25 +44,49 @@
     (throw (ex-info (str "Invalid port: " (pr-str port)) {:port port})))
   port)
 
+(def ^:private option-keys #{:process-id :host :port :directory :port-file})
+
+(defn- validate-opts
+  "Refuse an option that is not one, rather than drop it. The options are how
+  a client says what it will look for the process under, so a :proces-id that
+  goes unread does not start the process the client asked for - it starts one
+  under a random name, successfully, and the editor then waits for a process
+  that is running and cannot be found."
+  [opts]
+  (when-let [unknown (seq (remove option-keys (keys opts)))]
+    (let [names (fn [ks] (apply str (interpose ", " (map str ks))))]
+      (throw (ex-info (str "Unknown option" (when (next unknown) "s") ": "
+                           (names (sort-by str unknown)) ". The options are: "
+                           (names (sort option-keys)) ".")
+                      {:unknown-options (vec unknown)}))))
+  opts)
+
 (defn normalize-opts
-  "Validate the options and fill in the defaults.
+  "Validate the options and fill in the defaults. An option this does not know
+  is refused rather than ignored.
     :process-id unique id of this process, generated when absent
     :host       host to bind to, defaults to the loopback address
     :port       0 (the default) binds to a free port
     :directory  where the port file is written, defaults to the working dir
     :port-file  overrides the port file location"
-  [{:keys [process-id host port directory port-file]}]
-  (let [process-id (if (some? process-id)
+  [opts]
+  (let [{:keys [process-id host port directory port-file]} (validate-opts opts)
+        process-id (if (some? process-id)
                      (validate-process-id process-id)
                      (str (UUID/randomUUID)))
-        directory (str (or directory (System/getProperty "user.dir")))]
+        ;; Absolute: the directory travels to the editor, in the port file and
+        ;; in the reply to every handshake, and a "." there names the working
+        ;; directory of whoever reads it rather than the one this process was
+        ;; started in
+        directory (str (absolute (path (or directory (System/getProperty "user.dir")))))]
     {:process-id process-id
      :host (or host "127.0.0.1")
      :port (validate-port (or port 0))
      :directory directory
-     ;; absolute: the port file must not move when the working directory of
-     ;; the process changes, and it always has a parent directory
-     :port-file (.toAbsolutePath
+     ;; absolute for that reason too, and because the port file must not move
+     ;; when the working directory of the process changes. It always has a
+     ;; parent directory
+     :port-file (absolute
                  (if port-file
                    (path port-file)
                    (path directory ".replique" "processes" (str process-id ".json"))))}))
@@ -118,6 +149,11 @@
       (finally
         (try (Files/deleteIfExists tmp) (catch Exception _))))))
 
+(defn- taken-message [process-id ^Path port-file directory]
+  (str "The process-id " (pr-str process-id) " is taken in " directory ": "
+       port-file " exists. Start under another :process-id, or delete that"
+       " file if its process is gone."))
+
 (defn- delete-port-file! [^Path port-file]
   (try (Files/deleteIfExists port-file) (catch Exception _)))
 
@@ -144,9 +180,7 @@
          ;; there.  The claim write-port-file! makes is what a process racing
          ;; this one loses against; this is what says why
          _ (when (Files/exists port-file (make-array LinkOption 0))
-             (throw (ex-info (str "The process-id " (pr-str process-id) " is taken in "
-                                  directory ": " port-file " exists. Start under another"
-                                  " :process-id, or delete that file if its process is gone.")
+             (throw (ex-info (taken-message process-id port-file directory)
                              {:process-id process-id :port-file (str port-file)})))
          server (server/start-server {:host host
                                       :port port
@@ -178,6 +212,15 @@
        (write-port-file! port-file (state/info))
        ;; The claim went through, so the name is this process's to delete
        (swap! state/process assoc :port-file-claimed true)
+       ;; The name went to another process between the check above and the
+       ;; claim, which is the window the claim is there to close. The same
+       ;; refusal, because it is the same refusal: what the check says early
+       ;; the claim says late, and a client that spawns processes must not
+       ;; have to read two messages to learn one thing
+       (catch FileAlreadyExistsException t
+         (stop!)
+         (throw (ex-info (taken-message process-id port-file directory)
+                         {:process-id process-id :port-file (str port-file)} t)))
        (catch Throwable t
          (stop!)
          (throw (ex-info (str "Could not write the port file " port-file) {} t))))
