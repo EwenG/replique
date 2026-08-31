@@ -1,6 +1,7 @@
 (ns replique.repl-test
   (:require [clojure.string :as string]
             [clojure.test :refer [deftest is testing]]
+            [replique.output]
             [replique.test-client :as client
              :refer [connect send! recv request! disconnect with-process
                      control-client repl-client eval! recv-until
@@ -483,6 +484,60 @@
           (let [event (recv ctrl)]
             (is (= "out" (:event event)))
             (is (= (str (char 233) (char 0xD83D) (char 0xDE00) "\n") (:string event))))
+          (finally (disconnect r) (disconnect ctrl)))))))
+
+(defn- out-text
+  "The out events, read until they add up to n characters."
+  [client n]
+  (loop [s ""]
+    (if (<= n (count s))
+      s
+      (let [f (recv client)]
+        (if (= :eof f)
+          s
+          (recur (if (= "out" (:event f)) (str s (:string f)) s)))))))
+
+(deftest a-character-split-across-two-writes-is-not-broken-in-half
+  (testing "a write is whatever chunk the caller happened to hold - io/copy
+  hands over its buffer - so a character straddles two of them regularly.
+  Decoded a write at a time it is two broken halves rather than one
+  character, and the terminal shows U+FFFD where the process printed a
+  character. The stream replique replaced passes those same two writes
+  through unchanged, so the tee must not be where the character is lost"
+    (let [text (str "w" (char 0xF6) "rld " (char 0x2713))
+          bs (.getBytes text "UTF-8")
+          cut 2                         ; w, and the first byte of the o umlaut
+          split! (fn [^java.io.OutputStream o]
+                   (.write o bs 0 cut)
+                   (.write o bs cut (- (alength bs) cut))
+                   (.flush o))
+          through (fn [write!]
+                    (let [sink (java.io.ByteArrayOutputStream.)
+                          original (java.io.PrintStream. sink true "UTF-8")]
+                      (write! original)
+                      (.toString sink "UTF-8")))]
+      (testing "the stream the tee replaced shows the character"
+        (is (= text (through split!))))
+      (testing "and so does the tee"
+        (is (= text (through (fn [original]
+                               (split! (#'replique.output/tee-stream original "out"))))))))))
+
+(deftest output-written-in-chunks-reaches-the-editor-whole
+  (testing "the same thing seen from where it matters: a stream copied to
+  stdout arrives at the editor as the text that was printed, and not with a
+  U+FFFD wherever a character fell across a buffer boundary"
+    (with-process [info nil]
+      (let [ctrl (control-client info)
+            r (repl-client info)
+            text (str "w" (char 0xF6) "rld " (char 0x2713) " na" (char 0xEF)
+                      "ve caf" (char 0xE9) "\n")]
+        (try
+          (eval! r (str "(do (require (quote clojure.java.io))"
+                        "    (clojure.java.io/copy"
+                        "      (java.io.ByteArrayInputStream. (.getBytes " (pr-str text) " \"UTF-8\"))"
+                        "      System/out :buffer-size 8)"
+                        "    (.flush System/out) :done)"))
+          (is (= text (out-text ctrl (count text))))
           (finally (disconnect r) (disconnect ctrl)))))))
 
 (deftest uncaught-exceptions-reach-the-control-connections

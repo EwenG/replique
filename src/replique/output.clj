@@ -6,9 +6,9 @@
   is not reading."
   (:require [replique.protocol :as protocol]
             [replique.state :as state])
-  (:import [java.io ByteArrayOutputStream OutputStream OutputStreamWriter
-            PrintStream PrintWriter]
-           [java.nio.charset StandardCharsets]))
+  (:import [java.io OutputStream OutputStreamWriter PrintStream PrintWriter]
+           [java.nio ByteBuffer CharBuffer]
+           [java.nio.charset CharsetDecoder CodingErrorAction StandardCharsets]))
 
 (defn control-connections []
   (->> (state/connections)
@@ -34,53 +34,92 @@
   stdout.encoding is US-ASCII, which is what an unset locale gives, would
   otherwise report every accent and every emoji as a question mark. The
   terminal keeps its own encoding: what is written there is re-encoded by
-  original, so replique changes nothing about what a terminal shows."
+  original, so replique changes nothing about what a terminal shows.
+
+  The bytes are decoded as one stream and not one write at a time. A write is
+  whatever chunk the caller happened to hold - io/copy hands over its buffer,
+  a socket hands over what arrived - and a character that straddles two of
+  them is, to a decoder shown them apart, two broken halves rather than one
+  character. What is left over at the end of a write is kept and finished by
+  the bytes that follow it.
+
+  What goes through here is text, and what is not text does not survive it:
+  bytes that are not UTF-8 are replaced by U+FFFD, on the terminal as in the
+  event. An editor is told strings, so there is no version of this that also
+  carries arbitrary bytes through unchanged."
   ^PrintStream [^PrintStream original ^String event-name]
-  (let [buf (ByteArrayOutputStream.)
+  (let [^CharsetDecoder decoder (doto (.newDecoder StandardCharsets/UTF_8)
+                                  (.onMalformedInput CodingErrorAction/REPLACE)
+                                  (.onUnmappableCharacter CodingErrorAction/REPLACE))
+        lock (Object.)
+        ;; the text waiting to go out as an event, and the bytes that are not
+        ;; text yet - at most the three a UTF-8 character can be short of
+        sb (StringBuilder.)
+        tail (volatile! (byte-array 0))
+        decode!
+        (fn [^bytes b off len end?]
+          ;; Called with the lock held. One char per byte is an upper bound
+          ;; for UTF-8 - the four byte characters are the ones that make two -
+          ;; so this never overflows and never has to be resumed.
+          (let [^bytes t @tail
+                in (ByteBuffer/allocate (int (+ (alength t) (int len))))]
+            (.put in t)
+            (when (pos? (int len)) (.put in b (int off) (int len)))
+            (.flip in)
+            (let [out (CharBuffer/allocate (int (inc (.remaining in))))]
+              (.decode decoder in out (boolean end?))
+              (when end? (.flush decoder out))
+              (.flip out)
+              (let [left (byte-array (.remaining in))]
+                (.get in left)
+                (vreset! tail left))
+              (.toString out))))
         take-buffer! (fn []
-                       (locking buf
-                         (when (pos? (.size buf))
-                           (let [b (.toByteArray buf)]
-                             (.reset buf)
-                             b))))
+                       (locking lock
+                         (when (pos? (.length sb))
+                           (let [s (.toString sb)]
+                             (.setLength sb 0)
+                             s))))
         emit! (fn []
-                (when-let [^bytes bytes (take-buffer!)]
-                  ;; always decodable: the buffer is only ever cut where a
-                  ;; write ended, and an encoder does not split a character
-                  ;; across two writes
+                (when-let [s (take-buffer!)]
                   (try (broadcast-event!
-                        (protocol/event event-name
-                                        {:string (String. bytes StandardCharsets/UTF_8)}))
+                        (protocol/event event-name {:string s}))
                        (catch Throwable _ nil))))
-        buffer! (fn [^long n] (when (>= n max-buffered-output) (emit!)))
+        accept!
+        (fn [^bytes b off len end?]
+          (let [n (locking lock
+                    (let [s (decode! b off len end?)]
+                      (when (pos? (.length ^String s))
+                        (.append sb ^String s)
+                        ;; Forwarded as it is written, not at the next flush,
+                        ;; so that a line printed without a newline still
+                        ;; shows up when it used to. Decoded and re-printed
+                        ;; rather than copied: original encodes it the way it
+                        ;; always did, so a terminal that could not show an
+                        ;; accent still shows what it showed before.
+                        (try (.print original ^String s) (catch Throwable _ nil)))
+                      (.length sb)))]
+            (when (>= n max-buffered-output) (emit!))))
         stream (proxy [OutputStream] []
                  (write
                    ([x]
                     (if (integer? x)
-                      (let [b (int x)]
-                        ;; a raw byte passes through as it always did
-                        (.write original b)
-                        (buffer! (locking buf (.write buf b) (.size buf))))
-                      (let [^bytes b x]
-                        (.write ^OutputStream this b 0 (alength b)))))
-                   ([b off len]
-                    (let [^bytes b b]
-                      ;; Forwarded as it is written, not at the next flush, so
-                      ;; that a line printed without a newline still shows up
-                      ;; when it used to. Decoded and re-printed rather than
-                      ;; copied: original encodes it the way it always did, so
-                      ;; a terminal that could not show an accent still shows
-                      ;; what it showed before.
-                      (try (.print original (String. b (int off) (int len)
-                                                     StandardCharsets/UTF_8))
-                           (catch Throwable _ nil))
-                      (buffer! (locking buf
-                                 (.write buf b (int off) (int len))
-                                 (.size buf))))))
+                      (let [b (byte-array 1)]
+                        (aset-byte b 0 (unchecked-byte (int x)))
+                        (accept! b 0 1 false))
+                      (let [^bytes b x] (accept! b 0 (alength b) false))))
+                   ([b off len] (accept! b off len false)))
                  (flush []
                    (try (.flush original) (catch Throwable _ nil))
+                   ;; What is held back is an unfinished character, and a
+                   ;; flush is not what finishes it - only the bytes that
+                   ;; complete it are.
                    (emit!))
                  (close []
+                   ;; Nothing more is coming, so what is held back is a broken
+                   ;; character rather than an unfinished one: it is reported
+                   ;; as broken rather than swallowed.
+                   (accept! nil 0 0 true)
                    (try (.flush original) (catch Throwable _ nil))
                    (emit!)))]
     ;; autoflush: a PrintStream flushes on println and on any newline, so an
