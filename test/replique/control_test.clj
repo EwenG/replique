@@ -208,6 +208,25 @@
     []
     (mapv #(djson/read-str % :key-fn keyword) (string/split-lines (str out)))))
 
+(deftest a-handler-that-does-not-answer-with-a-map-says-what-it-did-answer
+  (testing "the branch is there for an op that is being written, so its
+  message is read by whoever is writing that op. nil is the likeliest way to
+  reach it - a handler whose body ends in a when that was false - and it is
+  the one value (type v) cannot describe"
+    (doseq [[res expected] [[nil #"returned nil$"]
+                            ["not a map" #"returned a java.lang.String$"]
+                            [:nope #"returned a clojure.lang.Keyword$"]]]
+      (let [out (java.io.StringWriter.)
+            conn (merge {:out out} (protocol/outbox))]
+        (with-redefs [protocol/handle (fn [_ _] res)]
+          (#'replique.control/handle-request conn {:op :being-written :id 1}))
+        (let [[frame & more] (written out)]
+          (is (nil? more))
+          (is (= "error" (:tag frame)) (pr-str res))
+          (is (= "invalid-handler-result" (:error frame)) (pr-str res))
+          (is (= 1 (:id frame)) (pr-str res))
+          (is (re-find expected (:message frame)) (pr-str res)))))))
+
 (deftest events-never-pause-their-producer
   (testing "an event comes from a thread of the application being worked on -
   a background thread printing, a tapped value. It must never wait for

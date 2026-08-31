@@ -25,10 +25,16 @@
       (cond
         (identical? res protocol/no-reply) nil
         (map? res) (protocol/write-frame! conn (protocol/reply msg res))
+        ;; nil is named rather than described: (type nil) is nil, and the
+        ;; sentence would stop after "returned a". It is also the likeliest
+        ;; way to land here - a handler whose body ends in a when that was
+        ;; false - so it is the one case that must read
         :else (protocol/write-frame!
                conn (protocol/error msg :invalid-handler-result
-                                    (str "The handler of op " (:op msg)
-                                         " returned a " (type res))))))
+                                    (str "The handler of op " (:op msg) " returned "
+                                         (if (nil? res)
+                                           "nil"
+                                           (str "a " (.getName (class res)))))))))
     (catch Throwable t
       (protocol/write-frame! conn (error-frame msg t)))))
 
