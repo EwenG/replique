@@ -63,9 +63,9 @@
   waits for the process to be gone."
   300)
 
-(defmethod protocol/handle :shutdown [_ msg]
-  ;; The reply is returned to be written like any other, and all that is
-  ;; arranged here is that the process does not go first.
+(defmethod protocol/handle :shutdown [_ _]
+  ;; The payload is returned to be framed and written like any other op's,
+  ;; and all that is arranged here is that the process does not go first.
   ;;
   ;; The exit is what is delayed, rather than the reply waited for, because a
   ;; write to a client that stopped reading never returns - and a client that
@@ -73,7 +73,7 @@
   ;; exit that waited for the write would be an exit that never happened, so
   ;; the two are not connected at all: the connection thread writes the reply,
   ;; and this ends the process whether that write got anywhere or not.
-  (doto (Thread. (fn [] (Thread/sleep exit-delay-ms) (exit!)) "replique-exit")
+  (doto (Thread. (fn [] (Thread/sleep (long exit-delay-ms)) (exit!)) "replique-exit")
     (.setDaemon true)
     (.start))
-  (protocol/reply msg {:stopping true}))
+  {:stopping true})
