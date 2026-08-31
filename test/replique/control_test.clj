@@ -557,9 +557,17 @@
       (testing "and it says what the options are, which is what the client
       needs to find its mistake"
         (is (re-find #":process-id" (.getMessage ^Throwable t))))))
+  (testing "options that are not a map at all. A string reads as a map of
+  nothing, so this used to start a process on every default"
+    (let [t (try (core/normalize-opts "{:process-id \"quoted-by-mistake\"}")
+                 nil
+                 (catch clojure.lang.ExceptionInfo t t))]
+      (is (some? t))
+      (is (re-find #"options must be a map" (.getMessage ^Throwable t)))))
   (testing "the options themselves are still options"
     (is (= "ok" (:process-id (core/normalize-opts {:process-id "ok" :host "127.0.0.1"
-                                                   :port 0 :directory (temp-dir)}))))))
+                                                   :port 0 :directory "/tmp"}))))
+    (is (string? (:process-id (core/normalize-opts nil))))))
 
 (deftest framing-keys-cannot-be-overridden
   (testing "a request cannot inject its own tag - framing must stay trustworthy

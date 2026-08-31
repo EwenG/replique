@@ -53,6 +53,13 @@
   under a random name, successfully, and the editor then waits for a process
   that is running and cannot be found."
   [opts]
+  ;; Said here rather than left to the destructuring, which reads a string or
+  ;; a vector as a map of nothing and starts a process on all defaults - and,
+  ;; since the unknown option check reads the keys, now fails at whatever the
+  ;; value happens to be instead
+  (when-not (or (nil? opts) (map? opts))
+    (throw (ex-info (str "The options must be a map, got: " (pr-str opts))
+                    {:options opts})))
   (when-let [unknown (seq (remove option-keys (keys opts)))]
     (let [names (fn [ks] (apply str (interpose ", " (map str ks))))]
       (throw (ex-info (str "Unknown option" (when (next unknown) "s") ": "
