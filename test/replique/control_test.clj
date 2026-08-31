@@ -2,6 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.data.json :as djson]
             [clojure.string :as string]
+            [replique.control]
             [replique.core :as core]
             [replique.main]
             [replique.protocol :as protocol]
@@ -15,6 +16,27 @@
            [java.nio.file.attribute FileAttribute]))
 
 (defn- control-client [info] (client/control-client info))
+
+;;; The exit
+
+(def ^:private exit-watch
+  "The promise the next exit delivers, when a test is watching for one."
+  (atom nil))
+
+;; Installed for the whole namespace, and never restored. The tests run inside
+;; the process they test, so a real exit ends the test run - and the exit
+;; happens on a thread of its own, which may still be sleeping when the test
+;; that started it is over. A stub scoped to that test would already have been
+;; restored by then, and the run would end in the middle of itself with the
+;; status of a run that passed: the worst way a suite can fail. Nothing here
+;; ever wants the real one.
+(alter-var-root #'replique.ops/exit!
+                (constantly (fn [] (when-let [p @exit-watch] (deliver p true)))))
+
+(defn- watch-exit!
+  "Return a promise delivered when the process would have gone."
+  []
+  (let [p (promise)] (reset! exit-watch p) p))
 
 (defn- with-lock-held
   "Run f while another thread owns the connection. The lock is reentrant, so
@@ -380,12 +402,11 @@
   would otherwise take with them"
     (with-process [info nil]
       (let [ctrl (control-client info)
-            exited (promise)]
+            exited (watch-exit!)]
         (try
           ;; A delay long enough that the round trip cannot lose to it: what
           ;; is being checked is the order, not how quick a socket is
-          (with-redefs [replique.ops/exit-delay-ms 1500
-                        replique.ops/exit! (fn [] (deliver exited true))]
+          (with-redefs [replique.ops/exit-delay-ms 1500]
             (let [reply (request! ctrl {:op :shutdown :id 1})]
               (is (= "reply" (:tag reply)))
               (is (= "shutdown" (:op reply)))
@@ -518,25 +539,25 @@
        (close []))
      (fn [] (.countDown gate))]))
 
-(deftest the-exit-is-not-conditional-on-the-reply-being-written
-  (testing "what the client that asked to be rid of this process does next is
-  stop reading, and a write to a client that stopped reading never returns.
-  So the process going is arranged apart from the reply going: here the
-  connection can never be written to at all, and the process goes anyway"
+(deftest the-exit-does-not-wait-for-a-client-that-stopped-reading
+  (testing "the guarantee the doc makes. What the client that asked to be rid
+  of this process does next is stop reading, and the write of the reply then
+  never returns - there is no timeout to set on a write in java. This goes
+  through the path that really writes it, so what blocks is the real write"
     (let [[out release!] (blocking-writer)
           conn (merge {:out out} (protocol/outbox))
-          exited (promise)]
+          exited (watch-exit!)
+          handle-request #'replique.control/handle-request]
       (try
-        (with-redefs [replique.ops/exit-delay-ms 20
-                      replique.ops/exit! (fn [] (deliver exited true))]
-          ;; On a thread of its own and waited for with a bound: a handler
-          ;; that went back to writing the reply itself would block here
-          ;; forever, and a test that hangs says nothing about what broke
-          (let [replied (future (protocol/handle conn {:op :shutdown :id 1}))]
-            (is (= true (:stopping (deref replied 5000 :never-returned)))
-                "the handler answered rather than write the reply itself")
-            (is (= true (deref exited 5000 :never-exited))
-                "and the process went, though the reply could not be written")))
+        (with-redefs [replique.ops/exit-delay-ms 20]
+          ;; on a thread of its own, because answering the request is what
+          ;; does not come back here
+          (let [answering (future (handle-request conn {:op :shutdown :id 1}))]
+            (is (= :never-returned (deref answering 1000 :never-returned))
+                "a connection that can be written to would make this test
+                prove nothing")
+            (is (true? (deref exited 5000 nil))
+                "the process went, though the reply is still being written")))
         (finally (release!))))))
 
 (deftest a-port-file-is-claimed-rather-than-overwritten
