@@ -9,8 +9,10 @@
             ;; load the roles: they register themselves
             [replique.control]
             [replique.repl])
-  (:import [java.nio.charset StandardCharsets]
-           [java.nio.file CopyOption Files LinkOption OpenOption Path Paths]
+  (:import [java.io IOException]
+           [java.nio.charset StandardCharsets]
+           [java.nio.file CopyOption FileAlreadyExistsException Files LinkOption
+            OpenOption Path Paths]
            [java.nio.file.attribute FileAttribute PosixFilePermissions]
            [java.util UUID]))
 
@@ -73,11 +75,21 @@
   ;; before the name exists.
   ;;
   ;; Filesystems with no hard links - fat, some network mounts - fall back to
-  ;; the move, and there the check start! makes is all there is.
-  (try
-    (Files/createLink port-file tmp)
-    (catch UnsupportedOperationException _
-      (Files/move tmp port-file (make-array CopyOption 0)))))
+  ;; the move, and there the check start! makes is all there is. Which
+  ;; exception says so depends on where the refusal comes from: a provider
+  ;; that does not implement links at all throws UnsupportedOperationException,
+  ;; while the unix provider issues link(2) and turns the EPERM or ENOTSUP a
+  ;; real filesystem answers with into a FileSystemException. Catching only
+  ;; the first is catching the rarer one, and leaves a process unable to start
+  ;; where the move it replaced worked.
+  (let [move! (fn [] (Files/move tmp port-file (make-array CopyOption 0)))]
+    (try
+      (Files/createLink port-file tmp)
+      ;; The name is taken, which is the answer this is here to get - never a
+      ;; reason to go looking for another way to take it
+      (catch FileAlreadyExistsException e (throw e))
+      (catch UnsupportedOperationException _ (move!))
+      (catch IOException _ (move!)))))
 
 (defn- write-port-file! [^Path port-file content]
   (let [dir (.getParent port-file)
@@ -140,7 +152,13 @@
                                       :port port
                                       :name "replique"
                                       :process-id process-id})
-         hook (Thread. (fn [] (delete-port-file! port-file)) "replique-shutdown")]
+         ;; Deleting the port file is deleting a name, and this process only
+         ;; owns that name once its claim went through: a start that lost the
+         ;; race must leave the winner's file where it is, or the refusal that
+         ;; sent it here would be worse than the overwriting it replaced
+         hook (Thread. (fn [] (when (:port-file-claimed @state/process)
+                                (delete-port-file! port-file)))
+                       "replique-shutdown")]
      (reset! state/process {:process-id process-id
                             ;; the address and port the server is really bound
                             ;; to - :port 0 binds to a free port
@@ -148,6 +166,7 @@
                             :port (server/server-port server)
                             :directory directory
                             :port-file port-file
+                            :port-file-claimed false
                             :started-at (System/currentTimeMillis)
                             :server server
                             :shutdown-hook hook})
@@ -157,6 +176,8 @@
      (output/install!)
      (try
        (write-port-file! port-file (state/info))
+       ;; The claim went through, so the name is this process's to delete
+       (swap! state/process assoc :port-file-claimed true)
        (catch Throwable t
          (stop!)
          (throw (ex-info (str "Could not write the port file " port-file) {} t))))
@@ -164,14 +185,19 @@
 
 (defn stop!
   "Stop the replique process: close the server and its connections, delete the
-  port file."
+  port file it claimed.
+
+  Only the one it claimed: this is what a start that failed unwinds with, and
+  a start fails when another process holds the name - whose file this must
+  then not touch."
   []
-  (when-let [{:keys [server port-file ^Thread shutdown-hook]} @state/process]
+  (when-let [{:keys [server port-file port-file-claimed ^Thread shutdown-hook]}
+             @state/process]
     (when shutdown-hook
       (try (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
            (catch IllegalStateException _)))
     (output/uninstall!)
     (when server (server/stop-server! server))
-    (delete-port-file! port-file)
+    (when port-file-claimed (delete-port-file! port-file))
     (reset! state/process nil)
     nil))

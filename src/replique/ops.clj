@@ -57,17 +57,23 @@
   []
   (System/exit 0))
 
-(defmethod protocol/handle :shutdown [conn msg]
-  ;; Written and waited on here rather than returned to be written: what
-  ;; comes after it is the process going away, and a reply that found the
-  ;; connection busy - a thread of the application printing is enough - would
-  ;; be parked, and would go with it.
+(def exit-delay-ms
+  "How long the reply has before the process goes. Long enough for a write to
+  a connection on this machine, short enough to be under the time a client
+  waits for the process to be gone."
+  300)
+
+(defmethod protocol/handle :shutdown [_ msg]
+  ;; The reply is returned to be written like any other, and all that is
+  ;; arranged here is that the process does not go first.
   ;;
-  ;; The wait is bounded and its result ignored on purpose. A connection that
-  ;; stays busy is one nobody is reading, and the client that is not reading
-  ;; is the one that just asked to be rid of this process: it gets what it
-  ;; asked for, and losing the reply is the lesser thing to lose
-  (protocol/write-frame! conn (protocol/reply msg {:stopping true}))
-  (protocol/flush-blocking! conn)
-  (exit!)
-  protocol/no-reply)
+  ;; The exit is what is delayed, rather than the reply waited for, because a
+  ;; write to a client that stopped reading never returns - and a client that
+  ;; asked the process to stop is exactly a client about to stop reading. An
+  ;; exit that waited for the write would be an exit that never happened, so
+  ;; the two are not connected at all: the connection thread writes the reply,
+  ;; and this ends the process whether that write got anywhere or not.
+  (doto (Thread. (fn [] (Thread/sleep exit-delay-ms) (exit!)) "replique-exit")
+    (.setDaemon true)
+    (.start))
+  (protocol/reply msg {:stopping true}))

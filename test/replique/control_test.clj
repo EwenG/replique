@@ -372,20 +372,26 @@
           (is (not (state/started?))))
         (finally (core/stop!) (delete-recursively dir))))))
 
-(deftest shutdown-answers-before-the-process-goes
-  (testing "a client that gets the reply knows the process accepted - the
-  reply is written before anything of the shutdown happens"
+(deftest shutdown-answers-and-then-the-process-goes
+  (testing "a client that gets the reply knows the process accepted, and the
+  exit follows it rather than the other way round. That the reply beats the
+  exit over a real socket is what the editor tests check, out of process:
+  here the exit is stubbed, because the tests run inside the process they
+  would otherwise take with them"
     (with-process [info nil]
       (let [ctrl (control-client info)
             exited (promise)]
         (try
-          ;; The tests run inside the process they test, so the exit is the
-          ;; one thing about the op that cannot be run here
-          (with-redefs [replique.ops/exit! (fn [] (deliver exited true))]
+          ;; A delay long enough that the round trip cannot lose to it: what
+          ;; is being checked is the order, not how quick a socket is
+          (with-redefs [replique.ops/exit-delay-ms 1500
+                        replique.ops/exit! (fn [] (deliver exited true))]
             (let [reply (request! ctrl {:op :shutdown :id 1})]
               (is (= "reply" (:tag reply)))
               (is (= "shutdown" (:op reply)))
               (is (true? (:stopping reply)))
+              (is (nil? (deref exited 0 nil))
+                  "the reply came back first - the exit is what waits")
               (is (true? (deref exited 5000 nil)))))
           (finally (disconnect ctrl)))))))
 
@@ -500,45 +506,38 @@
           (is (= i (:id (request! client {:op :echo :id i :value i})))))
         (finally (run! disconnect clients))))))
 
-(deftest a-shutdown-flush-gives-up-on-a-connection-nobody-reads
-  (testing "the wait is what makes the reply likely to arrive, not what the
-  exit is conditional on: the thread holding the connection may be one blocked
-  writing to a client that stopped reading, and a client that asked the process
-  to stop is exactly a client about to stop reading"
-    (let [out (java.io.StringWriter.)
-          conn (merge {:out out} (protocol/outbox))]
-      (with-redefs [protocol/flush-blocking-timeout-ms 50]
-        (with-lock-held conn
-          (fn []
-            (protocol/write-frame! conn (protocol/reply {:id 1 :op :shutdown}
-                                                        {:stopping true}))
-            ;; On a thread of its own and waited for with a bound, because what
-            ;; this is about is a flush that never returns: a test that called
-            ;; it here would hang rather than fail, and a suite that hangs says
-            ;; nothing about which of it broke
-            (let [flushed (future (protocol/flush-blocking! conn))
-                  wrote? (deref flushed 5000 :never-returned)]
-              (is (false? wrote?)
-                  "gave up, and said the reply did not go, rather than wait
-                  for a connection nobody is reading")))))
-      (testing "the reply is still parked - what is dropped is the wait for it"
-        (is (= "" (str out)))
-        (protocol/try-flush! conn)
-        (is (= "reply" (:tag (first (written out)))))))))
+(defn- blocking-writer
+  "A writer that never finishes a write, the way a socket whose client stopped
+  reading does not: the send buffer fills, and BufferedWriter.write waits for
+  room java gives no way to stop waiting for. Returns [writer release!]."
+  []
+  (let [gate (java.util.concurrent.CountDownLatch. 1)]
+    [(proxy [java.io.Writer] []
+       (write [& _] (.await gate))
+       (flush [])
+       (close []))
+     (fn [] (.countDown gate))]))
 
-(deftest a-shutdown-flush-writes-what-is-parked
-  (testing "a free connection is the ordinary case, and there the reply goes
-  out before the process does"
-    (let [out (java.io.StringWriter.)
-          conn (merge {:out out} (protocol/outbox))]
-      (with-lock-held conn
-        (fn [] (protocol/write-frame! conn (protocol/reply {:id 1 :op :shutdown}
-                                                           {:stopping true}))))
-      (is (= "" (str out)) "parked while the connection was busy")
-      (is (true? (protocol/flush-blocking! conn)))
-      (let [frame (first (written out))]
-        (is (= "reply" (:tag frame)))
-        (is (= true (:stopping frame)))))))
+(deftest the-exit-is-not-conditional-on-the-reply-being-written
+  (testing "what the client that asked to be rid of this process does next is
+  stop reading, and a write to a client that stopped reading never returns.
+  So the process going is arranged apart from the reply going: here the
+  connection can never be written to at all, and the process goes anyway"
+    (let [[out release!] (blocking-writer)
+          conn (merge {:out out} (protocol/outbox))
+          exited (promise)]
+      (try
+        (with-redefs [replique.ops/exit-delay-ms 20
+                      replique.ops/exit! (fn [] (deliver exited true))]
+          ;; On a thread of its own and waited for with a bound: a handler
+          ;; that went back to writing the reply itself would block here
+          ;; forever, and a test that hangs says nothing about what broke
+          (let [replied (future (protocol/handle conn {:op :shutdown :id 1}))]
+            (is (= true (:stopping (deref replied 5000 :never-returned)))
+                "the handler answered rather than write the reply itself")
+            (is (= true (deref exited 5000 :never-exited))
+                "and the process went, though the reply could not be written")))
+        (finally (release!))))))
 
 (deftest a-port-file-is-claimed-rather-than-overwritten
   (testing "start! looks before it writes, and between the look and the write
@@ -558,4 +557,68 @@
         (testing "and nothing of the write that failed is left behind"
           (is (= ["claimed.json"]
                  (sort (map str (.list (.toFile (.getParent port-file))))))))
+        (finally (delete-recursively dir))))))
+
+(deftest a-start-that-loses-the-claim-leaves-the-winner-alone
+  (testing "the refusal is checked before the server binds, and between that
+  check and the claim is where another process fits. Losing there must cost
+  the loser its start and nothing else: a loser that deleted the file it
+  failed to take would leave the winner running with nothing able to reach it,
+  which is worse than the overwriting the refusal replaced"
+    (let [dir (temp-dir)
+          port-file (Paths/get (str dir) (into-array String [".replique" "processes"
+                                                             "contested.json"]))
+          winner "{\"process-id\":\"contested\",\"port\":1}\n"]
+      (try
+        (with-redefs-fn
+          {#'core/write-port-file!
+           (fn [^Path pf _]
+             ;; the process that won the race, writing in the window this
+             ;; start walked into
+             (Files/createDirectories (.getParent pf) (make-array FileAttribute 0))
+             (spit (str pf) winner)
+             (throw (java.nio.file.FileAlreadyExistsException. (str pf))))}
+          (fn []
+            (is (thrown? clojure.lang.ExceptionInfo
+                         (core/start! {:directory dir :process-id "contested"})))))
+        (testing "the winner's port file is where the winner left it"
+          (is (Files/exists port-file (make-array java.nio.file.LinkOption 0))
+              "the loser deleted the file it failed to claim")
+          (is (= winner (when (Files/exists port-file
+                                            (make-array java.nio.file.LinkOption 0))
+                          (slurp (str port-file))))))
+        (testing "and the start that lost unwound itself"
+          (is (not (state/started?))))
+        (finally (core/stop!) (delete-recursively dir))))))
+
+(deftest a-filesystem-without-hard-links-still-claims
+  (testing "the link is what makes the claim atomic, and a filesystem that has
+  no hard links answers it with a refusal rather than a link. The claim falls
+  back to a move there - weaker, because the check start! makes is then all
+  that stands between two processes racing - but a name that is taken is still
+  refused, and that part must not depend on the filesystem"
+    (let [dir (temp-dir)
+          zip (Paths/get (str dir) (into-array String ["archive.zip"]))
+          env (doto (java.util.HashMap.) (.put "create" "true"))
+          claim! #'core/claim!
+          bytes-of (fn [^Path p] (String. (Files/readAllBytes p) "UTF-8"))
+          write! (fn [^Path p ^String s]
+                   (Files/write p (.getBytes s "UTF-8")
+                                (make-array java.nio.file.OpenOption 0)))]
+      (try
+        (with-open [fs (java.nio.file.FileSystems/newFileSystem zip env)]
+          (let [first-tmp (.getPath fs "first.tmp" (into-array String []))
+                second-tmp (.getPath fs "second.tmp" (into-array String []))
+                target (.getPath fs "taken.json" (into-array String []))]
+            (write! first-tmp "first\n")
+            (write! second-tmp "second\n")
+            (is (thrown? UnsupportedOperationException (Files/createLink target first-tmp))
+                "a filesystem that has links would make this test prove nothing")
+            (testing "the claim goes through anyway"
+              (claim! first-tmp target)
+              (is (= "first\n" (bytes-of target))))
+            (testing "and the second process is still refused the name"
+              (is (thrown? java.nio.file.FileAlreadyExistsException
+                           (claim! second-tmp target)))
+              (is (= "first\n" (bytes-of target))))))
         (finally (delete-recursively dir))))))
