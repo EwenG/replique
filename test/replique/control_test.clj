@@ -7,6 +7,7 @@
             [replique.main]
             [replique.protocol :as protocol]
             [replique.ops]
+            [replique.output]
             [replique.state :as state]
             [replique.test-client :as client
              :refer [connect send! recv request! disconnect with-process
@@ -440,6 +441,31 @@
           (is (= written (slurp (str port-file)))))
         (testing "nothing was started, so there is nothing to unwind"
           (is (not (state/started?))))
+        (finally (core/stop!) (delete-recursively dir))))))
+
+(deftest a-start-that-fails-after-the-process-is-registered-unwinds
+  (testing "the server is bound and the process registered before the output
+  is teed and before the port file is written. A failure in between used to
+  unwind nothing: the server went on listening under a name nothing had
+  written, so no client could find it, and start! refused to try again
+  because as far as it could see a process was started"
+    (let [dir (temp-dir)]
+      (try
+        (with-redefs-fn {#'replique.output/install!
+                         (fn [] (throw (ex-info "the output could not be taken over" {})))}
+          (fn []
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                                  #"Could not start the process in "
+                                  (core/start! {:directory dir :process-id "unwound"})))))
+        (testing "nothing is left started, so the server was closed with it"
+          (is (not (state/started?))))
+        (testing "and the name is free: the next start is a start, not a refusal"
+          (let [info (core/start! {:directory dir :process-id "unwound"})]
+            (is (= "unwound" (:process-id info)))
+            (is (Files/exists (Paths/get (str dir) (into-array String
+                                                               [".replique" "processes"
+                                                                "unwound.json"]))
+                              (make-array java.nio.file.LinkOption 0)))))
         (finally (core/stop!) (delete-recursively dir))))))
 
 (deftest shutdown-answers-and-then-the-process-goes

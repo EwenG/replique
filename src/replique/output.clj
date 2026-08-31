@@ -126,8 +126,14 @@
     ;; event is one line of output rather than one write
     (PrintStream. ^OutputStream stream true StandardCharsets/UTF_8)))
 
-(defn- print-writer ^PrintWriter [^PrintStream stream]
-  (PrintWriter. (OutputStreamWriter. stream (.charset stream)) true))
+(defn- print-writer
+  "The writer *out* and *err* are rebound to. UTF-8, said rather than read
+  back off the stream: the only streams this wraps are the tees, which are
+  built UTF-8 a few lines up, and asking a PrintStream what charset it has
+  is a jdk 18 method - a version of java replique would then need for no
+  other reason, and would not say it needed."
+  ^PrintWriter [^PrintStream stream]
+  (PrintWriter. (OutputStreamWriter. stream StandardCharsets/UTF_8) true))
 
 ;;; Uncaught exceptions
 

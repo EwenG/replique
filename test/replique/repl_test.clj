@@ -540,6 +540,22 @@
           (is (= text (out-text ctrl (count text))))
           (finally (disconnect r) (disconnect ctrl)))))))
 
+(deftest the-writer-out-is-rebound-to-encodes-utf8-whatever-it-wraps
+  (testing "*out* and *err* are rebound to a writer over the tee, and what
+  that writer encodes in has to be replique's answer rather than the
+  stream's: the tee is UTF-8 by construction, and reading the charset back
+  off a PrintStream is a jdk 18 method - a java version replique would then
+  require without checking for it or saying so"
+    (let [sink (java.io.ByteArrayOutputStream.)
+          ;; a stream that says it is US-ASCII, the way an unset locale makes
+          ;; the real one say it
+          ascii (java.io.PrintStream. sink true java.nio.charset.StandardCharsets/US_ASCII)
+          w (#'replique.output/print-writer ascii)
+          text (str "caf" (char 233))]
+      (.write w text)
+      (.flush w)
+      (is (= text (String. (.toByteArray sink) "UTF-8"))))))
+
 (deftest uncaught-exceptions-reach-the-control-connections
   (with-process [info nil]
     (let [ctrl (control-client info)

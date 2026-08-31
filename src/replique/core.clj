@@ -211,10 +211,18 @@
                             :started-at (System/currentTimeMillis)
                             :server server
                             :shutdown-hook hook})
-     (.addShutdownHook (Runtime/getRuntime) hook)
-     ;; after the process is registered: broadcasting an event reads the
-     ;; connections from there
-     (output/install!)
+     ;; Registered, so everything from here unwinds through stop!. A failure
+     ;; that left it registered would leave the server listening under a name
+     ;; nothing wrote - nothing could find it, and start! would refuse to try
+     ;; again, because as far as it can see a process is started
+     (try
+       (.addShutdownHook (Runtime/getRuntime) hook)
+       ;; after the process is registered: broadcasting an event reads the
+       ;; connections from there
+       (output/install!)
+       (catch Throwable t
+         (stop!)
+         (throw (ex-info (str "Could not start the process in " directory) {} t))))
      (try
        (write-port-file! port-file (state/info))
        ;; The claim went through, so the name is this process's to delete
