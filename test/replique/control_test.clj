@@ -364,7 +364,7 @@
       (try
         (Files/createDirectories (.getParent port-file) (make-array FileAttribute 0))
         (spit (str port-file) written)
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"already registered"
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"process-id \"taken\" is taken"
                               (core/start! {:directory dir :process-id "taken"})))
         (testing "the file of the process that is registered is left as it was"
           (is (= written (slurp (str port-file)))))
@@ -499,3 +499,63 @@
         (doseq [[i client] (map-indexed vector clients)]
           (is (= i (:id (request! client {:op :echo :id i :value i})))))
         (finally (run! disconnect clients))))))
+
+(deftest a-shutdown-flush-gives-up-on-a-connection-nobody-reads
+  (testing "the wait is what makes the reply likely to arrive, not what the
+  exit is conditional on: the thread holding the connection may be one blocked
+  writing to a client that stopped reading, and a client that asked the process
+  to stop is exactly a client about to stop reading"
+    (let [out (java.io.StringWriter.)
+          conn (merge {:out out} (protocol/outbox))]
+      (with-redefs [protocol/flush-blocking-timeout-ms 50]
+        (with-lock-held conn
+          (fn []
+            (protocol/write-frame! conn (protocol/reply {:id 1 :op :shutdown}
+                                                        {:stopping true}))
+            ;; On a thread of its own and waited for with a bound, because what
+            ;; this is about is a flush that never returns: a test that called
+            ;; it here would hang rather than fail, and a suite that hangs says
+            ;; nothing about which of it broke
+            (let [flushed (future (protocol/flush-blocking! conn))
+                  wrote? (deref flushed 5000 :never-returned)]
+              (is (false? wrote?)
+                  "gave up, and said the reply did not go, rather than wait
+                  for a connection nobody is reading")))))
+      (testing "the reply is still parked - what is dropped is the wait for it"
+        (is (= "" (str out)))
+        (protocol/try-flush! conn)
+        (is (= "reply" (:tag (first (written out)))))))))
+
+(deftest a-shutdown-flush-writes-what-is-parked
+  (testing "a free connection is the ordinary case, and there the reply goes
+  out before the process does"
+    (let [out (java.io.StringWriter.)
+          conn (merge {:out out} (protocol/outbox))]
+      (with-lock-held conn
+        (fn [] (protocol/write-frame! conn (protocol/reply {:id 1 :op :shutdown}
+                                                           {:stopping true}))))
+      (is (= "" (str out)) "parked while the connection was busy")
+      (is (true? (protocol/flush-blocking! conn)))
+      (let [frame (first (written out))]
+        (is (= "reply" (:tag frame)))
+        (is (= true (:stopping frame)))))))
+
+(deftest a-port-file-is-claimed-rather-than-overwritten
+  (testing "start! looks before it writes, and between the look and the write
+  is where another process fits. The write is what refuses, so the loser of
+  that race fails rather than takes a name the winner is running under"
+    (let [dir (temp-dir)
+          port-file (Paths/get (str dir) (into-array String [".replique" "processes"
+                                                             "claimed.json"]))
+          write! #'core/write-port-file!]
+      (try
+        (write! port-file {:process-id "claimed" :port 1})
+        (is (= 1 (:port (djson/read-str (slurp (str port-file)) :key-fn keyword))))
+        (is (thrown? java.nio.file.FileAlreadyExistsException
+                     (write! port-file {:process-id "claimed" :port 2})))
+        (testing "the process that is registered keeps the file it wrote"
+          (is (= 1 (:port (djson/read-str (slurp (str port-file)) :key-fn keyword)))))
+        (testing "and nothing of the write that failed is left behind"
+          (is (= ["claimed.json"]
+                 (sort (map str (.list (.toFile (.getParent port-file))))))))
+        (finally (delete-recursively dir))))))

@@ -61,7 +61,12 @@
   ;; Written and waited on here rather than returned to be written: what
   ;; comes after it is the process going away, and a reply that found the
   ;; connection busy - a thread of the application printing is enough - would
-  ;; be parked, and would go with it
+  ;; be parked, and would go with it.
+  ;;
+  ;; The wait is bounded and its result ignored on purpose. A connection that
+  ;; stays busy is one nobody is reading, and the client that is not reading
+  ;; is the one that just asked to be rid of this process: it gets what it
+  ;; asked for, and losing the reply is the lesser thing to lose
   (protocol/write-frame! conn (protocol/reply msg {:stopping true}))
   (protocol/flush-blocking! conn)
   (exit!)

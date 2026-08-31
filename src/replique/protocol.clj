@@ -13,7 +13,7 @@
             [replique.json :as json])
   (:import [clojure.lang LineNumberingPushbackReader]
            [java.io IOException PushbackReader StringReader Writer]
-           [java.util.concurrent ConcurrentLinkedQueue]
+           [java.util.concurrent ConcurrentLinkedQueue TimeUnit]
            [java.util.concurrent.atomic AtomicInteger AtomicLong]
            [java.util.concurrent.locks ReentrantLock]))
 
@@ -253,20 +253,36 @@
                           (finally (.unlock lock)))]
         (when written? (recur))))))
 
+(def flush-blocking-timeout-ms
+  "How long what is stopping the process waits for a busy connection."
+  2000)
+
 (defn flush-blocking!
   "Write everything waiting, waiting for the connection when another thread is
-  writing to it.
+  writing to it. Returns whether it got to write. Never waits longer than
+  flush-blocking-timeout-ms.
 
   Only what is about to stop the process does this. Everywhere else a producer
   parks its frame and moves on - a thread of the application must never be
   paused by an editor - but a frame parked on the way out is a frame the
   client never gets, and the reply saying the process is going is one it has
-  to get."
+  to get.
+
+  Bounded, because the thread that holds the connection may be one blocked
+  writing to a client that stopped reading - and a client that asked the
+  process to stop is exactly a client about to stop reading. Waiting for that
+  one to finish would mean never stopping. The reply is what is worth a wait,
+  not what the stop is conditional on."
   [{:keys [^ReentrantLock lock] :as conn}]
-  (.lock lock)
-  (try (flush-locked! conn)
-       (catch IOException _ nil)
-       (finally (.unlock lock))))
+  (if (try (.tryLock lock flush-blocking-timeout-ms TimeUnit/MILLISECONDS)
+           (catch InterruptedException _
+             (.interrupt (Thread/currentThread))
+             false))
+    (try (flush-locked! conn)
+         true
+         (catch IOException _ false)
+         (finally (.unlock lock)))
+    false))
 
 (defn write-frame!
   "Write a frame that must reach the client - a reply, an error. When another

@@ -10,8 +10,7 @@
             [replique.control]
             [replique.repl])
   (:import [java.nio.charset StandardCharsets]
-           [java.nio.file CopyOption Files LinkOption OpenOption Path Paths
-            StandardCopyOption]
+           [java.nio.file CopyOption Files LinkOption OpenOption Path Paths]
            [java.nio.file.attribute FileAttribute PosixFilePermissions]
            [java.util UUID]))
 
@@ -42,8 +41,7 @@
     :host       host to bind to, defaults to the loopback address
     :port       0 (the default) binds to a free port
     :directory  where the port file is written, defaults to the working dir
-    :port-file  overrides the port file location
-                true by default"
+    :port-file  overrides the port file location"
   [{:keys [process-id host port directory port-file]}]
   (let [process-id (if (some? process-id)
                      (validate-process-id process-id)
@@ -65,9 +63,29 @@
   (try (Files/setPosixFilePermissions p (PosixFilePermissions/fromString perms))
        (catch Exception _)))
 
+(defn- claim! [^Path tmp ^Path port-file]
+  ;; Linked into place rather than moved. A move is a rename, and rename
+  ;; replaces what it finds: atomically, but what it would be atomically
+  ;; taking is the name of a process that is still running. link fails when
+  ;; the name is taken, which is the answer wanted here, and it fails against
+  ;; a file that appeared after start! looked - which is what makes the claim
+  ;; the claim rather than a second guess. Either way the content is whole
+  ;; before the name exists.
+  ;;
+  ;; Filesystems with no hard links - fat, some network mounts - fall back to
+  ;; the move, and there the check start! makes is all there is.
+  (try
+    (Files/createLink port-file tmp)
+    (catch UnsupportedOperationException _
+      (Files/move tmp port-file (make-array CopyOption 0)))))
+
 (defn- write-port-file! [^Path port-file content]
   (let [dir (.getParent port-file)
-        tmp (path (str port-file ".tmp"))
+        ;; Named after this process: two jvms writing a port file in one
+        ;; directory must not be writing over one another's temporary file -
+        ;; what would come of that is a port file holding the host and port
+        ;; of the process that lost the race
+        tmp (path (str port-file "." (.pid (java.lang.ProcessHandle/current)) ".tmp"))
         ^"[Ljava.nio.file.OpenOption;" open-opts (make-array OpenOption 0)]
     ;; Only the directories replique creates are made private - a :port-file
     ;; pointing into an existing directory must not change its permissions
@@ -79,14 +97,14 @@
                                   StandardCharsets/UTF_8)
                    open-opts)
       (set-permissions! tmp "rw-------")
-      ;; Without REPLACE_EXISTING: the move is the claim, so two processes
-      ;; racing for one directory cannot both believe they took it - the
-      ;; check start! makes is what says why, not what makes it safe
-      (Files/move tmp port-file (make-array CopyOption 0))
+      (claim! tmp port-file)
       port-file
-      (catch Throwable t
-        (try (Files/deleteIfExists tmp) (catch Exception _))
-        (throw t)))))
+      ;; Always, and not only after a failure: what the link leaves behind is
+      ;; a second name for the port file, and a second name is a way to write
+      ;; the port file without going through the claim - which the next start
+      ;; of this same process would do
+      (finally
+        (try (Files/deleteIfExists tmp) (catch Exception _))))))
 
 (defn- delete-port-file! [^Path port-file]
   (try (Files/deleteIfExists port-file) (catch Exception _)))
@@ -95,8 +113,11 @@
   "Start the replique process. See normalize-opts for the options. Returns the
   process info - the same map that is written to the port file.
 
-  Refuses to start where a port file already exists: it names the process a
-  client would find in this directory, and there can be only one of those."
+  Refuses to start when the port file already exists: it is the name a client
+  finds this process under, and taking a name that is taken would leave
+  whatever holds it running with nothing able to reach it. The name is the
+  :process-id, so this is what stops a second process of the same project -
+  a directory can hold as many processes as they have names."
   ([] (start! nil))
   ([opts]
    (when (state/started?)
@@ -104,15 +125,17 @@
    (let [{:keys [process-id host port directory port-file]} (normalize-opts opts)
          ;; Before the server is bound and before anything is installed, so
          ;; that a refusal costs nothing and unwinds nothing.  The port file
-         ;; is how anything finds a process: a second process here would take
-         ;; the name of the first, which would go on running with nothing
-         ;; able to reach it.  A file whose process is gone says something
-         ;; wrong about this directory - what is there is what a client finds
-         ;; out by connecting, and it is deleted there
+         ;; is how anything finds a process: taking the name of a process
+         ;; that is running would leave it running with nothing able to reach
+         ;; it.  A file whose process is gone says something wrong - what is
+         ;; there is what a client finds out by connecting, and it is deleted
+         ;; there.  The claim write-port-file! makes is what a process racing
+         ;; this one loses against; this is what says why
          _ (when (Files/exists port-file (make-array LinkOption 0))
-             (throw (ex-info (str "A process is already registered in this directory: "
-                                  port-file " exists. Delete that file if its process is gone.")
-                             {:port-file (str port-file)})))
+             (throw (ex-info (str "The process-id " (pr-str process-id) " is taken in "
+                                  directory ": " port-file " exists. Start under another"
+                                  " :process-id, or delete that file if its process is gone.")
+                             {:process-id process-id :port-file (str port-file)})))
          server (server/start-server {:host host
                                       :port port
                                       :name "replique"
