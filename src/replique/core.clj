@@ -44,6 +44,20 @@
     (throw (ex-info (str "Invalid port: " (pr-str port)) {:port port})))
   port)
 
+(defn- validate-host
+  "A host is a string, and one that is not is refused rather than made one.
+  The other options replique is given are names it writes down - a process
+  id, a directory - and stringifying those keeps whatever the client meant.
+  A host is resolved, and every number resolves: getByName reads 42 as
+  0.0.0.42 and 0 as 0.0.0.0, which is every interface of the machine on a
+  process that has no authentication. Refusing says which option is wrong,
+  where the cast this replaces named java.lang.Long and nothing else."
+  [host]
+  (when-not (string? host)
+    (throw (ex-info (str "Invalid :host: " (pr-str host) ". A host must be a string.")
+                    {:host host})))
+  host)
+
 (def ^:private option-keys #{:process-id :host :port :directory :port-file})
 
 (defn- validate-opts
@@ -87,7 +101,7 @@
         ;; started in
         directory (str (absolute (path (or directory (System/getProperty "user.dir")))))]
     {:process-id process-id
-     :host (or host "127.0.0.1")
+     :host (if (some? host) (validate-host host) "127.0.0.1")
      :port (validate-port (or port 0))
      :directory directory
      ;; absolute for that reason too, and because the port file must not move
@@ -104,16 +118,23 @@
        (catch Exception _)))
 
 (defn- claim! [^Path tmp ^Path port-file]
-  ;; Linked into place rather than moved. A move is a rename, and rename
-  ;; replaces what it finds: atomically, but what it would be atomically
-  ;; taking is the name of a process that is still running. link fails when
-  ;; the name is taken, which is the answer wanted here, and it fails against
-  ;; a file that appeared after start! looked - which is what makes the claim
-  ;; the claim rather than a second guess. Either way the content is whole
-  ;; before the name exists.
+  ;; Linked into place rather than moved. Not because a move would take a name
+  ;; that is taken - Files/move is not the bare rename(2) that replaces what
+  ;; it finds, it refuses an existing target too - but because of how it
+  ;; refuses: rename(2) never answers EEXIST for a regular file, so the
+  ;; refusal is the provider looking at the target before it renames, and
+  ;; between that look and the rename is a window. That window is the one this
+  ;; claim exists to close, start! having already looked once; a second look no
+  ;; closer to the write would only make it narrower. createLink refuses in one
+  ;; operation - the name either becomes this process's or it does not - so it
+  ;; fails against a file that appeared after start! looked, which is what
+  ;; makes the claim the claim rather than a second guess. Either way the
+  ;; content is whole before the name exists.
   ;;
   ;; Filesystems with no hard links - fat, some network mounts - fall back to
-  ;; the move, and there the check start! makes is all there is. Which
+  ;; the move. A name that is taken is still refused there, so that part does
+  ;; not depend on the filesystem; what is given up is the atomicity, and the
+  ;; window start! already lives with is all that is left of the claim. Which
   ;; exception says so depends on where the refusal comes from: a provider
   ;; that does not implement links at all throws UnsupportedOperationException,
   ;; while the unix provider issues link(2) and turns the EPERM or ENOTSUP a

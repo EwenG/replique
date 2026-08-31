@@ -356,7 +356,24 @@
       (doseq [[code expected]
               [["#replique/src 1" "#replique/src takes a map"]
                ["#replique/src {:file 42}" ":file must be a string"]
-               ["#replique/src {:line :nope}" ":line must be an integer"]]]
+               ["#replique/src {:line :nope}" ":line must be an integer"]
+               ;; The range, not only the type. A line number ends up in
+               ;; LineNumberingPushbackReader.setLineNumber, which takes an
+               ;; int, so a client that counted lines into a long used to get
+               ;; an integer overflow raised from inside clojure - reported as
+               ;; an execution failure, which is not what it is, and naming
+               ;; replique.repl rather than the key it got wrong
+               ["#replique/src {:line 2147483648}"
+                ":line must be an integer between 1 and 2147483647"]
+               ["#replique/src {:line 99999999999999999999}"
+                ":line must be an integer between 1 and 2147483647"]
+               ;; and the same rule at the other end: an editor counts lines
+               ;; from 1, and these used to be written into the metadata of
+               ;; the var they name as if they were a place in a file
+               ["#replique/src {:line 0}"
+                ":line must be an integer between 1 and 2147483647"]
+               ["#replique/src {:line -5}"
+                ":line must be an integer between 1 and 2147483647"]]]
         (let [r (repl-client info)]
           (try
             (send! r (str code "\n(+ 1 1)"))

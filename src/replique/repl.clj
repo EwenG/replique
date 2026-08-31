@@ -114,8 +114,19 @@
       (not (or (nil? (:file m)) (string? (:file m))))
       (bad (str "#replique/src :file must be a string, got: " (pr-str (:file m))))
 
-      (not (or (nil? (:line m)) (integer? (:line m))))
-      (bad (str "#replique/src :line must be an integer, got: " (pr-str (:line m))))
+      ;; The range a line number really has, rather than integer? alone. It
+      ;; ends up in LineNumberingPushbackReader.setLineNumber, which takes an
+      ;; int, so a client that counted lines into a long gets an integer
+      ;; overflow thrown from inside clojure - which is the cast error pointing
+      ;; at replique's own code that this check is here to replace, and it
+      ;; arrives as an execution failure rather than the read failure it is.
+      ;; The low end is the same rule read the other way: an editor counts
+      ;; lines from 1, and a 0 or a negative one would be written into the
+      ;; metadata of the var it names as if it were a place in a file.
+      (not (or (nil? (:line m))
+               (and (integer? (:line m)) (<= 1 (:line m) Integer/MAX_VALUE))))
+      (bad (str "#replique/src :line must be an integer between 1 and "
+                Integer/MAX_VALUE ", got: " (pr-str (:line m))))
 
       :else (->SourceDirective (:file m) (:line m)))))
 

@@ -614,6 +614,32 @@
                                                    :port 0 :directory "/tmp"}))))
     (is (string? (:process-id (core/normalize-opts nil))))))
 
+(deftest a-host-that-is-not-a-host-is-refused
+  (testing "the one option whose value used to reach java unchecked. It cannot
+  be stringified the way a process id or a directory is, because every number
+  is an address to getByName - 42 reads as 0.0.0.42, and 0 as every interface
+  of a machine running a process that has no authentication"
+    (let [t (try (core/normalize-opts {:host 42})
+                 nil
+                 (catch clojure.lang.ExceptionInfo t t))]
+      (is (some? t))
+      (is (re-find #"Invalid :host: 42" (.getMessage ^Throwable t)))
+      (is (= 42 (:host (ex-data t)))))
+    (testing "and the refusal names the option, where the cast it replaces
+    said java.lang.Long and nothing a client could act on"
+      (let [dir (temp-dir)]
+        (try
+          (let [t (try (core/start! {:directory dir :host 42})
+                       nil
+                       (catch Throwable t t))]
+            (is (some? t))
+            (is (re-find #"Invalid :host" (.getMessage ^Throwable t)))
+            (is (not (state/started?))))
+          (finally (core/stop!) (delete-recursively dir)))))
+    (testing "a host that is a string is still a host"
+      (is (= "0.0.0.0" (:host (core/normalize-opts {:host "0.0.0.0"}))))
+      (is (= "127.0.0.1" (:host (core/normalize-opts nil)))))))
+
 (deftest framing-keys-cannot-be-overridden
   (testing "a request cannot inject its own tag - framing must stay trustworthy
   whatever a client, or an op, puts in the map"
@@ -752,9 +778,9 @@
 (deftest a-filesystem-without-hard-links-still-claims
   (testing "the link is what makes the claim atomic, and a filesystem that has
   no hard links answers it with a refusal rather than a link. The claim falls
-  back to a move there - weaker, because the check start! makes is then all
-  that stands between two processes racing - but a name that is taken is still
-  refused, and that part must not depend on the filesystem"
+  back to a move there - weaker, because a move refuses a name that is taken by
+  looking before it renames rather than in one operation - but refuse it does,
+  and that part must not depend on the filesystem"
     (let [dir (temp-dir)
           zip (Paths/get (str dir) (into-array String ["archive.zip"]))
           env (doto (java.util.HashMap.) (.put "create" "true"))
