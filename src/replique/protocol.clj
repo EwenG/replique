@@ -305,31 +305,42 @@
   that never pauses it."
   [{:keys [^ReentrantLock lock ^ConcurrentLinkedQueue queue
            ^AtomicInteger queued-events ^AtomicLong dropped] :as conn} f]
-  (if (.tryLock lock)
-    (do (try (flush-locked! conn)
-             (write-line! conn (frame->line f))
+  ;; The bound is looked at before the frame is serialized: a queue that is
+  ;; already full belongs to a client that is durably behind, which is a
+  ;; client this event is going to be dropped for, and a flood must stay cheap
+  ;; for the thread producing it. Looked at rather than taken - the slot is
+  ;; reserved below, where the frame is parked, so that what this counts stays
+  ;; the number of events waiting in the queue.
+  (if (>= (.get queued-events) max-queued-events)
+    (.incrementAndGet dropped)
+    ;; Serialized before the connection is taken, as write-frame! does it:
+    ;; holding the connection for the time a frame takes to turn into json is
+    ;; holding it against every other producer, and against the thread that
+    ;; owns it.
+    (let [^String line (frame->line f)]
+      (if (.tryLock lock)
+        (try (flush-locked! conn)
+             (write-line! conn line)
              (catch IOException _ nil)
              (finally (.unlock lock)))
-        ;; a producer may have parked something while we held the lock
-        (try-flush! conn))
-    ;; The connection is busy - usually for the moment it takes to write one
-    ;; frame. Wait in the queue rather than be lost, and count the loss only
-    ;; when the client is durably behind. The bound is checked before
-    ;; serializing: a flood must stay cheap for the thread producing it.
-    (do
-      (if (<= (.incrementAndGet queued-events) max-queued-events)
-        (.add queue [:event (frame->line f)])
-        (do (.decrementAndGet queued-events)
-            (.incrementAndGet dropped)))
-      ;; See write-frame!: what is parked while the lock is being released is
-      ;; parked into a queue nobody is about to look at. The count of what was
-      ;; dropped is written by the same flush, and is stranded the same way.
-      ;;
-      ;; This does not make the producer wait for a client that is not
-      ;; reading: the lock is taken with tryLock here as everywhere, and a
-      ;; connection whose owner is blocked writing to it is a connection this
-      ;; returns from immediately.
-      (try-flush! conn))))
+        ;; The connection is busy - usually for the moment it takes to write
+        ;; one frame. Wait in the queue rather than be lost, and count the
+        ;; loss only when the client is durably behind.
+        (if (<= (.incrementAndGet queued-events) max-queued-events)
+          (.add queue [:event line])
+          (do (.decrementAndGet queued-events)
+              (.incrementAndGet dropped))))))
+  ;; Whatever happened above. A producer may have parked something while we
+  ;; held the lock, and - see write-frame! - what we parked ourselves while
+  ;; the lock was being released is parked into a queue nobody is about to
+  ;; look at. The count of what was dropped is written by the same flush, and
+  ;; is stranded the same way.
+  ;;
+  ;; This does not make the producer wait for a client that is not reading:
+  ;; the lock is taken with tryLock here as everywhere, and a connection whose
+  ;; owner is blocked writing to it is a connection this returns from
+  ;; immediately.
+  (try-flush! conn))
 
 ;;; Dispatch
 

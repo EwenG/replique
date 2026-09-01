@@ -347,27 +347,29 @@
   thread flushes before its next read, and it is already blocked in that read
   - so it would wait for a request that may never come.
 
-  The window is entered exactly: a value that blocks while it is being
-  written to JSON holds the producer between the failed tryLock and the queue,
-  which is where emit-event! serializes the frame."
+  The window is entered exactly: the queue is one that blocks the first time
+  it is added to, which holds the producer between the tryLock that failed
+  and the frame being in the queue."
     (let [out (java.io.StringWriter.)
-          conn (merge {:out out} (protocol/outbox))
-          ^java.util.concurrent.locks.ReentrantLock lock (:lock conn)
-          serializing (java.util.concurrent.CountDownLatch. 1)
+          parking (java.util.concurrent.CountDownLatch. 1)
           release (java.util.concurrent.CountDownLatch. 1)
-          ;; realized by the json writer, and not before: frame drops the keys
-          ;; whose value is nil, which does not realize a lazy seq
-          blocking (lazy-seq (.countDown serializing) (.await release) nil)
+          queue (proxy [java.util.concurrent.ConcurrentLinkedQueue] []
+                  (add [x]
+                    (.countDown parking)
+                    (.await release)
+                    (proxy-super add x)))
+          conn (merge {:out out} (protocol/outbox) {:queue queue})
+          ^java.util.concurrent.locks.ReentrantLock lock (:lock conn)
           held (java.util.concurrent.CountDownLatch. 1)
           producer (future
                      (.await held)
-                     (protocol/emit-event! conn (protocol/event "out" {:line blocking})))
+                     (protocol/emit-event! conn (protocol/event "out" {:line "stranded"})))
           holder (future
                    (.lock lock)
                    (.countDown held)
                    ;; the producer is now blocked inside emit-event!, past the
                    ;; tryLock that failed and short of the queue
-                   (.await serializing)
+                   (.await parking)
                    (.unlock lock)
                    ;; what the holder always does, on a queue that is empty
                    (protocol/try-flush! conn))]
