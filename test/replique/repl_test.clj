@@ -283,6 +283,102 @@
             (is (string/includes? (:message f) "#replique/src takes a map"))))
         (finally (disconnect r))))))
 
+;;; The namespace
+
+(deftest the-ns-directive-moves-the-repl
+  (with-process [info nil]
+    (let [r (repl-client info)]
+      (try
+        (send! r "#replique/ns clojure.string\n(ns-name *ns*)")
+        (let [frames (recv-until r "prompt")]
+          (is (= "clojure.string" (:value (frame-tagged frames "ret"))))
+          (testing "and the prompt says where the repl now is, which is how the
+          client knows without asking"
+            (is (= "clojure.string" (:ns (frame-tagged frames "prompt"))))))
+        (testing "it stays there - unlike the source directive it is not about
+        one form. Switching to the repl after evaluating something lands at a
+        prompt of the namespace that was being worked in"
+          (is (= "clojure.string" (:value (frame-tagged (eval! r "(ns-name *ns*)")
+                                                        "ret")))))
+        (finally (disconnect r))))))
+
+(deftest the-ns-directive-applies-before-the-form-is-read
+  (testing "not before it is evaluated: ::keyword resolves against *ns* while
+  reading, so a directive applied any later would read the form in the
+  namespace being left, and the aliases of that one"
+    (with-process [info nil]
+      (let [r (repl-client info)]
+        (try
+          (eval! r "(ns replique.ns-test-target (:require [clojure.string :as s]))")
+          (eval! r "(in-ns 'user)")
+          (send! r "#replique/ns replique.ns-test-target\n[::here ::s/there]")
+          (let [frames (recv-until r "prompt")]
+            (is (= "[:replique.ns-test-target/here :clojure.string/there]"
+                   (:value (frame-tagged frames "ret")))))
+          (finally (disconnect r)))))))
+
+(deftest the-ns-directive-creates-a-namespace-that-is-usable
+  (testing "in-ns alone makes a namespace holding nothing at all, not even
+  def. A repl that answered a buffer's namespace with one where defn does not
+  resolve would be a repl making that buffer look broken"
+    (with-process [info nil]
+      (let [r (repl-client info)]
+        (try
+          (send! r "#replique/ns replique.ns-test-fresh\n(defn fresh [] (inc 1))")
+          (recv-until r "prompt")
+          (is (= "2" (:value (frame-tagged (eval! r "(fresh)") "ret"))))
+          (testing "and a namespace that already exists is left as it is - what
+          it refers is its own business, and a file that excluded something
+          from clojure.core meant it"
+            (eval! r (str "(ns replique.ns-test-excluding "
+                          "(:refer-clojure :exclude [inc]))"))
+            (eval! r "(in-ns 'user)")
+            (send! r "#replique/ns replique.ns-test-excluding\n(resolve 'inc)")
+            (is (= "nil" (:value (frame-tagged (recv-until r "prompt") "ret")))))
+          (finally (disconnect r)))))))
+
+(deftest the-ns-directive-goes-with-a-source-directive
+  (testing "the two are sent together for every form taken from a buffer, and
+  neither takes the other back"
+    (with-process [info nil]
+      (let [r (repl-client info)]
+        (try
+          (send! r (str "#replique/ns replique.ns-test-both\n"
+                        "#replique/src {:file \"/home/me/src/both.clj\" :line 30}\n"
+                        "(defn both [] 1)"))
+          (recv-until r "prompt")
+          (let [frames (eval! r (str "[(ns-name *ns*) (:file (meta #'both)) "
+                                     "(:line (meta #'both))]"))]
+            (is (= "[replique.ns-test-both \"/home/me/src/both.clj\" 30]"
+                   (:value (frame-tagged frames "ret")))))
+          (testing "and in the other order, since a client may send either first"
+            (send! r (str "#replique/src {:file \"/home/me/src/other.clj\" :line 8}\n"
+                          "#replique/ns replique.ns-test-other\n"
+                          "(defn other [] 1)"))
+            (recv-until r "prompt")
+            (let [frames (eval! r (str "[(ns-name *ns*) (:file (meta #'other)) "
+                                       "(:line (meta #'other))]"))]
+              (is (= "[replique.ns-test-other \"/home/me/src/other.clj\" 8]"
+                     (:value (frame-tagged frames "ret"))))))
+          (finally (disconnect r)))))))
+
+(deftest an-ns-directive-that-cannot-be-used-says-why
+  (testing "a namespace name is a symbol with no namespace of its own.
+  Qualified ones are the mistake worth naming: it is what comes out of a
+  client that took the symbol at point rather than the namespace around it"
+    (with-process [info nil]
+      (doseq [code ["#replique/ns foo/bar" "#replique/ns \"foo.bar\"" "#replique/ns 1"]]
+        (let [r (repl-client info)]
+          (try
+            (send! r (str code "\n(ns-name *ns*)"))
+            (let [f (frame-tagged (recv-until r "prompt") "exception")]
+              (is (= "read-source" (:phase f)))
+              (is (string/includes? (:message f)
+                                    "#replique/ns takes an unqualified symbol")))
+            (testing "and the repl has not moved"
+              (is (= "user" (:value (frame-tagged (recv-until r "ret") "ret")))))
+            (finally (disconnect r))))))))
+
 ;;; Interrupt
 
 (defn- eval-in-background! [r code]

@@ -130,15 +130,66 @@
 
       :else (->SourceDirective (:file m) (:line m)))))
 
+;;; The namespace
+
+;; Code taken from a buffer belongs to the namespace that buffer is in, and
+;; the repl is wherever it was left. A client that sends a form says which
+;; namespace to read it in, in band, the way it says where it came from:
+;;
+;;   #replique/ns foo.bar
+;;   (defn foo [] ...)
+;;
+;; Unlike #replique/src this is not about the next form only. It is in-ns
+;; without the evaluation: the repl stays there, which is what makes switching
+;; to the repl after evaluating something land at a prompt of the namespace
+;; that was being worked in. Without the evaluation because an in-ns sent as a
+;; form is a form - it has a result, and a prompt after it, and both appear in
+;; the transcript as something the developer did not write.
+(defrecord NsDirective [ns])
+
+(defn- ns-directive [sym]
+  (if (simple-symbol? sym)
+    (->NsDirective sym)
+    ;; A namespace name is a symbol with no namespace of its own. Qualified
+    ;; ones are the mistake worth naming: #replique/ns foo/bar is what comes
+    ;; out of a client that took the symbol at point rather than the namespace
+    ;; around it
+    (throw (ex-info (str "#replique/ns takes an unqualified symbol naming a "
+                         "namespace, got: " (pr-str sym))
+                    {:replique/error :invalid-ns-directive}))))
+
+(defn- enter-ns!
+  "Read and evaluate in the namespace SYM from here on, creating it if needed.
+
+  clojure.core is referred into a namespace this creates, which in-ns alone
+  does not do: a namespace it made holds nothing at all, not even def, and a
+  repl that answered a buffer's namespace with one where defn does not resolve
+  would be a repl making that buffer look broken. A namespace that already
+  exists is left as it is - what it refers is its own business, and a file
+  that excluded something from clojure.core meant it.
+
+  A namespace created here is empty apart from clojure.core: what a file
+  requires is required by its ns form, and until that form has been evaluated
+  the code in it will not find what it depends on."
+  [sym]
+  (let [existing (find-ns sym)]
+    (in-ns sym)
+    (when-not existing (refer-clojure))
+    nil))
+
 (defn- make-repl-read
-  "The :read step: clojure.main/repl-read, plus #replique/src.
+  "The :read step: clojure.main/repl-read, plus the directives.
 
   clojure.main/repl-read renumbers every form to line 1 - a socket repl has
-  no meaningful line numbers - which is exactly the knob the directive needs:
-  the form is read as if it started where the client says it did.
+  no meaningful line numbers - which is exactly the knob #replique/src needs:
+  the form is read as if it started where the client says it did. That one is
+  remembered until a form consumes it, so that a blank line between the two
+  does not drop it.
 
-  The directive is remembered until a form consumes it, so that a blank line
-  between the two does not drop it."
+  #replique/ns is not remembered, it is done: it has to take effect before the
+  next form is read rather than before it is evaluated, because ::keyword and
+  the reader conditionals resolve against *ns* while reading. Applied any
+  later, the form would be read in the namespace being left."
   [conn]
   (let [pending (volatile! nil)]
     (fn [request-prompt request-exit]
@@ -159,6 +210,12 @@
               (cond
                 (instance? SourceDirective input)
                 (do (vreset! pending input) (recur))
+
+                ;; pending is left alone: a #replique/src read before this one
+                ;; is about the form still to come, and entering a namespace
+                ;; is not that form
+                (instance? NsDirective input)
+                (do (enter-ns! (:ns input)) (recur))
 
                 ;; the way a socket repl is ended, as in clojure.core.server
                 (identical? :repl/quit input) request-exit
@@ -246,7 +303,8 @@
                  ;; assoc rather than a fixed map: the data readers of the
                  ;; project being worked on must keep working
                  (set! *data-readers* (assoc *data-readers*
-                                             'replique/src #'source-directive)))
+                                             'replique/src #'source-directive
+                                             'replique/ns #'ns-directive)))
          :read (make-repl-read conn)
          :eval (fn [form] (interruptible conn #(eval form)))
          ;; The frame is built before the output is flushed: printing a
