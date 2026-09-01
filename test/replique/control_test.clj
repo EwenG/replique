@@ -154,6 +154,28 @@
           (is (= (System/getProperty "java.version") (:java-version reply))))
         (finally (disconnect client))))))
 
+(deftest namespaces
+  (with-process [info nil]
+    (let [client (control-client info)]
+      (try
+        (let [reply (request! client {:op :namespaces :id 3})
+              namespaces (:namespaces reply)]
+          (is (vector? namespaces))
+          (is (every? string? namespaces))
+          (is (contains? (set namespaces) "clojure.core"))
+          (is (= (sort namespaces) namespaces)
+              "sorted here rather than by the client, which is about to show it")
+          (testing "what has been loaded, which is what a repl can be moved
+          into. A namespace made after the ask is in the next answer"
+            (let [before (set (:namespaces (request! client {:op :namespaces :id 4})))]
+              (is (not (contains? before "replique.ops-test-made")))
+              (create-ns 'replique.ops-test-made)
+              (is (contains? (set (:namespaces (request! client {:op :namespaces :id 5})))
+                             "replique.ops-test-made")))))
+        (finally
+          (remove-ns 'replique.ops-test-made)
+          (disconnect client))))))
+
 (deftest unknown-op
   (with-process [info nil]
     (let [client (control-client info)]

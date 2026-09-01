@@ -337,6 +337,26 @@
             (is (= "nil" (:value (frame-tagged (recv-until r "prompt") "ret")))))
           (finally (disconnect r)))))))
 
+(deftest a-namespace-that-is-only-a-file-is-made-empty-and-then-loaded
+  (testing "the honest limit of creating a namespace that does not exist:
+  one that exists only as a file on the classpath is made empty here, and
+  what that file defines is not in it until the file has been loaded.
+  Requiring it afterwards still loads it - require goes by what has been
+  loaded, not by what namespaces exist - so the empty one is a namespace
+  that heals rather than one that shadows the file for good"
+    (with-process [info nil]
+      (let [r (repl-client info)]
+        (try
+          (is (= "false" (:value (frame-tagged (eval! r "(some? (find-ns 'clojure.set))")
+                                               "ret"))))
+          (send! r "#replique/ns clojure.set\n(some? (resolve 'union))")
+          (is (= "false" (:value (frame-tagged (recv-until r "prompt") "ret"))))
+          (is (= "true" (:value (frame-tagged
+                                 (eval! r (str "(do (require 'clojure.set) "
+                                               "(some? (resolve 'clojure.set/union)))"))
+                                 "ret"))))
+          (finally (disconnect r)))))))
+
 (deftest the-ns-directive-goes-with-a-source-directive
   (testing "the two are sent together for every form taken from a buffer, and
   neither takes the other back"

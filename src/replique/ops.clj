@@ -18,6 +18,17 @@
   (protocol/frame {:value (:value msg)
                    :printed (pr-str (:value msg))}))
 
+;; The namespaces the process has, for a client to offer a choice of. What
+;; has been loaded rather than what is on the classpath: a repl can only be
+;; moved into a namespace that exists, and one that exists only as a file is
+;; one nothing can be evaluated in yet.
+;;
+;; Sorted here rather than by the client. It is the same order for every
+;; client, it is the order somebody reading a list expects, and the client
+;; that asked is about to show it to somebody.
+(defmethod protocol/handle :namespaces [_ _]
+  {:namespaces (vec (sort (map (comp str ns-name) (all-ns))))})
+
 ;; Stopping an evaluation that went wrong. The client names the repl
 ;; connection it wants interrupted - it knows the id, the handshake reply of
 ;; every connection it opened carries it.
