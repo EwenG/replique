@@ -43,6 +43,17 @@
         op (protocol/normalize-op raw-op)
         msg (assoc msg :op op)]
     (cond
+      ;; First, and before the op: this is the check that lets an error frame
+      ;; be built at all. A frame carrying an id json cannot write does not
+      ;; serialize, and neither does the error frame that would say so, which
+      ;; is built around that same id - so a message rejected for its op while
+      ;; its id went unlooked at came back as a serialization failure, saying
+      ;; nothing about either. The handshake checks the id first for the same
+      ;; reason, and one rule cannot be told two ways.
+      (not (protocol/valid-id? (:id msg)))
+      (protocol/write-frame!
+       conn (protocol/error (dissoc msg :id) :invalid-message
+                            (protocol/invalid-id-message (:id msg))))
       (nil? op)
       (protocol/write-frame!
        conn (protocol/error msg :invalid-message
@@ -50,10 +61,6 @@
                               "A request must have an :op"
                               (str "An :op must be a keyword, a string or a symbol, got: "
                                    (pr-str raw-op)))))
-      (not (protocol/valid-id? (:id msg)))
-      (protocol/write-frame!
-       conn (protocol/error (dissoc msg :id) :invalid-message
-                            (protocol/invalid-id-message (:id msg))))
       (= :hello op)
       (protocol/write-frame!
        conn (protocol/error msg :already-connected

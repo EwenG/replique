@@ -24,8 +24,50 @@
     (format "Replique requires clojure %s.%s+, this process runs %s"
             (:major min-clojure-version) (:minor min-clojure-version) (clojure-version))))
 
+(def ^:private property-prefix "replique.")
+
+(def ^:private option-keys
+  "The options, in the order they read best in a message. Said here rather
+  than asked of replique.core, which this namespace is careful not to need
+  before it has tried to load it - a classpath that cannot is a start failure
+  it has to be able to report."
+  [:process-id :host :port :directory :port-file])
+
+(defn- property-name ^String [k] (str property-prefix (name k)))
+
+(defn- validate-properties!
+  "Refuse a -Dreplique.<name> that is not an option, rather than leave it
+  unread. The rule the edn map is already held to, and it matters more here: a
+  misspelt key in a map is at least in the map the client wrote, while a
+  property that did nothing looks exactly like one that worked. Either way the
+  process starts under a name nobody asked for, and the editor then waits for
+  a process that is running and cannot be found.
+
+  Only the names directly under replique. - an option is replique.<option>,
+  and an option name is one word or two joined by a hyphen, so a misspelling
+  of one cannot hold a dot. A replique.something.else is another namespace
+  rather than a typo, replique 1's replique.server.port being the one that
+  really turns up in a jvm, and stopping a process over a property that was
+  never addressed to it is worse than the typo this is here to catch."
+  []
+  (let [known (set (map property-name option-keys))
+        names (fn [ns] (apply str (interpose ", " (map #(str "-D" %) ns))))
+        unknown (->> (.stringPropertyNames (System/getProperties))
+                     (filter (fn [^String n]
+                               (and (.startsWith n property-prefix)
+                                    (neg? (.indexOf n (int \.) (count property-prefix))))))
+                     (remove known)
+                     sort
+                     seq)]
+    (when unknown
+      (throw (ex-info (str "Unknown system propert" (if (next unknown) "ies" "y") ": "
+                           (names unknown) ". The options are: "
+                           (names (map property-name option-keys)) ".")
+                      {:unknown-properties (vec unknown)})))))
+
 (defn- system-property-opts []
-  (let [prop (fn [k] (System/getProperty (str "replique." (name k))))
+  (validate-properties!)
+  (let [prop (fn [k] (System/getProperty (property-name k)))
         read-prop (fn [k] (when-let [v (prop k)] (edn/read-string v)))]
     (cond-> {}
       (prop :process-id) (assoc :process-id (prop :process-id))

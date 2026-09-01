@@ -519,6 +519,73 @@
             (is (= 1 (:id (request! client {:op :echo :id 1 :value 1})))))
           (finally (disconnect client)))))))
 
+(deftest an-id-is-looked-at-before-the-rest-of-the-message
+  (testing "the id check is what lets an error frame be built at all: a frame
+  carrying an id json cannot write does not serialize, and neither does the
+  error frame that says so, which is built around that same id. Rejecting a
+  message for its op first used to build that frame around an id nothing had
+  looked at, and the client got a serialization failure naming neither problem"
+    (with-process [info nil]
+      (let [c (control-client info)]
+        (try
+          (doseq [msg ["{:id 1/2}" "{:id ##NaN}" "{:id ##Inf}" "{:id 1/2 :op 42}"]]
+            (let [f (request! c msg)]
+              (is (= "invalid-message" (:error f)) msg)
+              (is (re-find #"An :id must be a string or a number" (:message f)) msg)))
+          (testing "and a keyword id, which json would hand back as a string
+          the client cannot match its request by, is refused there too rather
+          than echoed"
+            (let [f (request! c "{:id :kw}")]
+              (is (= "invalid-message" (:error f)))
+              (is (not (contains? f :id)) (pr-str f))))
+          (testing "the handshake checks the id first for the same reason, and
+          one rule cannot be told two ways"
+            (let [h (connect info)]
+              (try
+                (send! h "{:id 1/2}")
+                (is (= (:message (recv h)) (:message (request! c "{:id 1/2}"))))
+                (finally (disconnect h)))))
+          (testing "a message whose id is fine is still answered on its op"
+            (is (re-find #"must have an :op" (:message (request! c "{:id 1}")))))
+          (finally (disconnect c)))))))
+
+(deftest a-system-property-that-is-not-an-option-is-refused
+  (testing "the rule the edn map is already held to. A -Dreplique.proces-id
+  nothing reads starts a process under a random name, successfully, and the
+  editor waits for one that is running and cannot be found - and a property
+  that did nothing looks exactly like one that worked"
+    (System/setProperty "replique.proces-id" "my-project")
+    (try
+      (let [t (try (#'replique.main/system-property-opts)
+                   nil
+                   (catch clojure.lang.ExceptionInfo t t))]
+        (is (some? t))
+        (is (re-find #"Unknown system property: -Dreplique\.proces-id"
+                     (.getMessage ^Throwable t)))
+        (is (= ["replique.proces-id"] (:unknown-properties (ex-data t))))
+        (testing "and it says what the options are, which is what the person
+        who typed it needs to find the mistake"
+          (is (re-find #"-Dreplique\.process-id" (.getMessage ^Throwable t)))))
+      (finally (System/clearProperty "replique.proces-id"))))
+  (testing "a name that is not directly under replique. is another namespace
+  rather than a misspelt option - replique 1 reads replique.server.port, and
+  refusing to start over a property never addressed to this process would be
+  worse than the typo the check is for"
+    (System/setProperty "replique.server.port" "9000")
+    (try
+      (is (= {} (#'replique.main/system-property-opts)))
+      (finally (System/clearProperty "replique.server.port"))))
+  (testing "the options themselves are still read, and :port still as edn"
+    (System/setProperty "replique.process-id" "from-a-property")
+    (System/setProperty "replique.port" "47000")
+    (try
+      (is (= {:process-id "from-a-property" :port 47000}
+             (#'replique.main/system-property-opts)))
+      (finally (System/clearProperty "replique.process-id")
+               (System/clearProperty "replique.port"))))
+  (testing "and a jvm holding none of them passes nothing on"
+    (is (= {} (#'replique.main/system-property-opts)))))
+
 (deftest values-that-have-no-json-representation
   (testing "the op replies with a value the JSON writer rejects: the client
   gets an error frame, correlated, instead of nothing at all"
