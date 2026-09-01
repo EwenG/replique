@@ -171,34 +171,65 @@
   (when-not @installed
     (let [out System/out
           err System/err
-          state {:out out
-                 :err err
-                 :out-var (.getRawRoot #'*out*)
-                 :err-var (.getRawRoot #'*err*)
-                 :handler (Thread/getDefaultUncaughtExceptionHandler)}]
-      (reset! installed state)
-      (let [tee-out (tee-stream out "out")
-            tee-err (tee-stream err "err")]
-        (System/setOut tee-out)
-        (System/setErr tee-err)
-        ;; The root bindings of *out* and *err* wrap the streams that were
-        ;; captured when clojure booted, so replacing System/out is not
-        ;; enough for (future (println ...)) to be seen.
-        (alter-var-root #'*out* (constantly (print-writer tee-out)))
-        (alter-var-root #'*err* (constantly (print-writer tee-err))))
+          ;; Built before anything is registered: what has not been installed
+          ;; is not something uninstall! has to put back, and a failure here
+          ;; leaves a process install! can be called on again
+          tee-out (tee-stream out "out")
+          tee-err (tee-stream err "err")
+          ;; kept, so that uninstall! can close the chain from the top - see
+          ;; close-tee!
+          out-writer (print-writer tee-out)
+          err-writer (print-writer tee-err)]
+      (reset! installed {:out out
+                         :err err
+                         :tee-out tee-out
+                         :tee-err tee-err
+                         :out-writer out-writer
+                         :err-writer err-writer
+                         :out-var (.getRawRoot #'*out*)
+                         :err-var (.getRawRoot #'*err*)
+                         :handler (Thread/getDefaultUncaughtExceptionHandler)})
+      (System/setOut tee-out)
+      (System/setErr tee-err)
+      ;; The root bindings of *out* and *err* wrap the streams that were
+      ;; captured when clojure booted, so replacing System/out is not
+      ;; enough for (future (println ...)) to be seen.
+      (alter-var-root #'*out* (constantly out-writer))
+      (alter-var-root #'*err* (constantly err-writer))
       (Thread/setDefaultUncaughtExceptionHandler
        (uncaught-exception-handler err)))))
 
+(defn- close-tee!
+  "Close a tee, from the top of the chain down.
+
+  Closed rather than only flushed: a flush leaves behind the beginning of a
+  character whose remaining bytes are not coming, and the tee reports that as
+  the broken character it turned out to be - a flush would drop it. The
+  writer first, because it is the one holding an encoder whose characters
+  have not reached the tee yet; closing it closes the tee under it, and the
+  tee is closed again for the case where it is not the writer that holds the
+  last of the text. PrintStream.close is idempotent, so the second one is
+  free.
+
+  Called once the streams are back in place, so that what it reports is
+  produced against the process the way it will be from now on."
+  [^PrintWriter writer ^PrintStream tee]
+  (when writer (try (.close writer) (catch Throwable _ nil)))
+  (when tee (try (.close tee) (catch Throwable _ nil))))
+
 (defn uninstall! []
-  (when-let [{:keys [^PrintStream out ^PrintStream err out-var err-var handler]} @installed]
+  (when-let [{:keys [^PrintStream out ^PrintStream err out-var err-var
+                     tee-out tee-err out-writer err-writer handler]} @installed]
     (when-not (identical? out System/out)
       (.flush ^PrintStream System/out)
       (System/setOut out)
-      (alter-var-root #'*out* (constantly out-var)))
+      (alter-var-root #'*out* (constantly out-var))
+      (close-tee! out-writer tee-out))
     (when-not (identical? err System/err)
       (.flush ^PrintStream System/err)
       (System/setErr err)
-      (alter-var-root #'*err* (constantly err-var)))
+      (alter-var-root #'*err* (constantly err-var))
+      (close-tee! err-writer tee-err))
     (Thread/setDefaultUncaughtExceptionHandler handler)
     (reset! installed nil)
     nil))

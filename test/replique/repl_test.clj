@@ -1,6 +1,7 @@
 (ns replique.repl-test
   (:require [clojure.string :as string]
             [clojure.test :refer [deftest is testing]]
+            [replique.core]
             [replique.output]
             [replique.test-client :as client
              :refer [connect send! recv request! disconnect with-process
@@ -736,6 +737,25 @@
         (is (= text (through (fn [original]
                                (split! (#'replique.output/tee-stream original "out"))))))))))
 
+(deftest closing-the-tee-reports-the-character-that-was-cut-off
+  (testing "holding back the beginning of a character is what makes the one
+  that straddles two writes whole, and it is right up to the point where
+  nothing more is coming. A flush is not that point - only the bytes that
+  complete the character are - so what a flush leaves behind must survive it.
+  A close is that point: what is held back then is a broken character rather
+  than an unfinished one, and it is reported as broken rather than dropped"
+    (let [sink (java.io.ByteArrayOutputStream.)
+          original (java.io.PrintStream. sink true "UTF-8")
+          tee (#'replique.output/tee-stream original "out")
+          ;; the first byte of a two byte character, and nothing after it
+          truncated (byte-array [(unchecked-byte 0xC3)])]
+      (.write tee truncated 0 1)
+      (.flush tee)
+      (is (= "" (.toString sink "UTF-8"))
+          "a flush does not finish a character, so it does not give up on one")
+      (.close tee)
+      (is (= (str (char 0xFFFD)) (.toString sink "UTF-8"))))))
+
 (deftest output-written-in-chunks-reaches-the-editor-whole
   (testing "the same thing seen from where it matters: a stream copied to
   stdout arrives at the editor as the text that was printed, and not with a
@@ -794,6 +814,33 @@
       (is (identical? out System/out))
       (is (identical? err System/err))
       (finally (client/delete-recursively dir)))))
+
+(deftest stopping-the-process-closes-the-tee
+  (testing "putting the streams back is a close and not only a flush: what a
+  flush leaves behind is the beginning of a character whose remaining bytes
+  are never coming, and only the close reports it. The streams are put back
+  before the connections are closed, so the last thing the process has to say
+  still reaches the editor"
+    (let [dir (client/temp-dir)
+          out *out*
+          err *err*
+          info (replique.core/start! {:directory dir})
+          ctrl (control-client info)]
+      (try
+        (binding [*out* out *err* err]
+          ;; the first byte of a two byte character, written straight to the
+          ;; tee - it is held back, waiting for the byte that completes it
+          (.write System/out (byte-array [(unchecked-byte 0xC3)]) 0 1)
+          (.flush System/out)
+          (replique.core/stop!)
+          (let [broken (str (char 0xFFFD))
+                event (->> (recv-until ctrl "event")
+                           (filter #(= "out" (:event %)))
+                           first)]
+            (is (= broken (:string event)))))
+        (finally (replique.core/stop!)
+                 (disconnect ctrl)
+                 (client/delete-recursively dir))))))
 
 ;;; Lifecycle
 

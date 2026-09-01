@@ -284,7 +284,19 @@
                (finally (.unlock lock)))
           ;; a producer may have parked something while we held the lock
           (try-flush! conn))
-      (.add queue [:reply line]))))
+      (do (.add queue [:reply line])
+          ;; Parking is not enough on its own: the lock may have been released
+          ;; between the tryLock that failed and this, and the flush the
+          ;; holder does on its way out then ran on a queue this frame was not
+          ;; in yet. Nothing else would write it - the connection thread
+          ;; flushes before its next read, and it is already blocked in that
+          ;; read - so it would wait for a request that may never come.
+          ;;
+          ;; Flushing from here closes that window rather than narrowing it:
+          ;; either this takes the lock and writes, or it fails, and whoever
+          ;; holds it took it before the frame was parked and so flushes it on
+          ;; the way out.
+          (try-flush! conn)))))
 
 (defn emit-event!
   "Write an unsolicited frame if the connection is free, drop and count it
@@ -304,10 +316,20 @@
     ;; frame. Wait in the queue rather than be lost, and count the loss only
     ;; when the client is durably behind. The bound is checked before
     ;; serializing: a flood must stay cheap for the thread producing it.
-    (if (<= (.incrementAndGet queued-events) max-queued-events)
-      (.add queue [:event (frame->line f)])
-      (do (.decrementAndGet queued-events)
-          (.incrementAndGet dropped)))))
+    (do
+      (if (<= (.incrementAndGet queued-events) max-queued-events)
+        (.add queue [:event (frame->line f)])
+        (do (.decrementAndGet queued-events)
+            (.incrementAndGet dropped)))
+      ;; See write-frame!: what is parked while the lock is being released is
+      ;; parked into a queue nobody is about to look at. The count of what was
+      ;; dropped is written by the same flush, and is stranded the same way.
+      ;;
+      ;; This does not make the producer wait for a client that is not
+      ;; reading: the lock is taken with tryLock here as everywhere, and a
+      ;; connection whose owner is blocked writing to it is a connection this
+      ;; returns from immediately.
+      (try-flush! conn))))
 
 ;;; Dispatch
 

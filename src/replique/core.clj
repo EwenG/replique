@@ -89,7 +89,7 @@
     :host       host to bind to, defaults to the loopback address
     :port       0 (the default) binds to a free port
     :directory  where the port file is written, defaults to the working dir
-    :port-file  overrides the port file location"
+    :port-file  overrides the port file location, relative to :directory"
   [opts]
   (let [{:keys [process-id host port directory port-file]} (validate-opts opts)
         process-id (if (some? process-id)
@@ -106,10 +106,16 @@
      :directory directory
      ;; absolute for that reason too, and because the port file must not move
      ;; when the working directory of the process changes. It always has a
-     ;; parent directory
+     ;; parent directory.
+     ;;
+     ;; A relative :port-file is relative to :directory, which is where the
+     ;; default one goes and the only reading that makes the two options say
+     ;; one thing: a client that named a directory and then a name inside it
+     ;; would otherwise get its port file in the directory the process happens
+     ;; to have been started in. Path/resolve leaves an absolute one alone
      :port-file (absolute
                  (if port-file
-                   (path port-file)
+                   (.resolve (path directory) (path port-file))
                    (path directory ".replique" "processes" (str process-id ".json"))))}))
 
 (defn- set-permissions! [^Path p ^String perms]

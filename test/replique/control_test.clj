@@ -340,6 +340,45 @@
         (is (= "reply" (:tag frame)))
         (is (= 1 (:id frame)))))))
 
+(deftest a-frame-parked-as-the-connection-is-released-is-not-stranded
+  (testing "parking happens after a tryLock that failed, and the lock may be
+  released in between: the flush the holder does on its way out then runs on a
+  queue the frame is not in yet. Nothing else would write it - the connection
+  thread flushes before its next read, and it is already blocked in that read
+  - so it would wait for a request that may never come.
+
+  The window is entered exactly: a value that blocks while it is being
+  written to JSON holds the producer between the failed tryLock and the queue,
+  which is where emit-event! serializes the frame."
+    (let [out (java.io.StringWriter.)
+          conn (merge {:out out} (protocol/outbox))
+          ^java.util.concurrent.locks.ReentrantLock lock (:lock conn)
+          serializing (java.util.concurrent.CountDownLatch. 1)
+          release (java.util.concurrent.CountDownLatch. 1)
+          ;; realized by the json writer, and not before: frame drops the keys
+          ;; whose value is nil, which does not realize a lazy seq
+          blocking (lazy-seq (.countDown serializing) (.await release) nil)
+          held (java.util.concurrent.CountDownLatch. 1)
+          producer (future
+                     (.await held)
+                     (protocol/emit-event! conn (protocol/event "out" {:line blocking})))
+          holder (future
+                   (.lock lock)
+                   (.countDown held)
+                   ;; the producer is now blocked inside emit-event!, past the
+                   ;; tryLock that failed and short of the queue
+                   (.await serializing)
+                   (.unlock lock)
+                   ;; what the holder always does, on a queue that is empty
+                   (protocol/try-flush! conn))]
+      @holder
+      (is (= "" (str out)) "the holder had nothing to flush")
+      (.countDown release)
+      @producer
+      (is (= 1 (count (written out))) "the parked event was written")
+      (is (zero? (.size ^java.util.concurrent.ConcurrentLinkedQueue (:queue conn)))
+          "and nothing is left waiting for traffic that may never come"))))
+
 (deftest several-messages-may-share-a-line
   (with-process [info nil]
     (let [client (control-client info)]
@@ -639,14 +678,24 @@
           (finally (disconnect client)))))))
 
 (deftest port-file-location
-  (testing "a relative :port-file is resolved against the working directory,
-  once, so that the port file does not move if the process chdirs"
-    (let [{:keys [port-file]} (core/normalize-opts {:directory (temp-dir)
+  (testing "a relative :port-file is resolved against :directory, which is
+  where the default one goes and the only reading that makes the two options
+  say one thing: a client that named a directory and then a name inside it
+  would otherwise get its port file in the directory the process happens to
+  have been started in. Resolved once, so that the port file has a place
+  rather than a place relative to something that could move"
+    (let [dir (temp-dir)
+          {:keys [port-file]} (core/normalize-opts {:directory dir
                                                     :port-file "replique-test.port"})]
       (is (.isAbsolute ^Path port-file))
-      (is (= (str (Paths/get (System/getProperty "user.dir")
-                             (into-array String ["replique-test.port"])))
+      (is (= (str (Paths/get dir (into-array String ["replique-test.port"])))
              (str port-file)))))
+  (testing "an absolute :port-file names where it says, :directory or no
+  :directory"
+    (let [elsewhere (str (Paths/get (temp-dir) (into-array String ["replique.json"])))
+          {:keys [port-file]} (core/normalize-opts {:directory (temp-dir)
+                                                    :port-file elsewhere})]
+      (is (= elsewhere (str port-file)))))
   (testing "the permissions of a directory replique did not create are left alone"
     (let [dir (temp-dir)
           shared (Paths/get dir (into-array String ["shared"]))
