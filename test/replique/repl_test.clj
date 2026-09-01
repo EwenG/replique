@@ -232,6 +232,54 @@
             (is (= "6" (:value (frame-tagged frames "ret")))))
           (finally (disconnect r)))))))
 
+(defn- frames-of
+  "The frames one send produces, delimited by a form of its own. The question
+  here is how many prompts there are, so reading until the first one would be
+  assuming the answer, and reading until the connection goes quiet would make
+  the test a race."
+  [r code]
+  (send! r (str code "\n:replique-test-end"))
+  ;; up to and including the prompt that ends the marker, so that nothing of
+  ;; this send is left on the connection for the next one to read
+  (loop [acc [] ended? false]
+    (let [f (recv r)
+          acc (conj acc [(:tag f) (:value f)])]
+      (cond
+        (and ended? (= "prompt" (:tag f))) acc
+        (= ":replique-test-end" (:value f)) (recur acc true)
+        :else (recur acc ended?)))))
+
+(deftest a-blank-line-is-not-answered-with-a-prompt
+  (testing "an editor delimits an evaluation by the prompt that ends it, and a
+  blank line between two top level forms is what most files look like. Given a
+  prompt of its own - which is what a terminal wants, where return on an empty
+  line gives you a fresh one - it would end the first form twice and lose
+  where the second began"
+    (with-process [info nil]
+      (let [r (repl-client info)
+            end ["ret" ":replique-test-end"]
+            one-each [["ret" "2"] ["prompt" nil] end ["prompt" nil]]]
+        (try
+          (testing "the shape a client counts on, with no blank line at all"
+            (is (= one-each (frames-of r "(+ 1 1)"))))
+          (testing "a blank line before the first form"
+            (is (= one-each (frames-of r "\n(+ 1 1)"))))
+          (testing "a blank line between the two"
+            (is (= one-each (frames-of r "(+ 1 1)\n"))))
+          (testing "and a line holding nothing but whitespace, which is the
+          same thing once an editor has grabbed a region"
+            (is (= one-each (frames-of r "(+ 1 1)\n   "))))
+          (testing "a blank line on its own is read past rather than answered:
+          it is not a form, and the prompt that follows a form has gone out
+          already"
+            (send! r "")
+            (.setSoTimeout ^java.net.Socket (:socket r) 800)
+            (is (nil? (try (recv r) (catch java.net.SocketTimeoutException _ nil))))
+            (.setSoTimeout ^java.net.Socket (:socket r) 10000)
+            (testing "and the repl is where it was, waiting for a form"
+              (is (= "3" (:value (frame-tagged (eval! r "(+ 1 2)") "ret"))))))
+          (finally (disconnect r)))))))
+
 ;;; Lifecycle inside the repl
 
 (deftest output-does-not-pile-up-without-a-newline
@@ -267,9 +315,10 @@
         (testing "the directive applies to the next form only"
           (let [frames (eval! r "*file*")]
             (is (= "\"NO_SOURCE_PATH\"" (:value (frame-tagged frames "ret"))))))
-        (testing "a blank line between the directive and the form does not drop it"
+        (testing "a blank line between the directive and the form does not drop
+        it - and is not a form either, so what comes back is the one prompt of
+        the one form that was sent"
           (send! r "#replique/src {:file \"/home/me/src/bar.clj\" :line 7}\n\n(defn bar [] 1)")
-          (recv-until r "prompt")
           (recv-until r "prompt")
           (let [frames (eval! r "[(:file (meta #'bar)) (:line (meta #'bar))]")]
             (is (= "[\"/home/me/src/bar.clj\" 7]" (:value (frame-tagged frames "ret"))))))

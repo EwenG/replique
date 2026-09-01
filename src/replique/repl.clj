@@ -188,8 +188,10 @@
 
   #replique/ns is not remembered, it is done: it has to take effect before the
   next form is read rather than before it is evaluated, because ::keyword and
-  the reader conditionals resolve against *ns* while reading. Applied any
-  later, the form would be read in the namespace being left."
+  syntax quote resolve against *ns* while reading - and syntax quote resolves
+  it away, into a symbol already qualified by the namespace being left, which
+  nothing downstream can tell from one the code asked for. Applied any later,
+  the form would be read where it was not written."
   [conn]
   (let [pending (volatile! nil)]
     (fn [request-prompt request-exit]
@@ -201,7 +203,17 @@
       (try
         (loop []
           (case (clojure.main/skip-whitespace *in*)
-            :line-start request-prompt
+            ;; Read past rather than answered. clojure.main hands back
+            ;; request-prompt here, which is what a terminal wants - return on
+            ;; an empty line gives you a fresh prompt - and the opposite of
+            ;; what an editor wants: it delimits an evaluation by the prompt
+            ;; that ends it, and a blank line between two top level forms,
+            ;; which is what most files look like, would end the first one
+            ;; twice and lose where the second began. :need-prompt is
+            ;; (constantly true), so every form still gets a prompt - and now
+            ;; exactly one. A blank line reaching here on its own is a client
+            ;; that sent no form, and there is nothing to say about it.
+            :line-start (recur)
             :stream-end request-exit
             (let [{:keys [file line]} @pending
                   input (clojure.main/renumbering-read {:read-cond :allow} *in*
