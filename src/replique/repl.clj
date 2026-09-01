@@ -145,6 +145,14 @@
 ;; that was being worked in. Without the evaluation because an in-ns sent as a
 ;; form is a form - it has a result, and a prompt after it, and both appear in
 ;; the transcript as something the developer did not write.
+;;
+;; It is also how a client moves the repl on its own, with no form after it:
+;;
+;;   #replique/ns foo.bar
+;;   <blank line>
+;;
+;; and that blank line is answered with a prompt, since nothing else would
+;; say where the repl now is.
 (defrecord NsDirective [ns])
 
 (defn- ns-directive [sym]
@@ -177,6 +185,9 @@
     (when-not existing (refer-clojure))
     nil))
 
+;; Written from the read step, which is above the frames it writes
+(declare prompt-frame)
+
 (defn- make-repl-read
   "The :read step: clojure.main/repl-read, plus the directives.
 
@@ -191,9 +202,18 @@
   syntax quote resolve against *ns* while reading - and syntax quote resolves
   it away, into a symbol already qualified by the namespace being left, which
   nothing downstream can tell from one the code asked for. Applied any later,
-  the form would be read where it was not written."
+  the form would be read where it was not written.
+
+  One sent with no form after it is answered with a prompt, and one sent with
+  a form is not: the form's own prompt says where the repl is, and two prompts
+  for one evaluation is what the client cannot read - see the :line-start
+  branch."
   [conn]
-  (let [pending (volatile! nil)]
+  (let [pending (volatile! nil)
+        ;; A namespace directive has been read and nothing has been read
+        ;; since. What acknowledges it is the blank line after it - see the
+        ;; :line-start branch.
+        moved (volatile! false)]
     (fn [request-prompt request-exit]
       ;; A frame parked by a producer that found the connection busy must not
       ;; wait for the next form - the repl is about to block on the socket,
@@ -211,9 +231,18 @@
             ;; which is what most files look like, would end the first one
             ;; twice and lose where the second began. :need-prompt is
             ;; (constantly true), so every form still gets a prompt - and now
-            ;; exactly one. A blank line reaching here on its own is a client
-            ;; that sent no form, and there is nothing to say about it.
-            :line-start (recur)
+            ;; exactly one.
+            ;;
+            ;; Except after a namespace directive that no form followed, which
+            ;; is a client asking to be moved rather than to have something
+            ;; evaluated. Nothing else will answer it: the prompt of a form is
+            ;; what says where the repl is, and there is no form. So the blank
+            ;; line is what the client ends a bare move with, and this is the
+            ;; prompt that says it happened.
+            :line-start (do (when @moved
+                              (vreset! moved false)
+                              (protocol/write-frame! conn (prompt-frame conn)))
+                            (recur))
             :stream-end request-exit
             (let [{:keys [file line]} @pending
                   input (clojure.main/renumbering-read {:read-cond :allow} *in*
@@ -227,13 +256,16 @@
                 ;; is about the form still to come, and entering a namespace
                 ;; is not that form
                 (instance? NsDirective input)
-                (do (enter-ns! (:ns input)) (recur))
+                (do (enter-ns! (:ns input)) (vreset! moved true) (recur))
 
                 ;; the way a socket repl is ended, as in clojure.core.server
                 (identical? :repl/quit input) request-exit
 
                 :else
                 (do (vreset! pending nil)
+                    ;; the form is what the directive above it was about, and
+                    ;; its own prompt is the one that follows
+                    (vreset! moved false)
                     ;; the directive applies to this form only
                     (set! *file* (or file default-file))
                     ;; what the compiler records as the source file of the

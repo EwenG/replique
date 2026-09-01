@@ -351,6 +351,38 @@
                                                         "ret")))))
         (finally (disconnect r))))))
 
+(deftest a-bare-ns-directive-is-answered-with-a-prompt
+  (testing "a directive with no form after it is a client asking to be moved
+  rather than to have something evaluated, and nothing else would say where
+  the repl now is: the prompt of a form is what says that, and there is no
+  form. The blank line is what ends a bare move, and this is the answer to it"
+    (with-process [info nil]
+      (let [r (repl-client info)]
+        (try
+          ;; Namespaces of this test's own: entering one makes it, and a
+          ;; test that made clojure.set would be a test that decides what
+          ;; another one finds
+          (send! r "#replique/ns replique.test-bare-move\n")
+          (let [frames (recv-until r "prompt")]
+            (is (= ["prompt"] (mapv :tag frames)))
+            (is (= "replique.test-bare-move" (:ns (frame-tagged frames "prompt")))))
+          (testing "and one with a form after it is not - the form's own
+          prompt says where the repl is, and two prompts for one evaluation
+          is what a client cannot read"
+            (send! r "#replique/ns replique.test-bare-move-2\n(+ 1 1)")
+            (let [frames (recv-until r "prompt")]
+              (is (= ["ret" "prompt"] (mapv :tag frames)))
+              (is (= "2" (:value (frame-tagged frames "ret"))))
+              (is (= "replique.test-bare-move-2"
+                     (:ns (frame-tagged frames "prompt"))))))
+          (testing "a blank line on its own is still nothing to answer: it is
+          what lies between the forms of most files"
+            (send! r "\n\n(+ 2 2)")
+            (let [frames (recv-until r "prompt")]
+              (is (= ["ret" "prompt"] (mapv :tag frames)))
+              (is (= "4" (:value (frame-tagged frames "ret"))))))
+          (finally (disconnect r)))))))
+
 (deftest the-ns-directive-applies-before-the-form-is-read
   (testing "not before it is evaluated: ::keyword resolves against *ns* while
   reading, so a directive applied any later would read the form in the
