@@ -68,22 +68,26 @@
       (when-not (re-find synthetic-class name)
         name))))
 
-(defn- packages-of
-  "Every package the classes are in, and every package those are in.
+(defn prefixes
+  "Every name above these, a piece at a time.
 
-  All the way up rather than the one a class sits in directly, because a
-  package is written a piece at a time: somebody who has typed java.u is
-  writing java.util, and what is offered there has to be a package that holds
-  no class of its own."
-  [classes]
+  The packages of a set of classes, and the same answer for a set of
+  namespaces: what is above java.util.Date is java.util and java, and what is
+  above clojure.core.specs.alpha is clojure.core.specs and clojure.core and
+  clojure.
+
+  All the way up rather than the one directly above, because such a name is
+  written a piece at a time: somebody who typed java.u is writing java.util,
+  and what is offered there has to be a name that holds nothing of its own."
+  [names]
   (persistent!
-   (reduce (fn [acc ^String class]
-             (loop [acc acc index (.indexOf class (int \.))]
+   (reduce (fn [acc ^String name]
+             (loop [acc acc index (.indexOf name (int \.))]
                (if (neg? index)
                  acc
-                 (recur (conj! acc (subs class 0 index))
-                        (.indexOf class (int \.) (inc index))))))
-           (transient #{}) classes)))
+                 (recur (conj! acc (subs name 0 index))
+                        (.indexOf name (int \.) (inc index))))))
+           (transient #{}) names)))
 
 (defn- collect
   "What the resources named by RESOURCES provide, as the four kinds of name
@@ -110,7 +114,7 @@
       (let [classes (persistent! classes)]
         {:namespaces (persistent! namespaces)
          :classes classes
-         :packages (vec (packages-of classes))
+         :packages (vec (prefixes classes))
          :paths (persistent! paths)}))))
 
 ;;; The classes the runtime brings

@@ -196,11 +196,12 @@
         ;; and add is what says this is the first of them
         seen (java.util.HashSet.)
         found (java.util.ArrayList.)]
-    (doseq [{:keys [type names]} groups
+    (doseq [{:keys [type names] :as group} groups
             ^String name names]
       (when-let [end (match-end name tokens)]
         (when (.add seen name)
-          (.add found {:candidate name :type type :match-index end}))))
+          (.add found (cond-> {:candidate name :type type :match-index end}
+                        (:ns group) (assoc :ns (:ns group)))))))
     (.sort found ^java.util.Comparator shortest-first)
     found))
 
@@ -224,6 +225,19 @@
                 (map (fn [^String name] (subs name length)))
                 (remove (fn [^String name] (string/includes? name ".")))
                 names))))
+
+(defn- inside
+  "The paths inside DIRECTORY, with the directory taken off.
+
+  Unlike `under', what is left may go on below: a load takes a path and a
+  path goes as deep as the directories do, where a lib name inside a prefix
+  list and a class inside a package are one piece and no more."
+  [^String directory names]
+  (let [start (str directory "/")
+        length (.length start)]
+    (eduction (filter (fn [^String name] (.startsWith name start)))
+              (map (fn [^String name] (subs name length)))
+              names)))
 
 (defn- importable
   "The classes worth offering to somebody who has typed TEXT.
@@ -253,9 +267,30 @@
                     "A completion needs the :position it is being asked at"
                     (str "Unknown completion position: " (pr-str (:position msg)))))))
 
+(defn- namespaces
+  "Every namespace that could be required.
+
+  What is on the classpath and what the process has loaded. The second is not
+  the first: a namespace made at a repl, or by a tool that called `create-ns',
+  has no file anywhere and is a namespace all the same."
+  []
+  (into (vec (:namespaces (classpath/scan))) (map (comp name ns-name)) (all-ns)))
+
 (defmethod groups :namespace [msg]
-  [{:type "namespace"
-    :names (under (named-argument msg :prefix) (:namespaces (classpath/scan)))}])
+  (let [prefix (named-argument msg :prefix)
+        known (namespaces)]
+    [{:type "namespace" :names (under prefix known)}
+     ;; The head of a prefix list, which is a name no file carries: what is
+     ;; written in (clojure.core.specs [alpha]) is a piece of a namespace and
+     ;; not one of its own, so requiring it alone would fail. Answered as what
+     ;; it is rather than left out, and answered after the namespaces so that
+     ;; a name which is both is the namespace.
+     ;;
+     ;; Worked out here and now, where the packages of a class are worked out
+     ;; once and kept: there are a hundred thousand classes and a couple of
+     ;; thousand namespaces, and these have to hold what was loaded a moment
+     ;; ago as well as what is on the classpath.
+     {:type "namespace-prefix" :names (under prefix (classpath/prefixes known))}]))
 
 ;; What a :require-macros names is a namespace of this world. ClojureScript
 ;; compiles with two of them and the macros of a ClojureScript namespace are
@@ -264,6 +299,13 @@
 ;; :namespace.
 (defmethod groups :namespace-macros [msg] (groups (assoc msg :position :namespace)))
 
+(defn- var-kind
+  "What VAR is, as a client annotates it with. A macro before a function
+  because a macro has arglists too."
+  [var]
+  (let [{:keys [arglists macro]} (meta var)]
+    (cond macro "macro" arglists "function" :else "var")))
+
 (defmethod groups :var [msg]
   (let [named (:namespace msg)
         found (if (= :refer-clojure named)
@@ -271,21 +313,70 @@
                 ;; the one it refers from is the one every namespace refers
                 (find-ns 'clojure.core)
                 (find-ns (symbol (required-argument msg :namespace))))]
-    [{:type "var" :names (when found (map name (keys (ns-publics found))))}]))
+    ;; One group of each kind rather than one of vars, so that a client can
+    ;; say which is which without asking again. The namespace rides along for
+    ;; the same reason: what is offered under a :refer is written without it,
+    ;; and it is the one thing that says where the name came from.
+    (for [[kind vars] (group-by (comp var-kind val) (when found (ns-publics found)))]
+      {:type kind
+       :ns (str (ns-name found))
+       :names (map (comp name key) vars)})))
 
 (defmethod groups :package-or-class [msg]
   (let [{:keys [classes packages]} (classpath/scan)]
     [{:type "class" :names (importable (text msg) classes)}
      {:type "package" :names packages}]))
 
-(defmethod groups :class [msg]
-  [{:type "class"
-    :names (importable (text msg)
-                       (under (required-argument msg :package)
-                              (:classes (classpath/scan))))}])
+(defn- generated-classes
+  "The classes of PACKAGE that no file on the classpath carries.
 
-(defmethod groups :load-path [_]
-  [{:type "path" :names (:paths (classpath/scan))}])
+  A deftype and a defrecord make a class the moment they are evaluated, and
+  until something compiles them ahead of time there is no file of one to find.
+  What there is is the namespace that made it, which imported it into itself,
+  and the package of such a class is that namespace's name with the dashes
+  munged out - so the namespace is looked for under the package as written and
+  under the name that munges to it.
+
+  Only where the package is written, which is the list form of an import.
+  Finding them where it is not means reading the imports of every namespace
+  loaded, ninety of which are java.lang's in every one of them.
+
+  Everything the namespace imported comes back, and nothing is checked. What
+  `under' does with these is keep the ones in the package as written, which is
+  the same check twice, and what `ns-imports' answers is the mappings whose
+  value is a class, which is the only thing asked of one here."
+  [^String package]
+  (when-let [found (or (find-ns (symbol package))
+                       (find-ns (symbol (.replace package \_ \-))))]
+    (for [[_ ^Class imported] (ns-imports found)]
+      (.getName imported))))
+
+(defmethod groups :class [msg]
+  (let [package (required-argument msg :package)]
+    [{:type "class"
+      :names (importable (text msg)
+                         (under package (concat (:classes (classpath/scan))
+                                                (generated-classes package))))}]))
+
+(defn- load-root
+  "The directory a load written in NAMESPACE is read from.
+
+  What `clojure.core/load' resolves a path that does not start with a slash
+  against, which is the directory the namespace itself is named by."
+  ^String [^String namespace]
+  (str "/" (-> namespace (.replace \- \_) (.replace \. \/))))
+
+(defmethod groups :load-path [msg]
+  (let [paths (:paths (classpath/scan))
+        namespace (named-argument msg :ns)]
+    ;; A path that starts with a slash is read from the root of the classpath
+    ;; and one that does not is read from the namespace it is written in, so
+    ;; which of the two is being written is what the slash says. Absent where
+    ;; the client did not say which namespace that is, since without one there
+    ;; is no other answer to give.
+    (if (or (string/starts-with? (text msg) "/") (string/blank? namespace))
+      [{:type "path" :names paths}]
+      [{:type "path" :names (inside (load-root namespace) paths)}])))
 
 ;; The keyword positions. A candidate carries its colon because the client
 ;; replaces the keyword it read point out of, and a keyword without its colon

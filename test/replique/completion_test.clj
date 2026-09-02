@@ -1,6 +1,7 @@
 (ns replique.completion-test
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as string]
+            [replique.classpath :as classpath]
             [replique.completion :as completion]
             [replique.ops]
             [replique.protocol :as protocol]
@@ -116,7 +117,8 @@
            ;; unencoded is one nothing can be made of
            (java.net.URL. "file:/a name with spaces/x.jar")]
           (fn []
-            (is (= ["real.here"] (candidates {:position :namespace :text "real."})))))
+            (is (= ["real" "real.here"]
+                   (candidates {:position :namespace :text "real."})))))
         (finally (delete-recursively dir))))))
 
 (deftest a-piece-of-a-name-at-a-time
@@ -152,6 +154,31 @@
     (is (= (candidates {:position :namespace :text "clojure.stri"})
            (candidates {:position :namespace-macros :text "clojure.stri"})))))
 
+(deftest a-namespace-made-at-a-repl-is-offered
+  (testing "what the process has loaded as well as what is on the classpath: a
+  namespace made at a repl has no file anywhere and is a namespace all the same"
+    (try
+      (is (not (contains? (typed {:position :namespace :text "made.at"})
+                          "made.at.the.repl")))
+      (create-ns 'made.at.the.repl)
+      (is (contains? (typed {:position :namespace :text "made.at"}) "made.at.the.repl"))
+      (finally (remove-ns 'made.at.the.repl)))))
+
+(deftest a-piece-of-a-namespace-is-answered-as-a-piece
+  (testing "the head of a prefix list is a name no file carries - requiring it
+  alone would fail, so it is answered as what it is rather than left out"
+    (is (= "namespace-prefix"
+           (:type (found {:position :namespace :text "clojure.core.spec"}
+                         "clojure.core.specs"))))
+    (is (= "namespace"
+           (:type (found {:position :namespace :text "clojure.core.spec"}
+                         "clojure.core.specs.alpha")))))
+  (testing "and a name that is both is the namespace"
+    (is (= "namespace"
+           (:type (found {:position :namespace :text "clojure.core"} "clojure.core")))))
+  (testing "under a prefix as under none"
+    (is (contains? (typed {:position :namespace :prefix "clojure" :text "sp"}) "spec"))))
+
 ;;; Vars
 
 (deftest a-var-comes-from-a-loaded-namespace
@@ -170,6 +197,20 @@
 
 (deftest a-var-of-a-namespace-that-is-not-one-is-nothing
   (is (empty? (candidates {:position :var :namespace "not.a.namespace" :text ""}))))
+
+(deftest a-var-says-what-it-is-and-where-it-is-from
+  (testing "so that a client can annotate it without asking a second time"
+    (is (= {:candidate "mapv" :type "function" :ns "clojure.core" :match-index 4}
+           (found {:position :var :namespace "clojure.core" :text "mapv"} "mapv")))
+    (is (= "var" (:type (found {:position :var :namespace "clojure.core" :text "*ns*"}
+                               "*ns*"))))
+    (testing "a macro before a function, since a macro has arglists too"
+      (is (= "macro" (:type (found {:position :var :namespace "clojure.core" :text "defn"}
+                                   "defn"))))))
+  (testing "and a refer-clojure says core, which it names nowhere itself"
+    (is (= "clojure.core"
+           (:ns (found {:position :var :namespace :refer-clojure :text "map-in"}
+                       "map-indexed"))))))
 
 (deftest a-var-is-a-public-one
   (testing "a private var is not one another namespace can refer, and core
@@ -195,6 +236,30 @@
       (is (= {:candidate "java.util" :type "package" :match-index 8} (first answered)))
       (is (= {:candidate "java.util.Date" :type "class" :match-index 8}
              (found {:position :package-or-class :text "java.uti"} "java.util.Date"))))))
+
+(defrecord ThingMadeHere [a b])
+
+(deftest a-class-made-at-a-repl-is-offered
+  (testing "a defrecord makes a class the moment it is evaluated and no file
+  of it, and the package it lands in is the namespace that made it"
+    (is (not (contains? (set (:classes (classpath/scan)))
+                        "replique.completion_test.ThingMadeHere")))
+    (is (= ["ThingMadeHere"]
+           (candidates {:position :class :package "replique.completion_test"
+                        :text "ThingMade"}))))
+  (testing "under the package as it is written, which is the munged one - the
+  other would not import"
+    (is (empty? (candidates {:position :class :package "replique.completion-test"
+                             :text "ThingMade"}))))
+  (testing "and under a namespace whose own name carries an underscore, which
+  is a name that munges to itself"
+    (try
+      (binding [*ns* (create-ns 'made_under.core)]
+        (refer-clojure)
+        (eval '(deftype Thing [])))
+      (is (= ["Thing"] (candidates {:position :class :package "made_under.core"
+                                    :text "Thi"})))
+      (finally (remove-ns 'made_under.core)))))
 
 (deftest an-inner-class-waits-for-its-dollar
   (testing "there are ten of them for every class anybody imports"
@@ -299,6 +364,17 @@
     (is (seq (candidates {:position :libspec-option :text ":a"})))))
 
 ;;; Load paths
+
+(deftest a-load-path-is-read-from-where-it-is-written
+  (testing "a path that starts with a slash is read from the root of the classpath"
+    (is (contains? (typed {:position :load-path :text "/clojure/core"}) "/clojure/core")))
+  (testing "and one that does not is read from the namespace it is written in"
+    (let [answered (typed {:position :load-path :ns "clojure.core" :text ""})]
+      (is (contains? answered "protocols"))
+      (is (contains? answered "specs/alpha") "a load goes as deep as the directories do")
+      (is (not (contains? answered "/clojure/core/protocols")))))
+  (testing "and where the client said no namespace there is no other answer"
+    (is (contains? (typed {:position :load-path :text ""}) "/clojure/core"))))
 
 (deftest a-load-path-names-the-file
   (let [found (typed {:position :load-path :text "/clojure/core"})]
