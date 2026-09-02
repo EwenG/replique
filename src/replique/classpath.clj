@@ -89,22 +89,29 @@
   "What the resources named by RESOURCES provide, as the four kinds of name
   they can be asked for."
   [resources]
-  (let [namespaces (transient [])
-        classes (transient [])
-        paths (transient [])]
-    (doseq [^String resource resources]
-      (if-let [class (class-name resource)]
-        (conj! classes class)
-        (when-let [stem (source-stem resource)]
-          (conj! namespaces (namespace-name stem))
-          ;; what a load takes is a path and not a name, so the underscores
-          ;; stay: it names the file rather than what the file provides
-          (conj! paths (str "/" stem)))))
-    (let [classes (persistent! classes)]
-      {:namespaces (persistent! namespaces)
-       :classes classes
-       :packages (vec (packages-of classes))
-       :paths (persistent! paths)})))
+  (loop [resources (seq resources)
+         namespaces (transient [])
+         classes (transient [])
+         paths (transient [])]
+    (if resources
+      (let [^String resource (first resources)
+            resources (next resources)]
+        (if-let [class (class-name resource)]
+          (recur resources namespaces (conj! classes class) paths)
+          (if-let [stem (source-stem resource)]
+            (recur resources
+                   (conj! namespaces (namespace-name stem))
+                   classes
+                   ;; what a load takes is a path and not a name, so the
+                   ;; underscores stay: it names the file rather than what
+                   ;; the file provides
+                   (conj! paths (str "/" stem)))
+            (recur resources namespaces classes paths))))
+      (let [classes (persistent! classes)]
+        {:namespaces (persistent! namespaces)
+         :classes classes
+         :packages (vec (packages-of classes))
+         :paths (persistent! paths)}))))
 
 ;;; The classes the runtime brings
 

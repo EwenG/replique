@@ -20,6 +20,9 @@
 
 (defn- typed [msg] (set (candidates msg)))
 
+(defn- found [msg name]
+  (first (filter #(= name (:candidate %)) (:completions (ask msg)))))
+
 (defn- error-kind [msg]
   (try (ask msg) nil
        (catch clojure.lang.ExceptionInfo t (:replique/error (ex-data t)))))
@@ -116,6 +119,33 @@
             (is (= ["real.here"] (candidates {:position :namespace :text "real."})))))
         (finally (delete-recursively dir))))))
 
+(deftest a-piece-of-a-name-at-a-time
+  (testing "a name is written in pieces, and what was typed is split the same"
+    (is (contains? (typed {:position :namespace :text "c.s"}) "clojure.string"))
+    (is (contains? (typed {:position :package-or-class :text "j.u.c.Atomic"})
+                   "java.util.concurrent.atomic.AtomicInteger"))
+    (is (contains? (typed {:position :package-or-class :text "ABQ"})
+                   "java.util.concurrent.ArrayBlockingQueue")
+        "three letters, and no separator written between them"))
+  (testing "a piece is looked for wherever a piece of the name starts"
+    (is (contains? (typed {:position :namespace :text "str"}) "clojure.string"))
+    (is (contains? (typed {:position :package-or-class :text "HashMap"})
+                   "java.util.LinkedHashMap")))
+  (testing "and nowhere else"
+    (is (not (contains? (typed {:position :namespace :text "tring"}) "clojure.string"))))
+  (testing "in the order they were typed"
+    (is (not (contains? (typed {:position :namespace :text "string.clojure"})
+                        "clojure.string")))))
+
+(deftest how-far-the-match-reached-is-said
+  (testing "so that a client can show which of the candidate was matched"
+    (is (= {:candidate "clojure.string" :type "namespace" :match-index 9}
+           (found {:position :namespace :text "c.s"} "clojure.string")))
+    (is (= 34 (:match-index (found {:position :package-or-class :text "j.u.c.Atomic"}
+                                   "java.util.concurrent.atomic.AtomicInteger")))))
+  (testing "and nothing typed reaches nought, which every name is matched by"
+    (is (= 0 (:match-index (first (:completions (ask {:position :flag}))))))))
+
 (deftest a-macro-namespace-is-a-namespace-of-this-world
   (testing "what a :require-macros names is a Clojure namespace, which is what
   this process has"
@@ -150,26 +180,32 @@
 ;;; Classes and packages
 
 (deftest a-class-is-offered-under-its-package
-  (is (= ["Date"] (candidates {:position :class :package "java.util" :text "Da"})))
+  (is (= ["Date" "LocaleISOData"]
+         (candidates {:position :class :package "java.util" :text "Da"})))
   (testing "the classes in the package and not the ones below it"
     (is (not (contains? (typed {:position :class :package "java.util" :text ""})
                         "concurrent.Future")))))
 
 (deftest an-import-written-as-one-name-is-a-package-or-a-class
-  (let [found (:completions (ask {:position :package-or-class :text "java.util.Ma"}))]
-    (is (contains? (set (map :candidate found)) "java.util.Map"))
-    (is (= #{"class"} (set (map :type found)))))
+  (let [answered (:completions (ask {:position :package-or-class :text "java.util.Ma"}))]
+    (is (contains? (set (map :candidate answered)) "java.util.Map"))
+    (is (= #{"class"} (set (map :type answered)))))
   (testing "a package is answered as one, and before what is inside it"
-    (let [found (:completions (ask {:position :package-or-class :text "java.uti"}))]
-      (is (= {:candidate "java.util" :type "package"} (first found)))
-      (is (contains? (set found) {:candidate "java.util.Date" :type "class"})))))
+    (let [answered (:completions (ask {:position :package-or-class :text "java.uti"}))]
+      (is (= {:candidate "java.util" :type "package" :match-index 8} (first answered)))
+      (is (= {:candidate "java.util.Date" :type "class" :match-index 8}
+             (found {:position :package-or-class :text "java.uti"} "java.util.Date"))))))
 
 (deftest an-inner-class-waits-for-its-dollar
   (testing "there are ten of them for every class anybody imports"
-    (is (= ["Map"] (candidates {:position :class :package "java.util" :text "Map"})))
-    (is (= ["Map$Entry"] (candidates {:position :class :package "java.util" :text "Map$"})))
-    (is (contains? (typed {:position :package-or-class :text "java.util.Map$E"})
-                   "java.util.Map$Entry"))))
+    (let [without (candidates {:position :class :package "java.util" :text "Map"})
+          with (candidates {:position :class :package "java.util" :text "Map$"})]
+      (is (= "Map" (first without)))
+      (is (not-any? #(string/includes? % "$") without))
+      (is (= "Map$Entry" (first with)))
+      (is (every? #(string/includes? % "$") with))))
+  (is (contains? (typed {:position :package-or-class :text "java.util.Map$E"})
+                 "java.util.Map$Entry")))
 
 (deftest a-class-nobody-wrote-is-not-offered
   (let [dir (temp-dir)]
@@ -183,12 +219,14 @@
           (write-file! dir "made" "Thing$1Local.class")
           (write-file! dir "made" "package-info.class")
           (write-file! dir "module-info.class")
-          (is (= ["made.Thing"] (candidates {:position :package-or-class :text "made."}))
-              "a descriptor is not a class and neither is an inner one, yet")
+          (is (= ["made" "made.Thing"] (candidates {:position :package-or-class :text "made."}))
+              "the package, and one class: a descriptor is not a class and
+              neither is an inner one, yet")
           (testing "and what the compiler made up is not a name anybody wrote"
             (is (= ["made.Thing$Inner"]
                    (candidates {:position :package-or-class :text "made.Thing$"}))))
-          (is (empty? (candidates {:position :package-or-class :text "module-info"})))))
+          (is (not (contains? (typed {:position :package-or-class :text "module-info"})
+                              "module-info")))))
       (finally (delete-recursively dir))))
   (testing "which is a rule about a real classpath too - clojure holds fifty
   five of them"
@@ -198,15 +236,25 @@
 
 (deftest a-class-of-a-package-nothing-exports-is-not-offered
   (testing "importing one would not compile"
-    (is (empty? (candidates {:position :package-or-class :text "jdk.internal."})))))
+    (let [answered (typed {:position :package-or-class :text "jdk.internal.ref.Cleaner"})]
+      (is (not (contains? answered "jdk.internal.ref.Cleaner")))
+      (is (not-any? #(string/starts-with? % "jdk.internal.") answered)))))
 
 ;;; Matching
 
 (deftest case-is-ignored-until-a-capital-is-typed
-  (is (= ["Date"] (candidates {:position :class :package "java.util" :text "da"})))
-  (is (= ["Date"] (candidates {:position :class :package "java.util" :text "Da"})))
-  (is (empty? (candidates {:position :class :package "java.util" :text "DA"}))
-      "somebody who wrote a capital said which of the two they meant"))
+  (is (contains? (typed {:position :class :package "java.util" :text "da"}) "Date"))
+  (is (contains? (typed {:position :class :package "java.util" :text "Da"}) "Date"))
+  (testing "somebody who wrote a capital said which of the two they meant"
+    (is (empty? (candidates {:position :class :package "java.util" :text "DA"})))
+    (is (contains? (typed {:position :var :namespace "clojure.core" :text "boolean"})
+                   "boolean-array"))
+    (is (not (contains? (typed {:position :var :namespace "clojure.core" :text "Boolean"})
+                        "boolean-array"))))
+  (testing "and it is said piece by piece, not once for the whole of it"
+    (is (contains? (typed {:position :package-or-class :text "j.u.Date"}) "java.util.Date"))
+    (is (not (contains? (typed {:position :package-or-class :text "j.U.Date"})
+                        "java.util.Date")))))
 
 (deftest nothing-typed-is-every-name
   (testing "point sits after an opening bracket and everything could follow it"
@@ -214,13 +262,24 @@
     (is (= (candidates {:position :namespace :text ""})
            (candidates {:position :namespace})))))
 
-(deftest the-answer-is-sorted-and-bounded
+(deftest the-shortest-is-first
+  (testing "somebody who typed map wants map before map-indexed"
+    (is (= ["map" "map?" "mapv" "mapcat"]
+           (vec (take 4 (candidates {:position :var :namespace "clojure.core"
+                                     :text "map"}))))))
+  (testing "and alphabetically among the names of a length"
+    (is (= [":reload" ":verbose" ":reload-all"]
+           (candidates {:position :flag :text ""})))))
+
+(deftest the-answer-is-ordered-and-bounded
   (let [reply (ask {:position :package-or-class :text ""})
-        found (mapv :candidate (:completions reply))]
-    (is (= completion/max-completions (count found)))
-    (is (= (sort found) found))
-    (is (= (count (distinct found)) (count found)))
-    (is (true? (:truncated reply)) "what was cut is said rather than dropped"))
+        answered (mapv :candidate (:completions reply))]
+    (is (= completion/max-completions (count answered)))
+    (is (= (sort-by (juxt count identity) answered) answered))
+    (is (= (count (distinct answered)) (count answered)))
+    (is (true? (:truncated reply)) "what was cut is said rather than dropped")
+    (testing "and what is cut is the longest, not the last of the alphabet"
+      (is (contains? (set answered) "java.util.Map"))))
   (let [reply (ask {:position :flag :text ""})]
     (is (nil? (:truncated reply)))))
 
@@ -229,7 +288,7 @@
 (deftest a-keyword-candidate-carries-its-colon
   (testing "the client replaces the keyword it read point out of"
     (is (= [":refer" ":rename"] (candidates {:position :libspec-option :text ":r"})))
-    (is (= [":refer-clojure" ":require"] (candidates {:position :dependency-type :text ":re"})))
+    (is (= [":require" ":refer-clojure"] (candidates {:position :dependency-type :text ":re"})))
     (is (= [":rename"] (candidates {:position :libspec-option-refer :text ":r"})))
     (is (= [":reload" ":reload-all"] (candidates {:position :flag :text ":rel"})))))
 
@@ -267,11 +326,12 @@
                                       :text "clojure.strin" :id 1})]
           (is (= "reply" (:tag reply)))
           (is (= "completions" (:op reply)))
-          (is (= [{:candidate "clojure.string" :type "namespace"}] (:completions reply)))
+          (is (= [{:candidate "clojure.string" :type "namespace" :match-index 13}]
+                 (:completions reply)))
           (is (not (contains? reply :truncated))
               "an absent value is an absent key"))
         (testing "a position spelled the way a client without an EDN printer spells it"
-          (is (= [{:candidate "clojure.string" :type "namespace"}]
+          (is (= [{:candidate "clojure.string" :type "namespace" :match-index 13}]
                  (:completions (request! client {:op :completions :position "namespace"
                                                  :text "clojure.strin" :id 2})))))
         (testing "and one nothing can be answered at"
