@@ -1,6 +1,7 @@
 (ns replique.ops
   "The ops handled by the control connection."
-  (:require [replique.completion :as completion]
+  (:require [replique.classpath :as classpath]
+            [replique.completion :as completion]
             [replique.protocol :as protocol]
             [replique.server :as server]
             [replique.state :as state]))
@@ -39,6 +40,17 @@
 ;; that text.
 (defmethod protocol/handle :completions [_ msg]
   (completion/completions (assoc msg :position (protocol/as-keyword (:position msg)))))
+
+;; Reading the classpath again. It is read when the process starts and kept,
+;; since walking every jar and every directory of it behind a keystroke is not
+;; work worth doing - so a file written after that is not found until this is
+;; sent. What knows when to send it is the client: it is the half of this that
+;; watches the files of a project.
+(defmethod protocol/handle :update-classpath [_ _]
+  (let [{:keys [namespaces classes]} (classpath/rescan!)]
+    ;; how many of each, which is what says the reading found the entry that
+    ;; was added rather than only that it happened
+    {:namespaces (count namespaces) :classes (count classes)}))
 
 ;; Stopping an evaluation that went wrong. The client names the repl
 ;; connection it wants interrupted - it knows the id, the handshake reply of

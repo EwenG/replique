@@ -7,18 +7,23 @@
   it - and `all-ns` knows only the ones that have. The same holds for a class,
   which nothing loads until something names it.
 
-  Jars are read once and kept. A jar cannot change under a running process
-  without breaking it, so what was read of one stays true for as long as the
-  process lasts. Directories are walked again every time, and they are the
-  ones that change: a namespace gains a file the moment somebody writes one,
-  and that is the namespace they are about to require. A source tree is a few
-  hundred files, and walking it costs less than the round trip that asked."
+  Read once, when this namespace is loaded, and kept until something asks for
+  it to be read again. Reading it walks every jar and every directory on it,
+  which costs a fifth of a second on a classpath of a hundred and fifty jars,
+  and a directory is walked whole - a source tree is cheap and a large
+  resources directory is not. That is not work to do behind a keystroke.
+
+  What it costs is a file written afterwards, which is not found until the
+  reading is done again - and a namespace somebody has just created is exactly
+  the namespace they are about to require. The :update-classpath op is what
+  says the reading is due, and an editor that watches the files of a project
+  knows when to send it."
   (:require [clojure.string :as string])
   (:import [java.io File]
            [java.lang.module ModuleDescriptor$Exports ModuleFinder ModuleReader
             ModuleReference]
            [java.net URL URLClassLoader]
-           [java.nio.file FileVisitOption Files LinkOption Path Paths]
+           [java.nio.file FileVisitResult FileVisitor Files LinkOption Path Paths]
            [java.util.jar JarEntry JarFile]))
 
 ;;; Reading a name out of a resource
@@ -194,27 +199,54 @@
                      (loader-urls))]
     (into [] (comp (map #(.normalize ^Path %)) (distinct)) (concat named loaded))))
 
-;;; Scanning
-
-;; What was read of each jar, by its path. See the namespace docstring for why
-;; a jar is remembered and a directory is not.
-(defonce ^:private jars (atom {}))
+;;; Reading
 
 (defn- jar-resources [^Path path]
   (with-open [jar (JarFile. (.toFile path))]
     (into [] (map (fn [^JarEntry entry] (.getName entry)))
           (enumeration-seq (.entries jar)))))
 
+(defn- unnameable?
+  "Whether DIRECTORY is one nothing on the classpath can be named under.
+
+  A name is read from the path of a resource, a piece of it for each directory
+  the resource is in, so what is under a directory whose name starts with a
+  dot is a name with an empty piece: .git.objects.ff, which is neither a
+  namespace anybody wrote nor a class anybody can import.
+
+  Skipping them is also what keeps the walk to the size of a source tree. A
+  project root finds its way onto a classpath from time to time, and .git
+  alone holds more files than everything else in one put together - twenty
+  thousand of them cost a tenth of a second of every reading."
+  [^Path directory]
+  (when-let [name (.getFileName directory)]
+    (.startsWith (str name) ".")))
+
 (defn- directory-resources [^Path root]
-  (let [options (make-array LinkOption 0)]
-    (with-open [found (Files/walk root (make-array FileVisitOption 0))]
-      (into [] (comp (filter (fn [^Path path] (Files/isRegularFile path options)))
-                     ;; joined rather than printed: a path prints with the
-                     ;; separator of the machine, and a resource is named with
-                     ;; a slash wherever it is read
-                     (map (fn [^Path path]
-                            (string/join "/" (map str (.relativize root path))))))
-            (iterator-seq (.iterator found))))))
+  (let [found (java.util.ArrayList.)]
+    (Files/walkFileTree
+     root
+     (reify FileVisitor
+       (preVisitDirectory [_ directory _]
+         (if (and (not= root directory) (unnameable? directory))
+           FileVisitResult/SKIP_SUBTREE
+           FileVisitResult/CONTINUE))
+       (visitFile [_ path _]
+         ;; Joined rather than printed: a path prints with the separator of
+         ;; the machine, and a resource is named with a slash wherever it is
+         ;; read. Nothing is asked of the file itself - what is wanted is its
+         ;; name, and asking whether it is a regular one is a system call for
+         ;; every file of every source tree on every request.
+         (.add found (string/join "/" (map str (.relativize root path))))
+         FileVisitResult/CONTINUE)
+       ;; A file that cannot be read loses that file and a directory that
+       ;; cannot be read loses what is under it, where letting it out would
+       ;; lose the whole entry - a source tree answered as if it were empty.
+       ;; A tree is walked while something else is writing to it, so a file
+       ;; that was listed and then removed is an ordinary thing to meet.
+       (visitFileFailed [_ _ _] FileVisitResult/SKIP_SUBTREE)
+       (postVisitDirectory [_ _ _] FileVisitResult/CONTINUE)))
+    (vec found)))
 
 (defn- entry-scan
   "What the classpath entry at PATH provides, or nil when it provides nothing.
@@ -228,24 +260,41 @@
     (let [options (make-array LinkOption 0)]
       (cond
         (Files/isDirectory path options) (collect (directory-resources path))
-        (Files/isRegularFile path options)
-        (let [key (str path)]
-          (or (get @jars key)
-              (let [scan (collect (jar-resources path))]
-                (swap! jars assoc key scan)
-                scan)))))
+        (Files/isRegularFile path options) (collect (jar-resources path))))
     (catch Exception _ nil)))
 
-(defn scan
-  "The names on the classpath, as the four kinds of name they can be asked for.
+(defn- read-classpath
+  "Read every entry of the classpath, the classes of the runtime included.
 
-  Each value is a seq that may name the same thing twice - a namespace is on
-  the classpath as many times as an entry provides it - and is in no
-  particular order. Whoever answers with them is filtering them down to a few,
-  and sorting a few is cheaper than keeping a hundred thousand of them sorted."
+  Those are not read again: the classes java came with are the one part of
+  this that cannot change under a running process."
   []
-  (let [scans (into [@runtime-classes] (comp (map entry-scan) (remove nil?)) (entries))]
-    {:namespaces (mapcat :namespaces scans)
-     :classes (mapcat :classes scans)
-     :packages (mapcat :packages scans)
-     :paths (mapcat :paths scans)}))
+  (let [scans (into [@runtime-classes] (comp (map entry-scan) (remove nil?)) (entries))
+        namespaces (vec (mapcat :namespaces scans))]
+    {:namespaces namespaces
+     :namespace-prefixes (vec (prefixes namespaces))
+     :classes (vec (mapcat :classes scans))
+     :packages (vec (mapcat :packages scans))
+     :paths (vec (mapcat :paths scans))}))
+
+;; Read here, which is process startup: replique.control loads the ops and the
+;; ops load this. A first completion would otherwise wait a fifth of a second
+;; for what a process that answers completions was always going to read.
+(defonce ^:private scanned (atom (read-classpath)))
+
+(defn scan
+  "The names on the classpath, as the kinds of name they can be asked for.
+
+  Each value may name the same thing twice - a namespace is on the classpath
+  as many times as an entry provides it - and is in no particular order.
+  Whoever answers with them is filtering them down to a few, and sorting a few
+  is cheaper than keeping a hundred thousand of them sorted.
+
+  What was read when the process started, until `rescan!' says otherwise."
+  []
+  @scanned)
+
+(defn rescan!
+  "Read the classpath again, and return what is on it now."
+  []
+  (reset! scanned (read-classpath)))

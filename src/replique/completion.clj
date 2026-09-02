@@ -272,13 +272,16 @@
 
   What is on the classpath and what the process has loaded. The second is not
   the first: a namespace made at a repl, or by a tool that called `create-ns',
-  has no file anywhere and is a namespace all the same."
+  has no file anywhere and is a namespace all the same - and it is the half of
+  this that is not read once and kept, since asking for it costs nothing."
   []
-  (into (vec (:namespaces (classpath/scan))) (map (comp name ns-name)) (all-ns)))
+  (map (comp name ns-name) (all-ns)))
 
 (defmethod groups :namespace [msg]
   (let [prefix (named-argument msg :prefix)
-        known (namespaces)]
+        {:keys [namespace-prefixes] :as read} (classpath/scan)
+        loaded (namespaces)
+        known (concat (:namespaces read) loaded)]
     [{:type "namespace" :names (under prefix known)}
      ;; The head of a prefix list, which is a name no file carries: what is
      ;; written in (clojure.core.specs [alpha]) is a piece of a namespace and
@@ -286,11 +289,11 @@
      ;; it is rather than left out, and answered after the namespaces so that
      ;; a name which is both is the namespace.
      ;;
-     ;; Worked out here and now, where the packages of a class are worked out
-     ;; once and kept: there are a hundred thousand classes and a couple of
-     ;; thousand namespaces, and these have to hold what was loaded a moment
-     ;; ago as well as what is on the classpath.
-     {:type "namespace-prefix" :names (under prefix (classpath/prefixes known))}]))
+     ;; Those of the classpath were worked out when it was read, as the
+     ;; packages of a class were. Those of what has been loaded are worked out
+     ;; here, because what has been loaded is asked for again every time.
+     {:type "namespace-prefix"
+      :names (under prefix (concat namespace-prefixes (classpath/prefixes loaded)))}]))
 
 ;; What a :require-macros names is a namespace of this world. ClojureScript
 ;; compiles with two of them and the macros of a ClojureScript namespace are

@@ -47,14 +47,18 @@
   "Call f with these urls on the classpath of this thread.
 
   Added to a loader rather than to java.class.path, which is what `add-libs'
-  does to a running process and what the scan has to read to see it."
+  does to a running process and what the reading has to look at to see it.
+
+  Read on the way in and on the way out, since the classpath is read once and
+  kept: what a test leaves behind is what the next one would be answered."
   [urls f]
   (let [thread (Thread/currentThread)
         previous (.getContextClassLoader thread)
         loader (clojure.lang.DynamicClassLoader. previous)]
     (doseq [url urls] (.addURL loader url))
     (.setContextClassLoader thread loader)
-    (try (f) (finally (.setContextClassLoader thread previous)))))
+    (classpath/rescan!)
+    (try (f) (finally (.setContextClassLoader thread previous) (classpath/rescan!)))))
 
 (defn- with-entry [dir f] (with-entries [(entry-url dir)] f))
 
@@ -82,24 +86,65 @@
     (is (not (contains? (typed {:position :namespace :prefix "clojur" :text ""})
                         "e.string")))))
 
-(deftest a-namespace-written-now-is-offered-now
+(deftest a-namespace-written-now-waits-for-the-classpath-to-be-read-again
   (let [dir (temp-dir)]
     (try
       (with-entry
         dir
         (fn []
-          (is (not (contains? (typed {:position :namespace :text "made"}) "made.up")))
           (write-file! dir "made" "up.clj")
-          (is (contains? (typed {:position :namespace :text "made"}) "made.up")
-              "a directory is walked again every time, and it is what changes")
+          (is (not (contains? (typed {:position :namespace :text "made"}) "made.up"))
+              "the classpath is read once and kept, so a file written after
+              the reading is not one this knows about")
+          (classpath/rescan!)
+          (is (contains? (typed {:position :namespace :text "made"}) "made.up"))
           (testing "the underscores a file name carries are dashes in the name"
             (write-file! dir "made" "two_words.cljc")
+            (classpath/rescan!)
             (is (contains? (typed {:position :namespace :text "made"}) "made.two-words")))
           (testing "and a name is answered once however many entries provide it"
             (write-file! dir "clojure" "string.clj")
+            (classpath/rescan!)
             (is (= ["clojure.string"]
                    (candidates {:position :namespace :text "clojure.string"}))))))
       (finally (delete-recursively dir)))))
+
+(deftest what-is-under-a-hidden-directory-is-not-a-name
+  (testing "a name with an empty piece in it is neither a namespace anybody
+  wrote nor a class anybody can import, and skipping those is what keeps the
+  walk to the size of a source tree"
+    (let [dir (temp-dir)]
+      (try
+        (write-file! dir ".git" "objects" "probehidden.clj")
+        (write-file! dir "seen" "probehidden.clj")
+        (with-entry
+          dir
+          (fn []
+            (is (= ["seen.probehidden"]
+                   (candidates {:position :namespace :text "probehidden"})))))
+        (finally (delete-recursively dir))))))
+
+(deftest a-subtree-that-cannot-be-read-does-not-lose-the-entry
+  (testing "losing the entry answers a whole source tree as if it were empty"
+    (let [dir (temp-dir)]
+      (try
+        (write-file! dir "readable" "probehere.clj")
+        (write-file! dir "closed" "probethere.clj")
+        (Files/setPosixFilePermissions (path dir "closed") (java.util.HashSet.))
+        (with-entry
+          dir
+          (fn []
+            (let [answered (typed {:position :namespace :text "probe"})]
+              (is (contains? answered "readable.probehere"))
+              ;; and not where the test runs as somebody permissions do not
+              ;; apply to, which is nobody this is written for
+              (when-not (Files/isReadable (path dir "closed"))
+                (is (not (contains? answered "closed.probethere")))))))
+        (finally
+          (Files/setPosixFilePermissions
+           (path dir "closed")
+           (java.nio.file.attribute.PosixFilePermissions/fromString "rwx------"))
+          (delete-recursively dir))))))
 
 (deftest an-entry-that-cannot-be-read-is-passed-over
   (testing "a classpath names directories that were never created and jars
@@ -275,15 +320,15 @@
 (deftest a-class-nobody-wrote-is-not-offered
   (let [dir (temp-dir)]
     (try
+      (write-file! dir "made" "Thing.class")
+      (write-file! dir "made" "Thing$Inner.class")
+      (write-file! dir "made" "Thing$1.class")
+      (write-file! dir "made" "Thing$1Local.class")
+      (write-file! dir "made" "package-info.class")
+      (write-file! dir "module-info.class")
       (with-entry
         dir
         (fn []
-          (write-file! dir "made" "Thing.class")
-          (write-file! dir "made" "Thing$Inner.class")
-          (write-file! dir "made" "Thing$1.class")
-          (write-file! dir "made" "Thing$1Local.class")
-          (write-file! dir "made" "package-info.class")
-          (write-file! dir "module-info.class")
           (is (= ["made" "made.Thing"] (candidates {:position :package-or-class :text "made."}))
               "the package, and one class: a descriptor is not a class and
               neither is an inner one, yet")
@@ -417,4 +462,28 @@
             (is (string/includes? (:message reply) "nowhere"))))
         (testing "the connection survives it"
           (is (= "reply" (:tag (request! client {:op :completions :position :flag :id 4})))))
+        (testing "reading the classpath again, which is what a file written
+        after the process started waits for"
+          (let [dir (temp-dir)
+                property (System/getProperty "java.class.path")
+                ask (fn [id] (mapv :candidate
+                                   (:completions
+                                    (request! client {:op :completions :position :namespace
+                                                      :text "overthewire" :id id}))))]
+            (try
+              (write-file! dir "made" "overthewire.clj")
+              ;; the property rather than a loader, because the op is answered
+              ;; on the thread of the connection and a loader is this one's
+              (System/setProperty "java.class.path"
+                                  (str property (System/getProperty "path.separator") dir))
+              (is (empty? (ask 5)))
+              (let [reply (request! client {:op :update-classpath :id 6})]
+                (is (= "reply" (:tag reply)))
+                (is (pos? (:namespaces reply)))
+                (is (pos? (:classes reply))))
+              (is (= ["made.overthewire"] (ask 7)))
+              (finally
+                (System/setProperty "java.class.path" property)
+                (classpath/rescan!)
+                (delete-recursively dir)))))
         (finally (disconnect client))))))
