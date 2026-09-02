@@ -344,11 +344,19 @@
 
 ;;; Dispatch
 
-(defn normalize-op [op]
+(defn as-keyword
+  "The keyword a client wrote, or nil when it wrote something that is not one.
+
+  A client with an EDN printer writes a keyword, one without writes a string,
+  and one that prints its own symbols writes a symbol - the three spell the
+  same name. Said once because it is asked of every named thing a message
+  carries: the op of a request, the role of a handshake, the position a
+  completion is asked at."
+  [x]
   (cond
-    (keyword? op) op
-    (string? op) (keyword op)
-    (symbol? op) (keyword (str op))
+    (keyword? x) x
+    (string? x) (keyword x)
+    (symbol? x) (keyword (str x))
     :else nil))
 
 (defmulti handle

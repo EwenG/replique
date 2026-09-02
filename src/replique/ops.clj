@@ -1,6 +1,7 @@
 (ns replique.ops
   "The ops handled by the control connection."
-  (:require [replique.protocol :as protocol]
+  (:require [replique.completion :as completion]
+            [replique.protocol :as protocol]
             [replique.server :as server]
             [replique.state :as state]))
 
@@ -28,6 +29,16 @@
 ;; that asked is about to show it to somebody.
 (defmethod protocol/handle :namespaces [_ _]
   {:namespaces (vec (sort (map (comp str ns-name) (all-ns))))})
+
+;; The names that could be written where a name is being written. What is
+;; asked depends on the slot of the form point is in - a namespace, a var of
+;; one, a class of a package - and reading that out of the text is the
+;; client's half: it has the buffer, and it is the half that knows whether
+;; what is being edited is Clojure or ClojureScript. What travels is the slot
+;; it read and the text typed there, and what comes back is what could replace
+;; that text.
+(defmethod protocol/handle :completions [_ msg]
+  (completion/completions (assoc msg :position (protocol/as-keyword (:position msg)))))
 
 ;; Stopping an evaluation that went wrong. The client names the repl
 ;; connection it wants interrupted - it knows the id, the handshake reply of

@@ -13,19 +13,12 @@
            [java.nio.charset StandardCharsets]
            [java.util.concurrent.atomic AtomicLong]))
 
-(defn- normalize-role [role]
-  (cond
-    (keyword? role) role
-    (string? role) (keyword role)
-    (symbol? role) (keyword (str role))
-    :else nil))
-
 (defn- accept-hello! [{:keys [process-id] :as conn} msg]
   (if-not (map? msg)
     (protocol/write-frame!
      conn (protocol/error nil :invalid-message "The :hello message must be a map"))
-    (let [msg (assoc msg :op (protocol/normalize-op (:op msg)))
-          role (normalize-role (:role msg))]
+    (let [msg (assoc msg :op (protocol/as-keyword (:op msg)))
+          role (protocol/as-keyword (:role msg))]
       (cond
         (not (protocol/valid-id? (:id msg)))
         (protocol/write-frame!

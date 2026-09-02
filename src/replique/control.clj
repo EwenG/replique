@@ -40,7 +40,7 @@
 
 (defn- dispatch! [conn msg]
   (let [raw-op (:op msg)
-        op (protocol/normalize-op raw-op)
+        op (protocol/as-keyword raw-op)
         msg (assoc msg :op op)]
     (cond
       ;; First, and before the op: this is the check that lets an error frame
