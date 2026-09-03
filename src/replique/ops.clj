@@ -1,6 +1,8 @@
 (ns replique.ops
   "The ops handled by the control connection."
-  (:require [replique.classpath :as classpath]
+  (:require [clojure.java.basis :as basis]
+            [clojure.repl.deps :as deps]
+            [replique.classpath :as classpath]
             [replique.completion :as completion]
             [replique.protocol :as protocol]
             [replique.server :as server]
@@ -51,6 +53,106 @@
     ;; how many of each, which is what says the reading found the entry that
     ;; was added rather than only that it happened
     {:namespaces (count namespaces) :classes (count classes)}))
+
+;; Adding libraries to a running process, which is what clojure.repl.deps
+;; does. It asks two things of the thread it runs on: a DynamicClassLoader to
+;; add to, which every connection has because every connection loads through
+;; the one the process shares - see replique.state - and *repl* bound, which
+;; it reads as somebody having asked for this rather than as anything about
+;; where the asking came from. It is bound here for that reason and no other.
+;;
+;; The classpath is read again afterwards rather than left to a second
+;; message: what was added is on it now, and this is the op that knows.
+;;
+;; It takes about a second whenever there is something to resolve, because
+;; resolving runs the deps tool, and a control connection answers in request
+;; order - so this is the op that holds the channel. A client with something
+;; else to ask meanwhile opens a second control connection, which is what the
+;; protocol says to do about exactly this.
+
+(defn- with-basis
+  "Run f where there is a basis to resolve libraries against.
+
+  There is one when the process was started by the clojure cli, which is what
+  wrote the file it is read from. Started any other way there is nothing to
+  resolve against and nothing that says what is resolved already, and saying
+  so plainly beats what tools.deps says about a nil."
+  [f]
+  (when (nil? (basis/initial-basis))
+    (throw (ex-info (str "This process was not started by the clojure cli, so there is "
+                         "no basis to resolve libraries against")
+                    {:replique/error :no-basis})))
+  (binding [*repl* true
+            ;; Bound because adding a library ends by setting them, and
+            ;; setting a var needs it bound - a repl has them bound and a
+            ;; connection answering an op does not. What lands there is then
+            ;; given to the process: the library went onto the classpath every
+            ;; connection loads through, so the readers it brought are the
+            ;; process's and not this thread's.
+            *data-readers* *data-readers*]
+    (let [result (f)]
+      (alter-var-root #'*data-readers* merge *data-readers*)
+      result)))
+
+(defn- added
+  "What was added, and what the classpath holds now that it is on it."
+  [libs]
+  (let [{:keys [namespaces classes]} (classpath/rescan!)]
+    ;; a vector however few: nothing added is an empty one rather than an
+    ;; absent key, which is what says the request was answered and found
+    ;; nothing to do
+    {:added (mapv str libs)
+     :namespaces (count namespaces)
+     :classes (count classes)}))
+
+(defn- library-name [lib]
+  (cond
+    (symbol? lib) lib
+    (string? lib) (symbol lib)
+    :else (throw (ex-info (str "A library must be named by a symbol, got: " (pr-str lib))
+                          {:replique/error :invalid-message}))))
+
+(defn- libraries
+  "The libraries a client asked for, by the name and the coordinates the deps
+  reader knows them under."
+  [libs]
+  (when-not (and (map? libs) (seq libs))
+    (throw (ex-info (str "The :add-libs op needs the :libs to add, as a map of a library "
+                         "to where it is to be found, got: " (pr-str libs))
+                    {:replique/error :invalid-message})))
+  (reduce-kv (fn [acc lib coordinates]
+               (when-not (map? coordinates)
+                 (throw (ex-info (str "The coordinates of " (pr-str lib) " must be a map, got: "
+                                      (pr-str coordinates))
+                                 {:replique/error :invalid-message})))
+               (assoc acc (library-name lib) coordinates))
+             {} libs))
+
+(defmethod protocol/handle :add-libs [_ msg]
+  (added (with-basis #(deps/add-libs (libraries (:libs msg))))))
+
+(defn- aliases
+  "The aliases of a deps.edn a sync is to be done under, or nil for none."
+  [msg]
+  (let [value (:aliases msg)]
+    (cond
+      (nil? value) nil
+      (sequential? value)
+      (mapv (fn [alias]
+              (or (protocol/as-keyword alias)
+                  (throw (ex-info (str "An alias must be a name, got: " (pr-str alias))
+                                  {:replique/error :invalid-message}))))
+            value)
+      :else (throw (ex-info (str "The :aliases of a :sync-deps must be a list of names, got: "
+                                 (pr-str value))
+                            {:replique/error :invalid-message})))))
+
+;; What deps.edn says the process should have and does not. The message an
+;; editor sends after somebody edited that file, which is the way a library
+;; gets added and stays added: what :add-libs adds is gone when the process is.
+(defmethod protocol/handle :sync-deps [_ msg]
+  (let [under (aliases msg)]
+    (added (with-basis #(if (seq under) (deps/sync-deps :aliases under) (deps/sync-deps))))))
 
 ;; Stopping an evaluation that went wrong. The client names the repl
 ;; connection it wants interrupted - it knows the id, the handshake reply of

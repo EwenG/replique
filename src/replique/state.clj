@@ -2,6 +2,27 @@
   "Process wide state. Kept dependency free so that every namespace can read
   from it without introducing a cycle.")
 
+;; The loader this process shares, and the parent of the one each connection
+;; ends up with. clojure.main/repl gives every repl a DynamicClassLoader of its
+;; own, whose parent is whatever its thread was holding - so two repls of a
+;; process that did nothing about it hold two loaders that are siblings, and a
+;; library added at one is a library the other cannot find. What
+;; clojure.repl.deps adds to is the highest DynamicClassLoader above the thread
+;; it was called on, so one loader for every connection to inherit is what
+;; makes an added library reach the whole process, the thread that reads the
+;; classpath included.
+;;
+;; Its parent is the loader clojure itself came from rather than whatever the
+;; thread loading this happens to hold: a namespace is loaded through a loader
+;; the compiler makes for that load and throws away afterwards.
+(defonce class-loader
+  (clojure.lang.DynamicClassLoader. (.getClassLoader clojure.lang.RT)))
+
+(defn adopt-class-loader!
+  "Load through the loader this process shares, on this thread."
+  []
+  (.setContextClassLoader (Thread/currentThread) class-loader))
+
 (defonce version "2.0.0-SNAPSHOT")
 (defonce protocol-version 1)
 

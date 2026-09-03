@@ -7,7 +7,8 @@
 
   Both roles share the same handshake, so that a REPL connection keeps the
   reader the handshake was read from - a REPL needs a real stdin."
-  (:require [replique.protocol :as protocol])
+  (:require [replique.protocol :as protocol]
+            [replique.state :as state])
   (:import [java.io BufferedWriter InputStreamReader IOException OutputStreamWriter]
            [java.net InetAddress ServerSocket Socket SocketException]
            [java.nio.charset StandardCharsets]
@@ -140,6 +141,11 @@
   (let [conn (connection server socket client-id)]
     (swap! (:connections server) assoc client-id conn)
     (doto (Thread. (fn []
+                     ;; Before anything is read, and on this thread rather
+                     ;; than by inheritance: what a connection loads through
+                     ;; is what every other connection loads through, and a
+                     ;; repl wraps this one rather than replacing it.
+                     (state/adopt-class-loader!)
                      (try
                        (handshake! conn)
                        (catch SocketException _)
