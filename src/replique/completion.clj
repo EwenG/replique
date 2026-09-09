@@ -629,6 +629,79 @@
     [{:type "keyword"
       :names (map (fn [named] (str ":" named)) (interned-keywords))}]))
 
+(defn- class-named
+  "The class SCOPE names in NS, or nil when it names none.
+
+  What the namespace imported, which is a class the process already holds,
+  and a class written out in full, which is one it may never have touched.
+  The second is loaded to be found and is not initialized: what runs a static
+  initializer is using a class, and reading the names of its members is not a
+  use. Loading the one class somebody has named is not the reading
+  `importable' refuses to do - that one is loading a hundred thousand of them
+  to see what they are."
+  ^Class [ns ^String scope]
+  (or (let [mapped (get (ns-map ns) (symbol scope))]
+        (when (class? mapped) mapped))
+      (try (Class/forName scope false (clojure.lang.RT/baseLoader))
+           (catch Throwable _ nil))))
+
+(defn- static?
+  [^java.lang.reflect.Member member]
+  (java.lang.reflect.Modifier/isStatic (.getModifiers member)))
+
+(defn- class-groups
+  "The members of the class SCOPE names in NS, written under it.
+
+  A static method and a static field are written Class/name. An instance
+  method is written Class/.name and a constructor Class/new, which are the
+  spellings clojure reads since 1.12 - and 1.12 is the least this process
+  runs on, so they are always what can be written here.
+
+  The public members, the inherited ones included, which is what getMethods
+  and getFields answer: what can be written is what can be seen from outside
+  the class. An overload is one name however many arities it has, since a
+  name is what goes in the buffer.
+
+  Instance fields are not among them. What reads one is (.-field x), written
+  on the thing rather than on the class, and there is no spelling of it
+  behind a slash."
+  [ns ^String scope]
+  (when-let [^Class class (class-named ns scope)]
+    (let [methods (seq (.getMethods class))]
+      [{:type "method"
+        :names (concat (for [^java.lang.reflect.Method method methods
+                             :when (static? method)]
+                         (str scope "/" (.getName method)))
+                       (for [^java.lang.reflect.Method method methods
+                             :when (not (static? method))]
+                         (str scope "/." (.getName method))))}
+       {:type "field"
+        :names (for [^java.lang.reflect.Field field (.getFields class)
+                     :when (static? field)]
+                 (str scope "/" (.getName field)))}
+       {:type "constructor" :names [(str scope "/new")]}])))
+
+(defn- constructor-groups
+  "The constructor calls TEXT is the start of, or nil where it is none.
+
+  A class name with a dot written after it, which is how a constructor is
+  written where Class/new is the spelling clojure reads since 1.12. The dot
+  is what says one is being written rather than a class being named, so it
+  has to be written first - and once it is, every candidate carries one:
+  a candidate without it would be written over the dot and take it away,
+  which is what somebody who typed (Date. would watch happen.
+
+  Only where what stands before the dot is already a class. java.util. is
+  somebody halfway through writing a class name rather than a constructor of
+  a package, and the classes are what is offered there."
+  [ns ^String text]
+  (when (string/ends-with? text ".")
+    (let [named (subs text 0 (dec (.length text)))]
+      (when (and (seq named) (class-named ns named))
+        [{:type "constructor"
+          :names (map (fn [^String found] (str found "."))
+                      (cons named (importable text (:classes (classpath/scan)))))}]))))
+
 (defmethod groups :code [msg]
   (let [ns (namespace-named msg)
         written (text msg)]
@@ -637,32 +710,37 @@
     ;; means there
     (if (string/starts-with? written ":")
       (keyword-groups ns written)
-      (if-let [scope (scope-of written)]
-        (scoped-groups ns scope)
-        (concat
-         ;; First, which is what makes a local shadow. A name in two groups is
-         ;; answered once, as what the first of them says it is - and a local
-         ;; named map is what map means where it is bound, whatever
-         ;; clojure.core has to say about the name.
-         [{:type "local" :names (locals-named msg)}]
-         ;; Before the aliases, because that is the order the language reads
-         ;; them in: a name written with no slash after it is the mapping and
-         ;; not the alias that is spelled the same.
-         (mapping-groups ns)
-         (alias-groups ns "")
-         ;; The namespaces that have been loaded, which is how a var of one
-         ;; that this namespace never required is written: in full, and the
-         ;; full name starts with one of these.
-         [{:type "namespace" :names (namespaces)}
-          {:type "special-form" :names special-forms}]
-         ;; A class that was not imported is written in full, which means
-         ;; written with a dot in it - so until the text holds one, the classes
-         ;; offered are the ones the namespace imported and no others.
-         ;; Otherwise two letters typed anywhere in code would answer with a
-         ;; thousand class names, and the vars they were meant to reach would
-         ;; be underneath them.
-         (when (string/includes? written ".")
-           [{:type "class" :names (importable written (:classes (classpath/scan)))}]))))))
+      (if-let [constructed (constructor-groups ns written)]
+        constructed
+        (if-let [scope (scope-of written)]
+          ;; A namespace and a class are written the same way and answered
+          ;; together, since a scope that is both - which nothing forbids - is
+          ;; a question about both.
+          (concat (scoped-groups ns scope) (class-groups ns scope))
+          (concat
+           ;; First, which is what makes a local shadow. A name in two groups is
+           ;; answered once, as what the first of them says it is - and a local
+           ;; named map is what map means where it is bound, whatever
+           ;; clojure.core has to say about the name.
+           [{:type "local" :names (locals-named msg)}]
+           ;; Before the aliases, because that is the order the language reads
+           ;; them in: a name written with no slash after it is the mapping and
+           ;; not the alias that is spelled the same.
+           (mapping-groups ns)
+           (alias-groups ns "")
+           ;; The namespaces that have been loaded, which is how a var of one
+           ;; that this namespace never required is written: in full, and the
+           ;; full name starts with one of these.
+           [{:type "namespace" :names (namespaces)}
+            {:type "special-form" :names special-forms}]
+           ;; A class that was not imported is written in full, which means
+           ;; written with a dot in it - so until the text holds one, the classes
+           ;; offered are the ones the namespace imported and no others.
+           ;; Otherwise two letters typed anywhere in code would answer with a
+           ;; thousand class names, and the vars they were meant to reach would
+           ;; be underneath them.
+           (when (string/includes? written ".")
+             [{:type "class" :names (importable written (:classes (classpath/scan)))}])))))))
 
 ;;; The answer
 

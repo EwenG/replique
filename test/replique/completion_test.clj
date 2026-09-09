@@ -455,6 +455,8 @@
       (eval '(def probe-value 1))
       (eval '(defn probe-fn [] 1))
       (eval '(defmacro probe-macro [] 1))
+      ;; a class of its own, whose fields are public and are not static
+      (eval '(deftype ProbeType [probe-field]))
       (str (ns-name *ns*)))))
 
 (defn- in-code
@@ -560,6 +562,51 @@
     (is (= :invalid-message (error-kind {:position :code :text "" :locals [{:name 42}]}))))
   (testing "and none of them is none rather than a message written wrongly"
     (is (seq (candidates {:position :code :text "redu"})))))
+
+(deftest a-class-is-answered-with-the-members-of-it
+
+  (testing "a static method, written Class/name"
+    (is (= {:candidate "Date/from" :type "method"}
+           (dissoc (found (in-code "Date/fro") "Date/from") :match-index))))
+
+  (testing "a class written out in full, which is one the process may never
+  have touched - it is loaded to be found, and not initialized"
+    (is (contains? (typed (in-code "java.util.Date/fro")) "java.util.Date/from")))
+
+  (testing "an instance method, written Class/.name, and a constructor,
+  written Class/new - the spellings clojure reads since 1.12, which is the
+  least this process runs on"
+    (is (= {:candidate "String/.length" :type "method"}
+           (dissoc (found (in-code "String/.leng") "String/.length") :match-index)))
+    (is (= {:candidate "String/new" :type "constructor"}
+           (dissoc (found (in-code "String/ne") "String/new") :match-index))))
+
+  (testing "a static field"
+    (is (= {:candidate "Integer/MAX_VALUE" :type "field"}
+           (dissoc (found (in-code "Integer/") "Integer/MAX_VALUE") :match-index))))
+
+  (testing "and not an instance field: what reads one is written on the thing
+  rather than on the class, and there is no spelling of it behind a slash"
+    (let [answered (typed (in-code "ProbeType/"))]
+      (is (contains? answered "ProbeType/new"))
+      (is (not (contains? answered "ProbeType/probe_field")))))
+
+  (testing "a scope that is neither a namespace nor a class answers nothing"
+    (is (empty? (candidates (in-code "nope.Nope/x"))))))
+
+(deftest a-constructor-is-written-with-a-dot-on-the-class
+  (testing "and every candidate carries one, since a candidate without it
+  would be written over the dot and take it away - which is what somebody who
+  typed (Date. would watch happen"
+    (is (= {:candidate "Date." :type "constructor"}
+           (dissoc (found (in-code "Date.") "Date.") :match-index)))
+    (is (contains? (typed (in-code "Date.")) "java.util.Date.")))
+  (testing "only where what stands before the dot is already a class:
+  java.util. is somebody halfway through writing a class name rather than a
+  constructor of a package"
+    (let [answered (typed (in-code "java.util."))]
+      (is (contains? answered "java.util.Date"))
+      (is (not (contains? answered "java.util.Date."))))))
 
 ;;; A keyword written in code
 
