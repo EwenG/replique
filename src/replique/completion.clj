@@ -34,7 +34,8 @@
   shadow: a let that binds map is answered as that local and not as the var,
   and working that out where the two lists meet is the only place it can be
   worked out at all."
-  (:require [clojure.string :as string]
+  (:require [clojure.edn :as edn]
+            [clojure.string :as string]
             [replique.classpath :as classpath]
             [replique.protocol :as protocol]))
 
@@ -681,6 +682,56 @@
                  (str scope "/" (.getName field)))}
        {:type "constructor" :names [(str scope "/new")]}])))
 
+(defn- target-class
+  "The class a member is being written on, or nil where nothing says what it
+  is.
+
+  The tag first, which is a ^String the client read out of the text - off the
+  local the target names, or off the target where it was written at the call
+  site. Then the target as it is written: a var declares its class with a
+  :tag of its own, and a literal is its own class.
+
+  Nothing is evaluated to find out. What an expression would return is not
+  knowable without running it, and running somebody's code is what a
+  keystroke must not do - so (.getT (make-thing)) is answered with nothing
+  rather than by making one. The target is read rather than evaluated for the
+  same reason, and read as edn: what a client sent is text out of somebody's
+  buffer, and #= in it is a form the reader would run."
+  ^Class [ns msg]
+  (or (when-let [tag (named-argument msg :tag)]
+        (class-named ns tag))
+      (when-let [target (named-argument msg :target)]
+        (let [value (try (edn/read-string target) (catch Throwable _ nil))]
+          (cond
+            (symbol? value)
+            (let [found (try (ns-resolve ns value) (catch Throwable _ nil))
+                  tag (when (var? found) (:tag (meta found)))]
+              (cond (class? tag) tag
+                    (symbol? tag) (class-named ns (str tag))))
+            (some? value) (class value))))))
+
+(defn- member-groups
+  "The members of what TEXT is being written on, written as they are called.
+
+  A method is written .name and a field .-name, and which of the two is being
+  written is in the text: what follows the dash is a field and nothing else,
+  since a field is not readable by the spelling a method is called with.
+
+  The instance members only. A static one is written on the class rather than
+  on a thing - Integer/MAX_VALUE, not (.MAX_VALUE x) - and there is no
+  spelling of it here."
+  [ns msg ^String written]
+  (when-let [^Class class (target-class ns msg)]
+    (if (string/starts-with? written ".-")
+      [{:type "field"
+        :names (for [^java.lang.reflect.Field field (.getFields class)
+                     :when (not (static? field))]
+                 (str ".-" (.getName field)))}]
+      [{:type "method"
+        :names (for [^java.lang.reflect.Method method (.getMethods class)
+                     :when (not (static? method))]
+                 (str "." (.getName method)))}])))
+
 (defn- constructor-groups
   "The constructor calls TEXT is the start of, or nil where it is none.
 
@@ -710,37 +761,41 @@
     ;; means there
     (if (string/starts-with? written ":")
       (keyword-groups ns written)
-      (if-let [constructed (constructor-groups ns written)]
-        constructed
-        (if-let [scope (scope-of written)]
-          ;; A namespace and a class are written the same way and answered
-          ;; together, since a scope that is both - which nothing forbids - is
-          ;; a question about both.
-          (concat (scoped-groups ns scope) (class-groups ns scope))
-          (concat
-           ;; First, which is what makes a local shadow. A name in two groups is
-           ;; answered once, as what the first of them says it is - and a local
-           ;; named map is what map means where it is bound, whatever
-           ;; clojure.core has to say about the name.
-           [{:type "local" :names (locals-named msg)}]
-           ;; Before the aliases, because that is the order the language reads
-           ;; them in: a name written with no slash after it is the mapping and
-           ;; not the alias that is spelled the same.
-           (mapping-groups ns)
-           (alias-groups ns "")
-           ;; The namespaces that have been loaded, which is how a var of one
-           ;; that this namespace never required is written: in full, and the
-           ;; full name starts with one of these.
-           [{:type "namespace" :names (namespaces)}
-            {:type "special-form" :names special-forms}]
-           ;; A class that was not imported is written in full, which means
-           ;; written with a dot in it - so until the text holds one, the classes
-           ;; offered are the ones the namespace imported and no others.
-           ;; Otherwise two letters typed anywhere in code would answer with a
-           ;; thousand class names, and the vars they were meant to reach would
-           ;; be underneath them.
-           (when (string/includes? written ".")
-             [{:type "class" :names (importable written (:classes (classpath/scan)))}])))))))
+      ;; A member before anything else, since a name written on a thing is
+      ;; read against that thing rather than against the namespace
+      (if (string/starts-with? written ".")
+        (member-groups ns msg written)
+        (if-let [constructed (constructor-groups ns written)]
+          constructed
+          (if-let [scope (scope-of written)]
+            ;; A namespace and a class are written the same way and answered
+            ;; together, since a scope that is both - which nothing forbids - is
+            ;; a question about both.
+            (concat (scoped-groups ns scope) (class-groups ns scope))
+            (concat
+             ;; First, which is what makes a local shadow. A name in two groups is
+             ;; answered once, as what the first of them says it is - and a local
+             ;; named map is what map means where it is bound, whatever
+             ;; clojure.core has to say about the name.
+             [{:type "local" :names (locals-named msg)}]
+             ;; Before the aliases, because that is the order the language reads
+             ;; them in: a name written with no slash after it is the mapping and
+             ;; not the alias that is spelled the same.
+             (mapping-groups ns)
+             (alias-groups ns "")
+             ;; The namespaces that have been loaded, which is how a var of one
+             ;; that this namespace never required is written: in full, and the
+             ;; full name starts with one of these.
+             [{:type "namespace" :names (namespaces)}
+              {:type "special-form" :names special-forms}]
+             ;; A class that was not imported is written in full, which means
+             ;; written with a dot in it - so until the text holds one, the classes
+             ;; offered are the ones the namespace imported and no others.
+             ;; Otherwise two letters typed anywhere in code would answer with a
+             ;; thousand class names, and the vars they were meant to reach would
+             ;; be underneath them.
+             (when (string/includes? written ".")
+               [{:type "class" :names (importable written (:classes (classpath/scan)))}]))))))))
 
 ;;; The answer
 

@@ -457,6 +457,9 @@
       (eval '(defmacro probe-macro [] 1))
       ;; a class of its own, whose fields are public and are not static
       (eval '(deftype ProbeType [probe-field]))
+      ;; and a var that declares what it holds, which is the one thing a var
+      ;; says about its value without the value being looked at
+      (eval '(def ^java.util.Date probe-tagged nil))
       (str (ns-name *ns*)))))
 
 (defn- in-code
@@ -593,6 +596,45 @@
 
   (testing "a scope that is neither a namespace nor a class answers nothing"
     (is (empty? (candidates (in-code "nope.Nope/x"))))))
+
+(deftest a-member-is-written-on-the-thing-it-is-read-from
+  (let [on (fn [text & {:as said}]
+             (merge {:position :code :ns @probe :text text} said))]
+
+    (testing "a method is written .name, and the class comes from the tag the
+    client read out of the text"
+      (is (= {:candidate ".length" :type "method"}
+             (dissoc (found (on ".leng" :tag "String") ".length") :match-index))))
+
+    (testing "a field is written .-name, and a method is not offered there: a
+    field is not readable by the spelling a method is called with"
+      (is (= {:candidate ".-probe_field" :type "field"}
+             (dissoc (found (on ".-probe" :tag "ProbeType") ".-probe_field")
+                     :match-index)))
+      (is (empty? (candidates (on ".-leng" :tag "String")))))
+
+    (testing "a static member is not one either - it is written on the class"
+      (is (not (contains? (typed (on ".parse" :tag "Integer")) ".parseInt")))
+      (is (empty? (candidates (on ".-max" :tag "Integer")))))
+
+    (testing "a var declares its class with a :tag of its own"
+      (is (contains? (typed (on ".getT" :target "probe-tagged")) ".getTime")))
+
+    (testing "and a literal is its own class"
+      (is (contains? (typed (on ".leng" :target "\"abc\"")) ".length")))
+
+    (testing "what nothing says the class of is answered with nothing: what an
+    expression would return is not knowable without running it, and running
+    somebody's code is what a keystroke must not do"
+      (is (empty? (candidates (on ".leng"))))
+      (is (empty? (candidates (on ".leng" :target "(make-a-thing)"))))
+      (is (empty? (candidates (on ".coun" :target "probe-keywords")))
+          "a var that declares nothing among them: what it holds now is what
+          it holds now, and reading a var to find out is reading it"))
+
+    (testing "and the target is read rather than evaluated, so a form the
+    reader would run is a form nothing runs"
+      (is (empty? (candidates (on ".leng" :target "#=(str \"abc\")")))))))
 
 (deftest a-constructor-is-written-with-a-dot-on-the-class
   (testing "and every candidate carries one, since a candidate without it
