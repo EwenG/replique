@@ -149,17 +149,19 @@
   "Whether a piece of the name CANDIDATE starts at INDEX.
 
   Where a capital does, which is the rule that reads a name written with no
-  separator in it at all. The capital of an acronym is one only where the
-  acronym ends - the S of HTTPServer and not the T of HTTP - so that HS
-  reaches it and H does not reach it four times over."
+  separator in it at all.
+
+  Every capital, the ones inside an acronym included. `tokenize' splits
+  before each of them, so a name holding two in a row is written in pieces
+  that only these boundaries let it be matched by: UUID is typed U, U, I, D
+  and java.util.UUID is a name somebody must be able to reach by writing it
+  out. A capital typed inside an acronym matches more names than it used to -
+  T reaches HTTPServer at its second letter - and a name that cannot be
+  written at all is the worse of the two."
   [^String candidate ^long index]
   (or (zero? index)
       (contains? boundaries (.charAt candidate (dec index)))
-      (let [character (.charAt candidate index)]
-        (and (Character/isUpperCase character)
-             (or (not (Character/isUpperCase (.charAt candidate (dec index))))
-                 (and (< (inc index) (.length candidate))
-                      (Character/isLowerCase (.charAt candidate (inc index)))))))))
+      (Character/isUpperCase (.charAt candidate index))))
 
 (defn- token-index
   "Where TOKEN is written in CANDIDATE at or after FROM, or -1 for nowhere."

@@ -174,6 +174,14 @@
     (is (contains? (typed {:position :package-or-class :text "ABQ"})
                    "java.util.concurrent.ArrayBlockingQueue")
         "three letters, and no separator written between them"))
+  (testing "a name holding two capitals in a row is reached by writing it
+  out, which is a name split into a piece for each of them"
+    (is (contains? (typed {:position :package-or-class :text "UUID"})
+                   "java.util.UUID"))
+    (is (contains? (typed {:position :package-or-class :text "java.util.UUID"})
+                   "java.util.UUID"))
+    (is (contains? (typed {:position :code :ns "clojure.core" :text "Integer/SIZE"})
+                   "Integer/SIZE")))
   (testing "a piece is looked for wherever a piece of the name starts"
     (is (contains? (typed {:position :namespace :text "str"}) "clojure.string"))
     (is (contains? (typed {:position :package-or-class :text "HashMap"})
