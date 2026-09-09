@@ -103,8 +103,13 @@
 
 (def ^:private separators
   "What a name is written in pieces with. A capital starts one too, and that
-  is a place to split before rather than a character to split on."
-  #{\. \- \/ \_})
+  is a place to split before rather than a character to split on.
+
+  The colon is one of them so that a keyword is written in pieces like
+  everything else: :my.app/na is three pieces and reaches
+  :my.app/name, and the colons of ::alias/name are not a piece of
+  anything themselves."
+  #{\. \- \/ \_ \:})
 
 (defn- tokenize
   "TEXT in the pieces it was typed in, each with whether its case is to be
@@ -437,6 +442,10 @@
 ;; the namespace maps, a class it imported, an alias, a namespace, a special
 ;; form. They are answered together and in one order, so that what somebody
 ;; reads is one list rather than six.
+;;
+;; A keyword is the exception, and it is one because the text says so: a
+;; colon is written in front of one and in front of nothing else, so what is
+;; being written there is known before anything is looked for.
 
 (def ^:private special-forms
   "The forms the compiler reads itself, as they are written.
@@ -508,13 +517,19 @@
          package (assoc :package package))))))
 
 (defn- alias-groups
-  "The aliases NS holds, each with the namespace it stands for.
+  "The aliases NS holds, written behind PREFIX, each with the namespace it
+  stands for.
 
   Which is what an alias is worth saying: the name is one somebody of this
-  namespace chose, and nothing about it says what it reaches."
-  [ns]
+  namespace chose, and nothing about it says what it reaches.
+
+  PREFIX is what stands in front of one where it is being written - nothing
+  where a var is, and the two colons of an ::alias/name."
+  [ns ^String prefix]
   (for [[aliased found] (group-by val (ns-aliases ns))]
-    {:type "namespace" :ns (str (ns-name aliased)) :names (map (comp str key) found)}))
+    {:type "namespace"
+     :ns (str (ns-name aliased))
+     :names (map (fn [[alias _]] (str prefix alias)) found)}))
 
 (defn- scope-of
   "What TEXT is written under, or nil when it is written under nothing.
@@ -547,35 +562,107 @@
        :ns (str (ns-name found))
        :names (map (fn [[named _]] (str scope "/" (name named))) vars)})))
 
+(def ^:private keyword-table
+  "The map clojure interns keywords in, or nil where this jvm will not show
+  it.
+
+  Read reflectively because there is nowhere else to read it. Nothing
+  declares a keyword - one exists because something wrote it, in a namespace
+  that was loaded or a form that was evaluated - so the table clojure keeps
+  to intern them in is the only list of them there is.
+
+  clojure.lang is on the classpath rather than in a module of the runtime, so
+  this needs nothing opened to it. A clojure that renamed the field is
+  answered with no keywords at all rather than with a broken process: a
+  completion is not the place to fail over a name it could not find."
+  (delay
+    (try
+      (let [field (.getDeclaredField clojure.lang.Keyword "table")]
+        (.setAccessible field true)
+        (.get field nil))
+      (catch Throwable _ nil))))
+
+(defn- interned-keywords
+  "Every keyword this process has interned, as the symbol each is named by."
+  []
+  (when-let [^java.util.Map table @keyword-table]
+    (.keySet table)))
+
+(defn- keywords-of
+  "The keywords interned in the namespace named NAMED."
+  [^String named]
+  (filter (fn [^clojure.lang.Symbol keyword] (= named (.getNamespace keyword)))
+          (interned-keywords)))
+
+(defn- keyword-groups
+  "The keywords that could be written where TEXT is being written in NS.
+
+  One written with a single colon is read as it stands, so what is offered is
+  every keyword this process has interned - including the qualified ones,
+  which are written out in full where they are written that way.
+
+  One written with two is read against the namespace it is written in: ::name
+  is a keyword of this namespace, and ::alias/name one of the namespace that
+  alias stands for. An alias and nothing else, since the reader takes nothing
+  else there - ::clojure.string/x is an invalid token in a namespace that
+  required clojure.string without aliasing it.
+
+  A candidate carries its colons, because a keyword without them is not what
+  can be written where that keyword is."
+  [ns ^String written]
+  (if (string/starts-with? written "::")
+    (if-let [scope (scope-of (subs written 2))]
+      (when-let [aliased (get (ns-aliases ns) (symbol scope))]
+        [{:type "keyword"
+          :ns (str (ns-name aliased))
+          :names (map (fn [named] (str "::" scope "/" (name named)))
+                      (keywords-of (str (ns-name aliased))))}])
+      (cons {:type "keyword"
+             :names (map (fn [named] (str "::" (name named)))
+                         (keywords-of (str (ns-name ns))))}
+            ;; and the aliases, which is what stands before the slash of an
+            ;; ::alias/name. Offered as the namespaces they are rather than
+            ;; as keywords: ::alias is a keyword of this namespace that
+            ;; happens to be spelled like one, and what somebody writing it
+            ;; is reaching for is the namespace it opens.
+            (alias-groups ns "::")))
+    [{:type "keyword"
+      :names (map (fn [named] (str ":" named)) (interned-keywords))}]))
+
 (defmethod groups :code [msg]
   (let [ns (namespace-named msg)
         written (text msg)]
-    (if-let [scope (scope-of written)]
-      (scoped-groups ns scope)
-      (concat
-       ;; First, which is what makes a local shadow. A name in two groups is
-       ;; answered once, as what the first of them says it is - and a local
-       ;; named map is what map means where it is bound, whatever
-       ;; clojure.core has to say about the name.
-       [{:type "local" :names (locals-named msg)}]
-       ;; Before the aliases, because that is the order the language reads
-       ;; them in: a name written with no slash after it is the mapping and
-       ;; not the alias that is spelled the same.
-       (mapping-groups ns)
-       (alias-groups ns)
-       ;; The namespaces that have been loaded, which is how a var of one
-       ;; that this namespace never required is written: in full, and the
-       ;; full name starts with one of these.
-       [{:type "namespace" :names (namespaces)}
-        {:type "special-form" :names special-forms}]
-       ;; A class that was not imported is written in full, which means
-       ;; written with a dot in it - so until the text holds one, the classes
-       ;; offered are the ones the namespace imported and no others.
-       ;; Otherwise two letters typed anywhere in code would answer with a
-       ;; thousand class names, and the vars they were meant to reach would
-       ;; be underneath them.
-       (when (string/includes? written ".")
-         [{:type "class" :names (importable written (:classes (classpath/scan)))}])))))
+    ;; A keyword before a scope, since ::alias/name is written with a slash
+    ;; as well as with colons, and it is the colons that say what the slash
+    ;; means there
+    (if (string/starts-with? written ":")
+      (keyword-groups ns written)
+      (if-let [scope (scope-of written)]
+        (scoped-groups ns scope)
+        (concat
+         ;; First, which is what makes a local shadow. A name in two groups is
+         ;; answered once, as what the first of them says it is - and a local
+         ;; named map is what map means where it is bound, whatever
+         ;; clojure.core has to say about the name.
+         [{:type "local" :names (locals-named msg)}]
+         ;; Before the aliases, because that is the order the language reads
+         ;; them in: a name written with no slash after it is the mapping and
+         ;; not the alias that is spelled the same.
+         (mapping-groups ns)
+         (alias-groups ns "")
+         ;; The namespaces that have been loaded, which is how a var of one
+         ;; that this namespace never required is written: in full, and the
+         ;; full name starts with one of these.
+         [{:type "namespace" :names (namespaces)}
+          {:type "special-form" :names special-forms}]
+         ;; A class that was not imported is written in full, which means
+         ;; written with a dot in it - so until the text holds one, the classes
+         ;; offered are the ones the namespace imported and no others.
+         ;; Otherwise two letters typed anywhere in code would answer with a
+         ;; thousand class names, and the vars they were meant to reach would
+         ;; be underneath them.
+         (when (string/includes? written ".")
+           [{:type "class" :names (importable written (:classes (classpath/scan)))}]))))))
 
 ;;; The answer
 

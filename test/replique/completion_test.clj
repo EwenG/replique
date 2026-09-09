@@ -447,6 +447,11 @@
       (eval '(ns replique.completion-test.probe
                (:require [clojure.string :as string :refer [join] :rename {join joined}])
                (:import [java.util Date])))
+      ;; Read here, which is what interns a keyword: nothing declares one,
+      ;; and what exists is what has been written somewhere.
+      (eval '(def probe-keywords [:probe-plain
+                                  :replique.completion-test.probe/probe-own
+                                  :clojure.string/probe-aliased]))
       (eval '(def probe-value 1))
       (eval '(defn probe-fn [] 1))
       (eval '(defmacro probe-macro [] 1))
@@ -555,6 +560,35 @@
     (is (= :invalid-message (error-kind {:position :code :text "" :locals [{:name 42}]}))))
   (testing "and none of them is none rather than a message written wrongly"
     (is (seq (candidates {:position :code :text "redu"})))))
+
+;;; A keyword written in code
+
+(deftest a-keyword-written-with-one-colon-is-read-as-it-stands
+  (testing "so what is offered is every keyword this process has interned,
+  the qualified ones under the name they are written out in full as"
+    (is (contains? (typed (in-code ":probe-pla")) ":probe-plain"))
+    (is (contains? (typed (in-code ":probe-ow"))
+                   ":replique.completion-test.probe/probe-own")))
+  (testing "and keywords only: the colon says which kind of name is being
+  written, where a var of that name is not one that could be written there"
+    (is (empty? (candidates (in-code ":probe-fn"))))))
+
+(deftest a-keyword-written-with-two-colons-is-read-against-the-namespace
+  (testing "::name is a keyword of the namespace it is written in"
+    (is (= ["::probe-own"] (candidates (in-code "::probe-ow")))))
+  (testing "::alias/name is one of the namespace that alias stands for, with
+  the alias written back on - a candidate is what goes in the buffer"
+    (is (= ["::string/probe-aliased"] (candidates (in-code "::string/probe-al"))))
+    (is (= "clojure.string"
+           (:ns (found (in-code "::string/probe-al") "::string/probe-aliased")))))
+  (testing "an alias and nothing else, since the reader takes nothing else
+  there: ::clojure.string/x is an invalid token in a namespace that required
+  clojure.string without aliasing it"
+    (is (empty? (candidates (in-code "::clojure.string/probe-al")))))
+  (testing "and the aliases themselves, which is what stands before the slash
+  of an ::alias/name - answered as the namespaces they open"
+    (is (= {:candidate "::string" :type "namespace" :ns "clojure.string"}
+           (dissoc (found (in-code "::strin") "::string") :match-index)))))
 
 ;;; What the client got wrong
 
