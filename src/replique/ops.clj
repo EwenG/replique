@@ -43,6 +43,105 @@
 (defmethod protocol/handle :completions [_ msg]
   (completion/completions (assoc msg :position (protocol/as-keyword (:position msg)))))
 
+;; What a namespace calls the vars a client names.
+;;
+;; A tool that reads a form to work out what it means has to know which
+;; symbol means which var, and inside a namespace that is not a settled
+;; question. clojure.core/let is written let where core is referred, c/let
+;; where core is aliased, and something else again where it was referred under
+;; another name - while a namespace that excluded it and defined a let of its
+;; own writes let for a var that is not this one at all. Only the process can
+;; say, because only the process has the namespace.
+;;
+;; The client names the vars it cares about and reads the answer against its
+;; own table, rather than this saying what each of them does. What a form does
+;; with what it binds is the client's half - it is the half with the parse -
+;; and a list of forms kept in both places is a list that has to agree in both
+;; places. It also leaves this op with no opinion about binding at all: it
+;; answers how a namespace writes a var, which is as true of a require as of a
+;; let.
+
+(defn- var-named
+  "The var SYMBOL names, or nil when it names none."
+  [symbol]
+  (when-let [found (try (resolve symbol) (catch Exception _ nil))]
+    (when (var? found) found)))
+
+(defn- vars-asked
+  "The vars a client asked about, by the name it wrote each of them as.
+
+  A qualified name is required, because what is being asked is what a
+  namespace calls clojure.core/let - let is the answer rather than the
+  question, and a name with no namespace on it names nothing to ask about.
+
+  One that resolves to nothing is left out rather than refused. That is a fact
+  about the process, which may not have loaded the namespace it names, where a
+  name that is not a name at all is a message written wrongly."
+  [vars]
+  (when-not (and (sequential? vars) (seq vars))
+    (throw (ex-info (str "The :spellings op needs the :vars to look for, as a list of "
+                         "qualified names, got: " (pr-str vars))
+                    {:replique/error :invalid-message})))
+  (reduce (fn [acc asked]
+            (let [written (or (protocol/as-name asked)
+                              (throw (ex-info (str "A var must be named by a name, got: "
+                                                   (pr-str asked))
+                                              {:replique/error :invalid-message})))
+                  named (symbol written)]
+              (when-not (namespace named)
+                (throw (ex-info (str "A var must be named by a qualified name, got: "
+                                     (pr-str asked))
+                                {:replique/error :invalid-message})))
+              (if-let [found (var-named named)]
+                (assoc acc written found)
+                acc)))
+          {} vars))
+
+(defn- written-as
+  "Every symbol the namespace NS can write each of VARS as, by var.
+
+  What the namespace maps, which covers a refer, a refer under another name,
+  and a var of its own that shadows one of these; and what an alias makes
+  writable, which is a way to write a var whatever the namespace maps."
+  [ns vars]
+  (let [wanted (set vars)]
+    (as-> {} found
+      (reduce (fn [found [written mapped]]
+                (if (contains? wanted mapped)
+                  (update found mapped (fnil conj #{}) (str written))
+                  found))
+              found (ns-map ns))
+      (reduce (fn [found [alias aliased]]
+                (reduce (fn [found ^clojure.lang.Var var]
+                          (if (= aliased (.ns var))
+                            (update found var (fnil conj #{})
+                                    (str alias "/" (.sym var)))
+                            found))
+                        found wanted))
+              found (ns-aliases ns)))))
+
+(defn- qualified-name [^clojure.lang.Var var]
+  (str (ns-name (.ns var)) "/" (.sym var)))
+
+(defmethod protocol/handle :spellings [_ msg]
+  ;; The namespace is read the way a completion reads it, which includes what
+  ;; a namespace the process does not have is answered as - see
+  ;; `completion/namespace-named'.
+  (let [asked (vars-asked (:vars msg))
+        found (written-as (completion/namespace-named msg) (vals asked))]
+    ;; Sorted, so that the same namespace answers the same way twice - what
+    ;; the mappings of a namespace are read in is whatever order a map has.
+    ;;
+    ;; The qualified name is in every answer without being looked for: it is
+    ;; how the var can be written in any namespace at all, this one included,
+    ;; and a namespace that shadows the short name has it as the only way
+    ;; left to write it.
+    {:spellings (reduce-kv (fn [acc written var]
+                             (assoc acc written
+                                    (vec (sort (conj (get found var #{})
+                                                     (qualified-name var))))))
+                           {} asked)}))
+
 ;; Reading the classpath again. It is read when the process starts and kept,
 ;; since walking every jar and every directory of it behind a keystroke is not
 ;; work worth doing - so a file written after that is not found until this is

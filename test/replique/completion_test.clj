@@ -229,11 +229,15 @@
 (deftest a-var-comes-from-a-loaded-namespace
   (testing "and only from one: loading a namespace to see what it holds runs
   every top level form in it, which a keystroke must not do"
-    (is (nil? (find-ns 'clojure.data)))
-    (is (empty? (candidates {:position :var :namespace "clojure.data" :text ""})))
-    (require 'clojure.data)
-    (is (contains? (typed {:position :var :namespace "clojure.data" :text "dif"})
-                   "diff"))))
+    ;; One that brings nothing else with it, and that no other test is
+    ;; written about. What this loads stays loaded for every test after it,
+    ;; here and in the other files - and more than one of them is written
+    ;; about a namespace that has not been loaded.
+    (is (nil? (find-ns 'clojure.datafy)))
+    (is (empty? (candidates {:position :var :namespace "clojure.datafy" :text ""})))
+    (require 'clojure.datafy)
+    (is (contains? (typed {:position :var :namespace "clojure.datafy" :text "dataf"})
+                   "datafy"))))
 
 (deftest a-var-of-a-refer-clojure-comes-from-core
   (testing "a refer-clojure names no namespace anywhere in itself"
@@ -427,6 +431,131 @@
     (is (contains? found "/clojure/core_deftype")
         "a load takes a path, so the underscores stay")))
 
+;;; A name written in code
+
+(def ^:private probe
+  "A namespace made the way a file makes one, for the code position to be
+  asked about.
+
+  Evaluated rather than built out of create-ns and intern, since what is
+  being asked about is what an ns form leaves behind: an alias, an import,
+  and a var referred under a name of this namespace's choosing."
+  (delay
+    (binding [*ns* *ns*]
+      ;; Nothing is required that the process has not loaded already, since
+      ;; loading one here would be loading it for every test after this one.
+      (eval '(ns replique.completion-test.probe
+               (:require [clojure.string :as string :refer [join] :rename {join joined}])
+               (:import [java.util Date])))
+      (eval '(def probe-value 1))
+      (eval '(defn probe-fn [] 1))
+      (eval '(defmacro probe-macro [] 1))
+      (str (ns-name *ns*)))))
+
+(defn- in-code
+  "What is offered where TEXT is being written in the probe namespace."
+  [text]
+  {:position :code :ns @probe :text text :locals [{:name "probe-local"}]})
+
+(deftest a-name-in-code-is-answered-as-everything-that-could-be-written-there
+  (testing "which is every kind of name at once, where a dependency form
+  takes one kind and no other"
+    (is (contains? (typed (in-code "probe-l")) "probe-local")
+        "a local, which only the client could have said")
+    (is (contains? (typed (in-code "probe-f")) "probe-fn")
+        "a var of the namespace")
+    (is (contains? (typed (in-code "joine")) "joined")
+        "a var it referred, under the name it is written as here")
+    (is (not (contains? (typed (in-code "joi")) "join"))
+        "and not under the name it has where it is public")
+    (is (contains? (typed (in-code "Dat")) "Date")
+        "a class it imported")
+    (is (contains? (typed (in-code "strin")) "string")
+        "an alias")
+    (is (contains? (typed (in-code "clojure.strin")) "clojure.string")
+        "a namespace that has been loaded, which is how a var of one that was
+        never required is written")
+    (is (contains? (typed (in-code "recu")) "recur")
+        "and a special form")))
+
+(deftest what-each-name-in-code-is-said-beside-it
+  (let [what (fn [text name] (dissoc (found (in-code text) name) :match-index))]
+    (is (= {:candidate "probe-local" :type "local"} (what "probe-l" "probe-local")))
+    (is (= {:candidate "probe-fn" :type "function" :ns @probe} (what "probe-f" "probe-fn")))
+    (is (= {:candidate "probe-macro" :type "macro" :ns @probe} (what "probe-m" "probe-macro")))
+    (is (= {:candidate "probe-value" :type "var" :ns @probe} (what "probe-v" "probe-value")))
+    (testing "the namespace a var is public in, which is the one thing its own
+    name does not say - what was referred is written without it"
+      (is (= {:candidate "joined" :type "function" :ns "clojure.string"}
+             (what "joine" "joined"))))
+    (testing "the package of a class, for the same reason"
+      (is (= {:candidate "Date" :type "class" :package "java.util"} (what "Dat" "Date"))))
+    (testing "and what an alias stands for, which is the whole of what an
+    alias is worth saying"
+      (is (= {:candidate "string" :type "namespace" :ns "clojure.string"}
+             (what "strin" "string"))))
+    (is (= {:candidate "recur" :type "special-form"} (what "recu" "recur")))))
+
+(deftest a-local-is-what-the-name-means-where-it-is-bound
+  (let [asked (fn [locals] (found {:position :code :ns "clojure.core" :text "map" :locals locals}
+                                  "map"))]
+    (is (= "function" (:type (asked nil)))
+        "the var, where nothing binds the name")
+    (testing "and the local, where something does. A name is answered once,
+    and a let that binds map is what map means inside it"
+      (is (= "local" (:type (asked [{:name "map"}]))))
+      (is (nil? (:ns (asked [{:name "map"}]))) "a local is public in no namespace"))
+    (testing "what else the client knows about one has somewhere to go, and
+    nothing reads it yet"
+      (is (= "local" (:type (asked [{:name "map" :tag "java.lang.String"}])))))))
+
+(deftest a-name-written-under-a-scope
+  (testing "the scope written back on, since a candidate is what goes in the
+  buffer and the scope is part of what is written there"
+    (is (= ["string/join"] (candidates (in-code "string/joi"))))
+    (is (= "clojure.string" (:ns (found (in-code "string/joi") "string/join")))
+        "with the namespace the alias stands for"))
+  (testing "a namespace is written under its own name as well as under an
+  alias of it"
+    (is (contains? (typed (in-code "clojure.string/joi")) "clojure.string/join")))
+  (testing "a slash at the front is not a scope: that is the var named / being
+  written, and the whole of it is the name"
+    (is (contains? (typed (in-code "/")) "/")))
+  (testing "what resolves to neither is a namespace nobody required, and a
+  process that has not loaded it has nothing to say about what is in it"
+    (is (empty? (candidates (in-code "nope/joi")))))
+  (testing "and no local is offered under one, however much it looks like
+  what is being written: a name with a slash in it is not a local"
+    (is (empty? (candidates {:position :code :ns @probe :text "string/prob"
+                             :locals [{:name "string-probe"}]})))))
+
+(deftest a-class-that-was-not-imported-is-written-in-full
+  (is (contains? (typed (in-code "java.util.Da")) "java.util.Date"))
+  (testing "until the text holds a dot, the classes offered are the ones the
+  namespace imported and no others - two letters typed in code would
+  otherwise answer with a thousand class names, and the vars they were meant
+  to reach would be underneath them"
+    (is (not (contains? (typed (in-code "Str")) "java.lang.String")))
+    (is (contains? (typed (in-code "Str")) "String")
+        "which the imports answer, under the name they are written as")))
+
+(deftest a-namespace-the-process-does-not-have-is-answered-as-clojure-core
+  (testing "which is every file until it is loaded. What a namespace refers
+  before it refers anything is clojure.core"
+    (is (contains? (typed {:position :code :ns "no.such.namespace" :text "redu"}) "reduce")))
+  (testing "and none named is the same question"
+    (is (contains? (typed {:position :code :text "redu"}) "reduce"))))
+
+(deftest what-a-code-completion-carries-wrongly
+  (is (= :invalid-message (error-kind {:position :code :text "" :ns 42})))
+  (is (= :invalid-message (error-kind {:position :code :text "" :locals "probe-local"})))
+  (testing "a local is a map holding its name, so that what else is known
+  about one has somewhere to go"
+    (is (= :invalid-message (error-kind {:position :code :text "" :locals ["probe-local"]})))
+    (is (= :invalid-message (error-kind {:position :code :text "" :locals [{:name 42}]}))))
+  (testing "and none of them is none rather than a message written wrongly"
+    (is (seq (candidates {:position :code :text "redu"})))))
+
 ;;; What the client got wrong
 
 (deftest a-position-that-cannot-be-answered-is-refused
@@ -486,4 +615,24 @@
                 (System/setProperty "java.class.path" property)
                 (classpath/rescan!)
                 (delete-recursively dir)))))
+        (finally (disconnect client))))))
+
+(deftest the-op-answers-a-name-written-in-code
+  (with-process [info nil]
+    (let [client (control-client info)]
+      (try
+        (testing "the locals travel with the request, since a name bound by
+        the form being written is one the process has never seen"
+          (let [reply (request! client {:op :completions :position :code :ns "clojure.core"
+                                        :text "ma" :locals [{:name "map-of-mine"}] :id 1})]
+            (is (= "reply" (:tag reply)))
+            (is (contains? (set (map :candidate (:completions reply))) "map-of-mine"))))
+        (testing "and a local written as something that is not one is refused"
+          (let [reply (request! client {:op :completions :position :code
+                                        :text "" :locals ["map-of-mine"] :id 2})]
+            (is (= "error" (:tag reply)))
+            (is (= "invalid-message" (:error reply)))))
+        (testing "the connection survives it"
+          (is (= "reply" (:tag (request! client {:op :completions :position :code
+                                                 :text "redu" :id 3})))))
         (finally (disconnect client))))))

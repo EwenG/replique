@@ -25,9 +25,18 @@
 
   A var is answered out of the namespace the process has loaded, and out of
   nothing else. Loading one to see what it holds runs every top level form in
-  it, and a keystroke is not a thing that should run anybody's code."
+  it, and a keystroke is not a thing that should run anybody's code.
+
+  The locals travel the other way. A name bound by the form being written is
+  a name this process has never seen, so the client sends the ones in scope
+  along with the request - and they are answered here, beside the vars,
+  rather than added to the answer afterwards. Which is what makes a local
+  shadow: a let that binds map is answered as that local and not as the var,
+  and working that out where the two lists meet is the only place it can be
+  worked out at all."
   (:require [clojure.string :as string]
-            [replique.classpath :as classpath]))
+            [replique.classpath :as classpath]
+            [replique.protocol :as protocol]))
 
 (def max-completions
   "How many candidates travel in one reply. A client is showing them to
@@ -45,16 +54,30 @@
 (defn- named-argument
   "The string value of KEY in MSG, or nil when there is none.
 
-  A client with an EDN printer writes a symbol or a keyword where one without
-  writes a string, and the three spell the same name."
+  Which of the three spellings a client wrote it in is `protocol/as-name's
+  to know. What is said here is only that this one had to be a name."
   ^String [msg key]
   (let [value (get msg key)]
-    (cond
-      (nil? value) nil
-      (string? value) value
-      (or (symbol? value) (keyword? value)) (name value)
-      :else (throw (invalid (str "The " key " of a completion must be a name, got: "
-                                 (pr-str value)))))))
+    (if (nil? value)
+      nil
+      (or (protocol/as-name value)
+          (throw (invalid (str "The " key " must be a name, got: " (pr-str value))))))))
+
+(defn namespace-named
+  "The namespace MSG says the name is being written in.
+
+  A namespace the process does not have - a file whose ns form has not been
+  evaluated yet, which is every file until it is loaded - is answered as
+  clojure.core itself. What a namespace refers before it refers anything is
+  clojure.core, so the names of core mean there what they mean here, and half
+  an answer beats none.
+
+  Public because :spellings reads the same key and means the same thing by
+  it, and what a namespace a client named is, is one rule rather than two."
+  [msg]
+  (or (when-let [written (named-argument msg :ns)]
+        (find-ns (symbol written)))
+      (find-ns 'clojure.core)))
 
 (defn- required-argument ^String [msg key]
   (let [value (named-argument msg key)]
@@ -201,7 +224,8 @@
       (when-let [end (match-end name tokens)]
         (when (.add seen name)
           (.add found (cond-> {:candidate name :type type :match-index end}
-                        (:ns group) (assoc :ns (:ns group)))))))
+                        (:ns group) (assoc :ns (:ns group))
+                        (:package group) (assoc :package (:package group)))))))
     (.sort found ^java.util.Comparator shortest-first)
     found))
 
@@ -405,6 +429,153 @@
 ;; means.
 (defmethod groups :flag [_]
   [{:type "keyword" :names [":reload" ":reload-all" ":verbose"]}])
+
+;;; A name written in code
+
+;; Every position above is a slot of a dependency form, where one kind of
+;; name goes. Ordinary code is where all of them go at once: a local, a var
+;; the namespace maps, a class it imported, an alias, a namespace, a special
+;; form. They are answered together and in one order, so that what somebody
+;; reads is one list rather than six.
+
+(def ^:private special-forms
+  "The forms the compiler reads itself, as they are written.
+
+  The starred ones are left out: let* and fn* and loop* are written let and
+  fn and loop, which are macros and are answered as the vars they are. So are
+  the dot and the ampersand - one is written on the thing it is called on and
+  the other where a parameter vector says the rest of the arguments go, and
+  neither is a name written on its own.
+
+  nil, true and false are not here either. They are shorter than asking for
+  them would be."
+  ["catch" "def" "do" "finally" "if" "monitor-enter" "monitor-exit" "new"
+   "quote" "recur" "set!" "throw" "try" "var"])
+
+(defn- locals-named
+  "The locals the client says are in scope where the name is being written.
+
+  Only the client can know them. A local is bound by the form being written,
+  which the process has never seen - so a completion that did not carry them
+  would answer with the vars of a namespace and leave out the names nearest
+  to hand.
+
+  Each is written as a map holding its :name rather than as the name itself,
+  so that what else the client knows about one - the type a ^String on it
+  declares, which is what says what can be called on it - has somewhere to go
+  without the shape changing. Nothing reads anything but the name yet."
+  [msg]
+  (let [value (:locals msg)]
+    (when (some? value)
+      (when-not (sequential? value)
+        (throw (invalid (str "The :locals of a completion must be a list, got: "
+                             (pr-str value)))))
+      (mapv (fn [local]
+              (or (and (map? local) (protocol/as-name (:name local)))
+                  (throw (invalid (str "A local must be a map holding its :name, got: "
+                                       (pr-str local))))))
+            value))))
+
+(defn- class-package
+  "The package CLASS is in, or nil when it is in none. An array class is one
+  of those."
+  ^String [^Class class]
+  (when-let [package (.getPackage class)]
+    (.getName package)))
+
+(defn- mapping-groups
+  "What the namespace NS maps, in a group for each kind of name.
+
+  Under the name it is written as here rather than the name it has: a
+  :rename writes a var under a name of the namespace's choosing, and what
+  goes in the buffer is the name that works where it is being written.
+
+  A var carries the namespace it is public in, which is the one thing its own
+  name does not say - what is referred is written without it. A class carries
+  the package it is in for the same reason."
+  [ns]
+  (let [mapped (ns-map ns)
+        vars (for [[written found] mapped :when (var? found)] [(str written) found])
+        classes (for [[written found] mapped :when (class? found)] [(str written) found])]
+    (concat
+     (for [[[kind from] found]
+           (group-by (fn [[_ ^clojure.lang.Var var]]
+                       [(var-kind var) (str (ns-name (.ns var)))])
+                     vars)]
+       {:type kind :ns from :names (map first found)})
+     (for [[package found] (group-by (fn [[_ class]] (class-package class)) classes)]
+       (cond-> {:type "class" :names (map first found)}
+         package (assoc :package package))))))
+
+(defn- alias-groups
+  "The aliases NS holds, each with the namespace it stands for.
+
+  Which is what an alias is worth saying: the name is one somebody of this
+  namespace chose, and nothing about it says what it reaches."
+  [ns]
+  (for [[aliased found] (group-by val (ns-aliases ns))]
+    {:type "namespace" :ns (str (ns-name aliased)) :names (map (comp str key) found)}))
+
+(defn- scope-of
+  "What TEXT is written under, or nil when it is written under nothing.
+
+  Which is whatever stands before the last slash: str/jo is written under
+  str, and clojure.string/jo under clojure.string. A slash at the front is
+  not one - that is the var named / being written."
+  ^String [^String text]
+  (let [index (.lastIndexOf text (int \/))]
+    (when (pos? index) (subs text 0 index))))
+
+(defn- scoped-groups
+  "The vars that could be written under SCOPE in NS, written under it.
+
+  An alias of the namespace or the name of a namespace, since the two are
+  written the same way and both of them resolve. Nothing when it is neither:
+  what does not resolve is a namespace nobody has required, and a process
+  that has not loaded it has nothing to say about what is in it.
+
+  The candidate carries the scope back, because a candidate is what goes in
+  the buffer and the scope is part of what is written there.
+
+  No locals are offered beside these, and no classes: a name with a slash in
+  it is neither."
+  [ns ^String scope]
+  (when-let [found (or (get (ns-aliases ns) (symbol scope))
+                       (find-ns (symbol scope)))]
+    (for [[kind vars] (group-by (comp var-kind val) (ns-publics found))]
+      {:type kind
+       :ns (str (ns-name found))
+       :names (map (fn [[named _]] (str scope "/" (name named))) vars)})))
+
+(defmethod groups :code [msg]
+  (let [ns (namespace-named msg)
+        written (text msg)]
+    (if-let [scope (scope-of written)]
+      (scoped-groups ns scope)
+      (concat
+       ;; First, which is what makes a local shadow. A name in two groups is
+       ;; answered once, as what the first of them says it is - and a local
+       ;; named map is what map means where it is bound, whatever
+       ;; clojure.core has to say about the name.
+       [{:type "local" :names (locals-named msg)}]
+       ;; Before the aliases, because that is the order the language reads
+       ;; them in: a name written with no slash after it is the mapping and
+       ;; not the alias that is spelled the same.
+       (mapping-groups ns)
+       (alias-groups ns)
+       ;; The namespaces that have been loaded, which is how a var of one
+       ;; that this namespace never required is written: in full, and the
+       ;; full name starts with one of these.
+       [{:type "namespace" :names (namespaces)}
+        {:type "special-form" :names special-forms}]
+       ;; A class that was not imported is written in full, which means
+       ;; written with a dot in it - so until the text holds one, the classes
+       ;; offered are the ones the namespace imported and no others.
+       ;; Otherwise two letters typed anywhere in code would answer with a
+       ;; thousand class names, and the vars they were meant to reach would
+       ;; be underneath them.
+       (when (string/includes? written ".")
+         [{:type "class" :names (importable written (:classes (classpath/scan)))}])))))
 
 ;;; The answer
 

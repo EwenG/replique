@@ -359,6 +359,20 @@
     (symbol? x) (keyword (str x))
     :else nil))
 
+(defn as-name
+  "The name a client wrote, or nil when it wrote something that is not one.
+
+  The same three spellings `as-keyword' reads, answered as the name itself:
+  what is being asked for here is a name rather than a keyword, and a
+  qualified one keeps its namespace - clojure.core/let is one name and not
+  two."
+  [x]
+  (cond
+    (string? x) x
+    (symbol? x) (str x)
+    (keyword? x) (subs (str x) 1)
+    :else nil))
+
 (defmulti handle
   "Handle a request. Returns the map to be merged into the reply frame, or
   ::no-reply when the op answers by itself. Exceptions are turned into error
