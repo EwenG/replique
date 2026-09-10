@@ -34,10 +34,9 @@
   shadow: a let that binds map is answered as that local and not as the var,
   and working that out where the two lists meet is the only place it can be
   worked out at all."
-  (:require [clojure.edn :as edn]
-            [clojure.string :as string]
+  (:require [clojure.string :as string]
             [replique.classpath :as classpath]
-            [replique.protocol :as protocol]))
+            [replique.names :as names]))
 
 (def max-completions
   "How many candidates travel in one reply. A client is showing them to
@@ -46,59 +45,6 @@
   quietly dropped, so a client can ask for more to be typed instead of
   showing an answer that looks whole."
   500)
-
-;;; What the client wrote
-
-(defn- invalid [message]
-  (ex-info message {:replique/error :invalid-message}))
-
-(defn- named-argument
-  "The string value of KEY in MSG, or nil when there is none.
-
-  Which of the three spellings a client wrote it in is `protocol/as-name's
-  to know. What is said here is only that this one had to be a name."
-  ^String [msg key]
-  (let [value (get msg key)]
-    (if (nil? value)
-      nil
-      (or (protocol/as-name value)
-          (throw (invalid (str "The " key " must be a name, got: " (pr-str value))))))))
-
-(defn namespace-named
-  "The namespace MSG says the name is being written in.
-
-  A namespace the process does not have - a file whose ns form has not been
-  evaluated yet, which is every file until it is loaded - is answered as
-  clojure.core itself. What a namespace refers before it refers anything is
-  clojure.core, so the names of core mean there what they mean here, and half
-  an answer beats none.
-
-  Public because :spellings reads the same key and means the same thing by
-  it, and what a namespace a client named is, is one rule rather than two."
-  [msg]
-  (or (when-let [written (named-argument msg :ns)]
-        (find-ns (symbol written)))
-      (find-ns 'clojure.core)))
-
-(defn- required-argument ^String [msg key]
-  (let [value (named-argument msg key)]
-    (when (string/blank? value)
-      (throw (invalid (str "A completion at " (pr-str (:position msg))
-                           " needs the " key " to look in"))))
-    value))
-
-(defn- text
-  "What has been typed at the position, which is what the candidates replace.
-
-  Absent means nothing has been typed yet, which is every name rather than
-  none: point sits after an opening bracket and everything could follow it."
-  ^String [msg]
-  (let [value (:text msg)]
-    (cond
-      (nil? value) ""
-      (string? value) value
-      :else (throw (invalid (str "The :text of a completion must be a string, got: "
-                                 (pr-str value)))))))
 
 ;;; Matching
 
@@ -295,9 +241,10 @@
   :position)
 
 (defmethod groups :default [msg]
-  (throw (invalid (if (nil? (:position msg))
-                    "A completion needs the :position it is being asked at"
-                    (str "Unknown completion position: " (pr-str (:position msg)))))))
+  (throw (names/invalid (if (nil? (:position msg))
+                          "A completion needs the :position it is being asked at"
+                          (str "Unknown completion position: "
+                               (pr-str (:position msg)))))))
 
 (defn- namespaces
   "Every namespace that could be required.
@@ -310,7 +257,7 @@
   (map (comp name ns-name) (all-ns)))
 
 (defmethod groups :namespace [msg]
-  (let [prefix (named-argument msg :prefix)
+  (let [prefix (names/named-argument msg :prefix)
         {:keys [namespace-prefixes] :as read} (classpath/scan)
         loaded (namespaces)
         known (concat (:namespaces read) loaded)]
@@ -334,32 +281,25 @@
 ;; :namespace.
 (defmethod groups :namespace-macros [msg] (groups (assoc msg :position :namespace)))
 
-(defn- var-kind
-  "What VAR is, as a client annotates it with. A macro before a function
-  because a macro has arglists too."
-  [var]
-  (let [{:keys [arglists macro]} (meta var)]
-    (cond macro "macro" arglists "function" :else "var")))
-
 (defmethod groups :var [msg]
   (let [named (:namespace msg)
         found (if (= :refer-clojure named)
                 ;; a refer-clojure names no namespace anywhere in itself, and
                 ;; the one it refers from is the one every namespace refers
                 (find-ns 'clojure.core)
-                (find-ns (symbol (required-argument msg :namespace))))]
+                (find-ns (symbol (names/required-argument msg :namespace))))]
     ;; One group of each kind rather than one of vars, so that a client can
     ;; say which is which without asking again. The namespace rides along for
     ;; the same reason: what is offered under a :refer is written without it,
     ;; and it is the one thing that says where the name came from.
-    (for [[kind vars] (group-by (comp var-kind val) (when found (ns-publics found)))]
+    (for [[kind vars] (group-by (comp names/var-kind val) (when found (ns-publics found)))]
       {:type kind
        :ns (str (ns-name found))
        :names (map (comp name key) vars)})))
 
 (defmethod groups :package-or-class [msg]
   (let [{:keys [classes packages]} (classpath/scan)]
-    [{:type "class" :names (importable (text msg) classes)}
+    [{:type "class" :names (importable (names/text msg) classes)}
      {:type "package" :names packages}]))
 
 (defn- generated-classes
@@ -387,9 +327,9 @@
       (.getName imported))))
 
 (defmethod groups :class [msg]
-  (let [package (required-argument msg :package)]
+  (let [package (names/required-argument msg :package)]
     [{:type "class"
-      :names (importable (text msg)
+      :names (importable (names/text msg)
                          (under package (concat (:classes (classpath/scan))
                                                 (generated-classes package))))}]))
 
@@ -403,13 +343,13 @@
 
 (defmethod groups :load-path [msg]
   (let [paths (:paths (classpath/scan))
-        namespace (named-argument msg :ns)]
+        namespace (names/named-argument msg :ns)]
     ;; A path that starts with a slash is read from the root of the classpath
     ;; and one that does not is read from the namespace it is written in, so
     ;; which of the two is being written is what the slash says. Absent where
     ;; the client did not say which namespace that is, since without one there
     ;; is no other answer to give.
-    (if (or (string/starts-with? (text msg) "/") (string/blank? namespace))
+    (if (or (string/starts-with? (names/text msg) "/") (string/blank? namespace))
       [{:type "path" :names paths}]
       [{:type "path" :names (inside (load-root namespace) paths)}])))
 
@@ -450,44 +390,6 @@
 ;; colon is written in front of one and in front of nothing else, so what is
 ;; being written there is known before anything is looked for.
 
-(def ^:private special-forms
-  "The forms the compiler reads itself, as they are written.
-
-  The starred ones are left out: let* and fn* and loop* are written let and
-  fn and loop, which are macros and are answered as the vars they are. So are
-  the dot and the ampersand - one is written on the thing it is called on and
-  the other where a parameter vector says the rest of the arguments go, and
-  neither is a name written on its own.
-
-  nil, true and false are not here either. They are shorter than asking for
-  them would be."
-  ["catch" "def" "do" "finally" "if" "monitor-enter" "monitor-exit" "new"
-   "quote" "recur" "set!" "throw" "try" "var"])
-
-(defn- locals-named
-  "The locals the client says are in scope where the name is being written.
-
-  Only the client can know them. A local is bound by the form being written,
-  which the process has never seen - so a completion that did not carry them
-  would answer with the vars of a namespace and leave out the names nearest
-  to hand.
-
-  Each is written as a map holding its :name rather than as the name itself,
-  so that what else the client knows about one - the type a ^String on it
-  declares, which is what says what can be called on it - has somewhere to go
-  without the shape changing. Nothing reads anything but the name yet."
-  [msg]
-  (let [value (:locals msg)]
-    (when (some? value)
-      (when-not (sequential? value)
-        (throw (invalid (str "The :locals of a completion must be a list, got: "
-                             (pr-str value)))))
-      (mapv (fn [local]
-              (or (and (map? local) (protocol/as-name (:name local)))
-                  (throw (invalid (str "A local must be a map holding its :name, got: "
-                                       (pr-str local))))))
-            value))))
-
 (defn- class-package
   "The package CLASS is in, or nil when it is in none. An array class is one
   of those."
@@ -512,7 +414,7 @@
     (concat
      (for [[[kind from] found]
            (group-by (fn [[_ ^clojure.lang.Var var]]
-                       [(var-kind var) (str (ns-name (.ns var)))])
+                       [(names/var-kind var) (str (ns-name (.ns var)))])
                      vars)]
        {:type kind :ns from :names (map first found)})
      (for [[package found] (group-by (fn [[_ class]] (class-package class)) classes)]
@@ -534,16 +436,6 @@
      :ns (str (ns-name aliased))
      :names (map (fn [[alias _]] (str prefix alias)) found)}))
 
-(defn- scope-of
-  "What TEXT is written under, or nil when it is written under nothing.
-
-  Which is whatever stands before the last slash: str/jo is written under
-  str, and clojure.string/jo under clojure.string. A slash at the front is
-  not one - that is the var named / being written."
-  ^String [^String text]
-  (let [index (.lastIndexOf text (int \/))]
-    (when (pos? index) (subs text 0 index))))
-
 (defn- scoped-groups
   "The vars that could be written under SCOPE in NS, written under it.
 
@@ -560,7 +452,7 @@
   [ns ^String scope]
   (when-let [found (or (get (ns-aliases ns) (symbol scope))
                        (find-ns (symbol scope)))]
-    (for [[kind vars] (group-by (comp var-kind val) (ns-publics found))]
+    (for [[kind vars] (group-by (comp names/var-kind val) (ns-publics found))]
       {:type kind
        :ns (str (ns-name found))
        :names (map (fn [[named _]] (str scope "/" (name named))) vars)})))
@@ -614,7 +506,7 @@
   can be written where that keyword is."
   [ns ^String written]
   (if (string/starts-with? written "::")
-    (if-let [scope (scope-of (subs written 2))]
+    (if-let [scope (names/scope-of (subs written 2))]
       (when-let [aliased (get (ns-aliases ns) (symbol scope))]
         [{:type "keyword"
           :ns (str (ns-name aliased))
@@ -631,22 +523,6 @@
             (alias-groups ns "::")))
     [{:type "keyword"
       :names (map (fn [named] (str ":" named)) (interned-keywords))}]))
-
-(defn- class-named
-  "The class SCOPE names in NS, or nil when it names none.
-
-  What the namespace imported, which is a class the process already holds,
-  and a class written out in full, which is one it may never have touched.
-  The second is loaded to be found and is not initialized: what runs a static
-  initializer is using a class, and reading the names of its members is not a
-  use. Loading the one class somebody has named is not the reading
-  `importable' refuses to do - that one is loading a hundred thousand of them
-  to see what they are."
-  ^Class [ns ^String scope]
-  (or (let [mapped (get (ns-map ns) (symbol scope))]
-        (when (class? mapped) mapped))
-      (try (Class/forName scope false (clojure.lang.RT/baseLoader))
-           (catch Throwable _ nil))))
 
 (defn- static?
   [^java.lang.reflect.Member member]
@@ -669,7 +545,7 @@
   on the thing rather than on the class, and there is no spelling of it
   behind a slash."
   [ns ^String scope]
-  (when-let [^Class class (class-named ns scope)]
+  (when-let [^Class class (names/class-named ns scope)]
     (let [methods (seq (.getMethods class))]
       [{:type "method"
         :names (concat (for [^java.lang.reflect.Method method methods
@@ -684,33 +560,6 @@
                  (str scope "/" (.getName field)))}
        {:type "constructor" :names [(str scope "/new")]}])))
 
-(defn- target-class
-  "The class a member is being written on, or nil where nothing says what it
-  is.
-
-  The tag first, which is a ^String the client read out of the text - off the
-  local the target names, or off the target where it was written at the call
-  site. Then the target as it is written: a var declares its class with a
-  :tag of its own, and a literal is its own class.
-
-  Nothing is evaluated to find out. What an expression would return is not
-  knowable without running it, and running somebody's code is what a
-  keystroke must not do - so (.getT (make-thing)) is answered with nothing
-  rather than by making one. The target is read rather than evaluated for the
-  same reason, and read as edn: what a client sent is text out of somebody's
-  buffer, and #= in it is a form the reader would run."
-  ^Class [ns msg]
-  (or (when-let [tag (named-argument msg :tag)]
-        (class-named ns tag))
-      (when-let [target (named-argument msg :target)]
-        (let [value (try (edn/read-string target) (catch Throwable _ nil))]
-          (cond
-            (symbol? value)
-            (let [found (try (ns-resolve ns value) (catch Throwable _ nil))
-                  tag (when (var? found) (:tag (meta found)))]
-              (cond (class? tag) tag
-                    (symbol? tag) (class-named ns (str tag))))
-            (some? value) (class value))))))
 
 (defn- member-groups
   "The members of what TEXT is being written on, written as they are called.
@@ -723,7 +572,7 @@
   on a thing - Integer/MAX_VALUE, not (.MAX_VALUE x) - and there is no
   spelling of it here."
   [ns msg ^String written]
-  (when-let [^Class class (target-class ns msg)]
+  (when-let [^Class class (names/target-class ns msg)]
     (if (string/starts-with? written ".-")
       [{:type "field"
         :names (for [^java.lang.reflect.Field field (.getFields class)
@@ -750,14 +599,14 @@
   [ns ^String text]
   (when (string/ends-with? text ".")
     (let [named (subs text 0 (dec (.length text)))]
-      (when (and (seq named) (class-named ns named))
+      (when (and (seq named) (names/class-named ns named))
         [{:type "constructor"
           :names (map (fn [^String found] (str found "."))
                       (cons named (importable text (:classes (classpath/scan)))))}]))))
 
 (defmethod groups :code [msg]
-  (let [ns (namespace-named msg)
-        written (text msg)]
+  (let [ns (names/namespace-named msg)
+        written (names/text msg)]
     ;; A keyword before a scope, since ::alias/name is written with a slash
     ;; as well as with colons, and it is the colons that say what the slash
     ;; means there
@@ -769,7 +618,7 @@
         (member-groups ns msg written)
         (if-let [constructed (constructor-groups ns written)]
           constructed
-          (if-let [scope (scope-of written)]
+          (if-let [scope (names/scope-of written)]
             ;; A namespace and a class are written the same way and answered
             ;; together, since a scope that is both - which nothing forbids - is
             ;; a question about both.
@@ -779,7 +628,7 @@
              ;; answered once, as what the first of them says it is - and a local
              ;; named map is what map means where it is bound, whatever
              ;; clojure.core has to say about the name.
-             [{:type "local" :names (locals-named msg)}]
+             [{:type "local" :names (names/locals-named msg)}]
              ;; Before the aliases, because that is the order the language reads
              ;; them in: a name written with no slash after it is the mapping and
              ;; not the alias that is spelled the same.
@@ -789,7 +638,7 @@
              ;; that this namespace never required is written: in full, and the
              ;; full name starts with one of these.
              [{:type "namespace" :names (namespaces)}
-              {:type "special-form" :names special-forms}]
+              {:type "special-form" :names names/special-forms}]
              ;; A class that was not imported is written in full, which means
              ;; written with a dot in it - so until the text holds one, the classes
              ;; offered are the ones the namespace imported and no others.
@@ -804,7 +653,7 @@
 (defn completions
   "The candidates for the position MSG names, as the reply frame carries them."
   [msg]
-  (let [found (matching (text msg) (groups msg))
+  (let [found (matching (names/text msg) (groups msg))
         kept (into [] (take max-completions) found)]
     {:completions kept
      :truncated (when (> (count found) (count kept)) true)}))

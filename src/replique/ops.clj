@@ -4,8 +4,10 @@
             [clojure.repl.deps :as deps]
             [replique.classpath :as classpath]
             [replique.completion :as completion]
+            [replique.names :as names]
             [replique.protocol :as protocol]
             [replique.server :as server]
+            [replique.symbol :as sym]
             [replique.state :as state]))
 
 (defmethod protocol/handle :process-info [conn _]
@@ -42,6 +44,19 @@
 ;; that text.
 (defmethod protocol/handle :completions [_ msg]
   (completion/completions (assoc msg :position (protocol/as-keyword (:position msg)))))
+
+;; What the one name written there is, which is the other half of the same
+;; question. An editor shows an arglist and a docstring while somebody writes
+;; a call, and opens a file at a line when they ask where a name came from -
+;; and both are what that name resolves to in that namespace, so both are
+;; answered here and in one message.
+;;
+;; Asked with the request a completion is asked with: the same position, the
+;; same text, the same namespace and locals and tag around it. Reading a name
+;; out of a buffer is one job on the client's side, and this is the same
+;; reading with point moved to the end of what it read.
+(defmethod protocol/handle :symbol [_ msg]
+  (sym/named (assoc msg :position (protocol/as-keyword (:position msg)))))
 
 ;; What a namespace calls the vars a client names.
 ;;
@@ -126,9 +141,9 @@
 (defmethod protocol/handle :spellings [_ msg]
   ;; The namespace is read the way a completion reads it, which includes what
   ;; a namespace the process does not have is answered as - see
-  ;; `completion/namespace-named'.
+  ;; `names/namespace-named'.
   (let [asked (vars-asked (:vars msg))
-        found (written-as (completion/namespace-named msg) (vals asked))]
+        found (written-as (names/namespace-named msg) (vals asked))]
     ;; Sorted, so that the same namespace answers the same way twice - what
     ;; the mappings of a namespace are read in is whatever order a map has.
     ;;
