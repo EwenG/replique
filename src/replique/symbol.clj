@@ -105,6 +105,19 @@
 
 ;;; What a name is
 
+(defn- source-of-var
+  "Where the var VAR was written, as a client opens it.
+
+  A protocol method carries no file and no line of its own - what it carries
+  is the protocol, which is the form it was written in. So that is where it
+  is: (defprotocol P (a-method [this])) writes a-method inside P, and where P
+  was written is the nearest thing there is to where a-method was."
+  [^clojure.lang.Var var]
+  (let [metadata (meta var)]
+    (or (source-at metadata)
+        (when-let [protocol (:protocol metadata)]
+          (when (var? protocol) (source-at (meta protocol)))))))
+
 (defn- of-var
   "What the var VAR is, as the answer carries it.
 
@@ -115,13 +128,56 @@
   The arglists as they are written, one string each, since what a client does
   with them is show them to somebody. The docstring as it stands."
   [^clojure.lang.Var var]
-  (let [{:keys [arglists doc] :as metadata} (meta var)]
+  (let [{:keys [arglists doc]} (meta var)]
     (cond-> {:type (names/var-kind var)
              :name (str (.sym var))
              :ns (str (ns-name (.ns var)))}
       arglists (assoc :arglists (mapv pr-str arglists))
       doc (assoc :doc doc)
-      true (merge (source-at metadata)))))
+      true (merge (source-of-var var)))))
+
+(defn- var-of-a-fn
+  "The var the class NAMED was compiled out of, or nil when it was not
+  compiled out of one.
+
+  A function compiles to a class named after the var it was defined in and
+  the dollars of whatever was written inside it - clojure.main$repl for
+  clojure.main/repl, and clojure.main$repl$read_eval_print__9206 for a
+  function written inside that. The first two pieces are the var, which is
+  what a name like this is worth resolving for: it is the name a stack trace
+  prints and the name somebody pastes into a buffer to look up."
+  [^String named]
+  (let [pieces (string/split named #"\$")]
+    (when (> (count pieces) 1)
+      (let [written (clojure.repl/demunge (string/join "/" (take 2 pieces)))]
+        (when-let [found (try (resolve (symbol written)) (catch Throwable _ nil))]
+          (when (var? found) found))))))
+
+(defn- var-of-a-type
+  "The var written beside the class CLASS, or nil when none was.
+
+  A deftype and a defrecord make a class in the package their namespace
+  munges to - my.app.Point for a Point of my.app - and a ->Point beside it,
+  written in the same form. So the namespace is looked for under the package
+  as written and under the name that munges to it, which is what a completion
+  does to find these classes in the first place."
+  [^Class class]
+  (when-let [package (.getPackage class)]
+    (let [^String named (.getName package)]
+      (when-let [found (or (find-ns (symbol named))
+                           (find-ns (symbol (.replace named \_ \-))))]
+        (get (ns-publics found) (symbol (str "->" (.getSimpleName class))))))))
+
+(defn- source-of-class
+  "Where the class CLASS was written, or nil when nothing says.
+
+  What is on a classpath is compiled, and the file a java class was written
+  in is not there to open. A class clojure made is the exception: it was
+  written in a form of a namespace, and a var written in that same form
+  remembers where the form is."
+  [^Class class]
+  (when-let [var (or (var-of-a-fn (.getName class)) (var-of-a-type class))]
+    (source-of-var var)))
 
 (defn- of-class
   "What the class CLASS is, as the answer carries it.
@@ -129,17 +185,15 @@
   The name without the package in front of it, and the package beside it,
   which is how a completion writes a class as well. Written back together
   they are the name the runtime knows the class by: an inner class keeps the
-  dollar that says which class it is inside of.
-
-  A class carries no source. What is on a classpath is compiled, and the
-  file a java class was written in is not there to open."
+  dollar that says which class it is inside of."
   [^Class class]
-  (if-let [package (.getPackage class)]
-    (let [^String named (.getName class)]
-      {:type "class"
-       :name (subs named (inc (.length (.getName package))))
-       :package (.getName package)})
-    {:type "class" :name (.getName class)}))
+  (merge (if-let [package (.getPackage class)]
+           (let [^String named (.getName class)]
+             {:type "class"
+              :name (subs named (inc (.length (.getName package))))
+              :package (.getName package)})
+           {:type "class" :name (.getName class)})
+         (source-of-class class)))
 
 (defn- of-namespace
   "What the namespace NAMED is, as the answer carries it, or nil when nothing
@@ -186,16 +240,28 @@
                       doc (assoc :doc doc))])))
       (catch Throwable _ {}))))
 
+(def ^:private written-in-a-try
+  "What catch and finally take, which clojure.repl does not say.
+
+  The doc command writes what they take into what try takes, since that is
+  the only form they are written in - so there is nowhere to read them from
+  and they are written down here. Which is a table, and a table drifts from
+  what it describes; this one cannot. The compiler has read a catch clause
+  this way since there was a compiler, and it is not a form the language can
+  change now."
+  {"catch" ["[classname name expr*]"]
+   "finally" ["[expr*]"]})
+
 (defn- of-special-form
   "What the special form NAMED is, as the answer carries it, or nil when
-  nothing of that name is one.
-
-  catch and finally are two of them that clojure.repl has nothing to say
-  about - what they take is written in what try takes - so they are answered
-  as themselves and with nothing else."
+  nothing of that name is one."
   [^String named]
   (when (some #{named} names/special-forms)
-    (merge {:type "special-form" :name named} (get @special-doc named))))
+    (merge {:type "special-form" :name named}
+           (when-let [arglists (get written-in-a-try named)] {:arglists arglists})
+           ;; last, so that a clojure which starts saying what a catch takes
+           ;; is what says it
+           (get @special-doc named))))
 
 ;;; The members of a class
 

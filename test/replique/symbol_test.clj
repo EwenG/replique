@@ -87,11 +87,48 @@
       (is (= ["[test then else?]"] (:arglists found))))
     (is (some? (:doc found))))
   (testing "catch and finally are two the doc command says nothing about -
-  what they take is written in what try takes"
-    (is (= {:type "special-form" :name "catch"} (written "catch"))))
+  what they take is written into what try takes, since try is the only form
+  they are written in"
+    (is (= {:type "special-form" :name "catch" :arglists ["[classname name expr*]"]}
+           (written "catch")))
+    (is (= {:type "special-form" :name "finally" :arglists ["[expr*]"]}
+           (written "finally"))))
   (testing "and a starred form is not offered by a completion and not read
   here either"
     (is (nil? (written "let*")))))
+
+(defprotocol Probed
+  "A protocol of this file, so that a protocol method has a form to be found
+  in and this test knows which one."
+  (probed [this]))
+
+(defrecord Probe [x y])
+
+(deftest a-protocol-method-is-where-its-protocol-was-written
+  (testing "a protocol method carries no file and no line of its own - what
+  it carries is the protocol, which is the form it was written in"
+    (is (nil? (:file (meta #'probed))) "the test needs a var with no file of its own")
+    (let [found (written "replique.symbol-test/probed")]
+      (is (= "function" (:type found)))
+      (is (string/ends-with? (:file found) "test/replique/symbol_test.clj"))
+      (is (= (:line (meta #'Probed)) (:line found))))))
+
+(deftest a-class-clojure-made-is-where-the-form-that-made-it-was
+  (testing "a function compiles to a class named after the var it was defined
+  in, which is the name a stack trace prints"
+    (let [found (written "clojure.main$repl")]
+      (is (= "class" (:type found)))
+      (is (= "clojure/main.clj" (:entry found)))
+      (is (= (:line (meta #'clojure.main/repl)) (:line found)))))
+  (testing "and a defrecord makes a class with a ->Name beside it, written in
+  the same form"
+    (let [found (written "replique.symbol_test.Probe")]
+      (is (= "class" (:type found)))
+      (is (string/ends-with? (:file found) "test/replique/symbol_test.clj"))
+      (is (= (:line (meta #'->Probe)) (:line found)))))
+  (testing "a class nothing of this language made carries no source: what is
+  on a classpath is compiled, and the java it was written in is not there"
+    (is (nil? (:file (written "java.util.Date"))))))
 
 (deftest a-class-is-answered-with-its-package-beside-it
   (is (= {:type "class" :name "String" :package "java.lang"} (written "String")))
