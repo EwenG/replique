@@ -1,4 +1,4 @@
-(ns replique.completion-fuzz-test
+(ns replique.name-fuzz-test
   "Messages nobody would write, against the rules every answer keeps.
 
   The completion reads text out of somebody's buffer, and a buffer holds
@@ -94,7 +94,7 @@
   of the code and reports that nothing is wrong with it. These are what the
   other half is reached through."
   {:namespaces ["clojure.core" "clojure.string" "clojure.set" "clojure.edn"
-                "replique.completion" "replique.completion-fuzz-test" "user"]
+                "replique.completion" "replique.name-fuzz-test" "user"]
    ;; the aliases this namespace holds, which is how a fuzzed text reaches
    ;; the reading that only an alias opens: str/join, ::string/name
    :aliases ["string" "completion" "protocol" "client" "edn"]
@@ -129,7 +129,12 @@
                             "java.util.Date"]
                      name (concat (pool :vars) (pool :members) ["." "new"])]
                  (str scope "/" name))
-               (map #(str % ".") (pool :classes)))))
+               (map #(str % ".") (pool :classes))
+               ;; a protocol method, whose metadata carries no file and no
+               ;; line of its own - what it carries is the protocol, and a
+               ;; name answered out of somewhere other than itself is a
+               ;; branch nothing else here reaches
+               ["clojure.core.protocols/coll-reduce" "clojure.core.protocols"])))
 
 (defn- half-typed
   "A name of NAMES, as far as somebody has got with typing it.
@@ -488,7 +493,12 @@
   list a candidate is annotated from, and it says the name - which is what a
   client shows, and what everything else in the answer hangs off. The rest is
   shape: the strings are strings, the numbers are numbers, and there is
-  nothing in it a client has never been told to read."
+  nothing in it a client has never been told to read.
+
+  And what a client does with a source: it opens the file and goes to the
+  line. So the file is a file that is there to open, and the line and the
+  column are numbers a place can be counted to - a client counts from them,
+  and one counted from nought lands a line above where it was told."
   [found]
   (let [strings [:name :ns :package :class :tag :doc :file :entry]
         numbers [:line :column]]
@@ -513,7 +523,14 @@
           ;; an entry names something inside the file, so a file is what it
           ;; is named inside of
           (when (and (:entry found) (nil? (:file found)))
-            "an entry with no file to read it out of")))))
+            "an entry with no file to read it out of")
+          (first (for [key numbers
+                       :let [value (get found key)]
+                       :when (and (integer? value) (not (pos? value)))]
+                   (str "the " key " is " value)))
+          (when-let [^String file (:file found)]
+            (when-not (.isFile (java.io.File. file))
+              (str "the file is not there to open: " file)))))))
 
 (defn- misnamed
   "What is wrong with the way MSG was answered by the symbol op, or nil when
