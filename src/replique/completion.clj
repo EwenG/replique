@@ -34,7 +34,8 @@
   shadow: a let that binds map is answered as that local and not as the var,
   and working that out where the two lists meet is the only place it can be
   worked out at all."
-  (:require [clojure.string :as string]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as string]
             [replique.classpath :as classpath]
             [replique.names :as names]))
 
@@ -390,6 +391,22 @@
 ;; colon is written in front of one and in front of nothing else, so what is
 ;; being written there is known before anything is looked for.
 
+(defn- at-the-head?
+  "Whether a name written where MSG says is written at the head of a form.
+
+  Which is what a special form has to be: (if a b) is a form the compiler
+  reads itself, and an if written at an argument of something is a name that
+  resolves to nothing at all. So that is where they are offered and nowhere
+  else.
+
+  True as well where the client said nothing about the form the name is
+  written in. That is a client that does not read one, not a client saying
+  the name is written at an argument - and holding names back on the strength
+  of a key nobody wrote would be an answer read into somebody's silence."
+  [msg]
+  (let [argument (names/argument msg)]
+    (or (nil? argument) (zero? argument))))
+
 (defn- class-package
   "The package CLASS is in, or nil when it is in none. An array class is one
   of those."
@@ -637,8 +654,9 @@
              ;; The namespaces that have been loaded, which is how a var of one
              ;; that this namespace never required is written: in full, and the
              ;; full name starts with one of these.
-             [{:type "namespace" :names (namespaces)}
-              {:type "special-form" :names names/special-forms}]
+             [{:type "namespace" :names (namespaces)}]
+             (when (at-the-head? msg)
+               [{:type "special-form" :names names/special-forms}])
              ;; A class that was not imported is written in full, which means
              ;; written with a dot in it - so until the text holds one, the classes
              ;; offered are the ones the namespace imported and no others.
@@ -647,6 +665,37 @@
              ;; be underneath them.
              (when (string/includes? written ".")
                [{:type "class" :names (importable written (:classes (classpath/scan)))}]))))))))
+
+;;; A path written in a string
+
+;; Most strings are text and a few of them are paths, and what tells the two
+;; apart is the call the string is written in: what goes in (io/resource "...")
+;; is a name on the classpath, and what goes in (str "...") is a message
+;; somebody is writing. So the client sends the call it read around the string
+;; and which argument of it this is, and the rest is worked out here - the call
+;; being written under whatever alias the namespace gave clojure.java.io, and
+;; resolving a name in a namespace being the half only a process has.
+
+(defn- called
+  "What the call MSG names resolves to in NS, or nil when it names nothing.
+
+  Nothing is loaded to find out and nothing is evaluated: `ns-resolve' reads
+  what the namespace already maps, and what it does not map is one more way
+  of naming nothing. A name that reaches for a class it has not got is one of
+  those, which is what the catch is for."
+  [ns msg]
+  (when-let [written (names/call-named msg)]
+    (try (ns-resolve ns (symbol written)) (catch Throwable _ nil))))
+
+(defmethod groups :string [msg]
+  ;; `clojure.java.io/resource' and nothing else. It is the one of these that
+  ;; reads a name against the classpath - what `slurp' and `io/reader' and
+  ;; `io/file' take is a file, and a bare name written at one of those is a
+  ;; path against the directory the process was started in, which is a
+  ;; directory rather than a list of names.
+  (when (and (= 1 (names/argument msg))
+             (= #'io/resource (called (names/namespace-named msg) msg)))
+    [{:type "path" :names (:resources (classpath/scan))}]))
 
 ;;; The answer
 

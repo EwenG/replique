@@ -97,6 +97,41 @@
                                        (pr-str local))))))
             value))))
 
+(defn call-named
+  "The name of the call MSG says the name is being written inside, or nil
+  where the client said it is being written inside none.
+
+  What stands at the head of the enclosing form - the io/resource of
+  (io/resource \"config.edn\"). Only a client can read it: it is written
+  beside the name being asked about, in a buffer this process has never seen.
+
+  It travels as it is written there, under whatever alias the namespace gave
+  the namespace it is public in, and is resolved against the namespace the
+  client named. Which is the half only this process has: an alias is a
+  mapping of a namespace, and reading one means holding the namespace."
+  ^String [msg]
+  (named-argument msg :call))
+
+(defn argument
+  "Which argument of that call the name is being written at, or nil.
+
+  Nought at the head of the form itself, one at the first argument, and so on
+  - it is how many arguments of the form end before the name being written,
+  and at the head none of them do.
+
+  Absent where the client read no form around the name. Absent as well from a
+  client that does not read one at all, which is why nothing is held back on
+  the strength of it being missing: a key nobody wrote is a client that did
+  not look, and answering that with less than was asked for would be reading
+  an answer into somebody's silence."
+  [msg]
+  (let [value (:argument msg)]
+    (cond
+      (nil? value) nil
+      (and (integer? value) (not (neg? value))) value
+      :else (throw (invalid (str "The :argument of a request must be a whole number, got: "
+                                 (pr-str value)))))))
+
 ;;; What it names
 
 (def special-forms

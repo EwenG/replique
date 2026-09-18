@@ -262,6 +262,34 @@
     (is (nil? (written "")))
     (is (nil? (written "  ")))))
 
+;;; A path written in a string
+
+(deftest a-string-is-answered-with-where-what-it-names-is
+  (testing "read against the classpath, which is where a resource is"
+    (let [found (ask {:position :string :text "clojure/version.properties"})]
+      (is (= "path" (:type found)))
+      (is (= "clojure/version.properties" (:name found)))
+      (is (string/ends-with? (:file found) ".jar"))
+      (is (= "clojure/version.properties" (:entry found)))))
+  (testing "and then against the filesystem, which is where the rest of them are"
+    (let [found (ask {:position :string :text "deps.edn"})]
+      (is (= "path" (:type found)))
+      (is (string/ends-with? (:file found) "deps.edn"))
+      (is (nil? (:entry found)))))
+  (testing "a source is one: what is asked here is where the thing the string
+  names is, and a name on the classpath is one whatever it holds"
+    (is (= "clojure/string.clj" (:entry (ask {:position :string
+                                              :text "clojure/string.clj"})))))
+  (testing "no call is read, since a string that names something names it
+  wherever it is written"
+    (is (some? (ask {:position :string :text "clojure/version.properties"
+                     :call "str" :argument 1}))))
+  (testing "and a string that names nothing is answered with nothing, which
+  most strings are"
+    (is (nil? (ask {:position :string :text "a message somebody is writing"})))
+    (is (nil? (ask {:position :string :text ""})))
+    (is (nil? (ask {:position :string :text "   "})))))
+
 ;;; The positions of a dependency form
 
 (deftest the-slots-of-a-dependency-form
@@ -314,7 +342,9 @@
                  {:position :code :ns "replique.symbol-test" :text "String/.sub"}
                  {:position :code :ns "replique.symbol-test" :text "java.util.Date."}
                  {:position :code :ns "replique.symbol-test" :text ".sub" :tag "String"}
-                 {:position :code :ns "replique.symbol-test" :text "clojure.st"}]]
+                 {:position :code :ns "replique.symbol-test" :text "clojure.st"}
+                 {:position :string :ns "replique.symbol-test" :text "version.prop"
+                  :call "clojure.java.io/resource" :argument 1}]]
       (let [offered (:completions (completion/completions msg))]
         (is (seq offered) (pr-str msg))
         (doseq [{:keys [candidate]} offered]

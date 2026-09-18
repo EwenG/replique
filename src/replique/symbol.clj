@@ -566,6 +566,18 @@
         (when-let [source (loadable path)]
           (assoc source :type "path" :name path))))))
 
+;; A string written in code. What is being asked is where the thing it names
+;; is, which is a question worth asking of any of them: a path on the
+;; classpath, a path on disk, a url. The call it is written in is not read
+;; here, where a completion reads it - what could be written there depends on
+;; what the call takes, and what is written there already is a name that
+;; either reaches something or does not.
+(defmethod resolved :string [msg]
+  (let [written (names/text msg)]
+    (when-not (string/blank? written)
+      (when-let [source (source-of written)]
+        (assoc source :type "path" :name written)))))
+
 ;; The keyword positions of a dependency form. What is written at one of them
 ;; is a keyword the form gives a meaning to - :require says what follows it is
 ;; a libspec, :as what follows it is an alias - and there is nothing to say

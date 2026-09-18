@@ -453,7 +453,8 @@
       ;; Nothing is required that the process has not loaded already, since
       ;; loading one here would be loading it for every test after this one.
       (eval '(ns replique.completion-test.probe
-               (:require [clojure.string :as string :refer [join] :rename {join joined}])
+               (:require [clojure.java.io :as io]
+                         [clojure.string :as string :refer [join] :rename {join joined}])
                (:import [java.util Date])))
       ;; Read here, which is what interns a keyword: nothing declares one,
       ;; and what exists is what has been written somewhere.
@@ -564,9 +565,26 @@
   (testing "and none named is the same question"
     (is (contains? (typed {:position :code :text "redu"}) "reduce"))))
 
+(deftest a-special-form-is-offered-where-one-can-be-written
+  (testing "which is the head of a form and nowhere else: an if written at an
+  argument of something resolves to nothing at all"
+    (is (contains? (typed (assoc (in-code "recu") :argument 0)) "recur"))
+    (is (not (contains? (typed (assoc (in-code "recu") :argument 1)) "recur"))))
+  (testing "and nothing else is held back at an argument, since the head is a
+  place only a special form has to be written at"
+    (is (contains? (typed (assoc (in-code "probe-f") :argument 1)) "probe-fn"))
+    (is (contains? (typed (assoc (in-code "Dat") :argument 1)) "Date")))
+  (testing "a client that said nothing about the form the name is written in
+  is a client that did not read one, not one saying it is at an argument"
+    (is (contains? (typed (in-code "recu")) "recur"))))
+
 (deftest what-a-code-completion-carries-wrongly
   (is (= :invalid-message (error-kind {:position :code :text "" :ns 42})))
   (is (= :invalid-message (error-kind {:position :code :text "" :locals "probe-local"})))
+  (testing "which argument of a form the name is at is a whole number of them"
+    (is (= :invalid-message (error-kind {:position :code :text "" :argument "1"})))
+    (is (= :invalid-message (error-kind {:position :code :text "" :argument -1})))
+    (is (= :invalid-message (error-kind {:position :code :text "" :argument 1.5}))))
   (testing "a local is a map holding its name, so that what else is known
   about one has somewhere to go"
     (is (= :invalid-message (error-kind {:position :code :text "" :locals ["probe-local"]})))
@@ -686,6 +704,63 @@
   of an ::alias/name - answered as the namespaces they open"
     (is (= {:candidate "::string" :type "namespace" :ns "clojure.string"}
            (dissoc (found (in-code "::strin") "::string") :match-index)))))
+
+;;; A path written in a string
+
+(defn- in-string
+  "What is offered where TEXT is being written inside a string, in a form
+  headed by CALL."
+  [call argument text]
+  (cond-> {:position :string :ns @probe :text text}
+    call (assoc :call call)
+    argument (assoc :argument argument)))
+
+(deftest a-resource-is-what-is-neither-a-class-nor-a-source
+  (let [found (set (:resources (classpath/scan)))]
+    (is (contains? found "clojure/version.properties"))
+    (testing "a source is on the classpath as the namespace it provides, and
+    a class as the class it is - a path to one is not how either is asked for,
+    and neither is one of a class no name can be read out of"
+      (is (not-any? (fn [^String name] (string/ends-with? name ".class")) found))
+      (is (not-any? (fn [^String name] (or (string/ends-with? name ".clj")
+                                           (string/ends-with? name ".cljc")))
+                    found)))
+    (testing "a jar holds an entry for each directory in it, and a name with
+    nothing at the end of it is not a resource anybody reads"
+      (is (not-any? (fn [^String name] (string/ends-with? name "/")) found)))))
+
+(deftest a-string-is-a-path-where-the-call-it-is-written-in-reads-one
+  (let [dir (temp-dir)]
+    (try
+      (with-entry
+        dir
+        (fn []
+          (write-file! dir "probe" "written.edn")
+          (classpath/rescan!)
+          (is (contains? (typed (in-string "io/resource" 1 "probe/writ"))
+                         "probe/written.edn")
+              "the call written under the alias the namespace gave it, which
+              is a name only this side can resolve")
+          (is (contains? (typed (in-string "clojure.java.io/resource" 1 "probe/writ"))
+                         "probe/written.edn")
+              "and written out in full, which is the same var")
+          (testing "and nothing where the call does not read one, since most
+          strings are text rather than paths"
+            (is (empty? (candidates (in-string "str" 1 "probe/writ"))))
+            (is (empty? (candidates (in-string "slurp" 1 "probe/writ"))))
+            (is (empty? (candidates (in-string "io/file" 1 "probe/writ")))))
+          (testing "nothing at an argument that is not the one it reads"
+            (is (empty? (candidates (in-string "io/resource" 2 "probe/writ"))))
+            (is (empty? (candidates (in-string "io/resource" 0 "probe/writ")))))
+          (testing "and nothing where the client read no call around the
+          string, which a string at the top of a file is written at"
+            (is (empty? (candidates (in-string nil nil "probe/writ"))))
+            (is (empty? (candidates (in-string nil 1 "probe/writ")))))
+          (testing "a call that resolves to nothing is one more way of naming
+          nothing, and so is one reaching for a class that is not there"
+            (is (empty? (candidates (in-string "no-such-fn" 1 "probe/writ"))))
+            (is (empty? (candidates (in-string "no.such.Class/of" 1 "probe/writ")))))))
+      (finally (delete-recursively dir)))))
 
 ;;; What the client got wrong
 

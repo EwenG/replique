@@ -1,6 +1,6 @@
 (ns replique.classpath
   "What is on the classpath: the namespaces that could be required, the
-  classes that could be imported.
+  classes that could be imported, the resources that could be read.
 
   The classpath rather than what the process has loaded, because a require is
   written for a namespace that has not been loaded - writing one is what loads
@@ -95,18 +95,30 @@
            (transient #{}) names)))
 
 (defn- collect
-  "What the resources named by RESOURCES provide, as the four kinds of name
-  they can be asked for."
+  "What the resources named by RESOURCES provide, as the kinds of name they
+  can be asked for.
+
+  Everything that is neither a class nor a source is a resource: a name
+  `clojure.java.io/resource' answers to and nothing else here does. A class
+  is left out of them because it is answered as the class it is, and a source
+  because it is answered as the namespace it provides - both of them are on
+  the classpath under a name of their own, and a path to one is not how
+  either is asked for."
   [resources]
   (loop [resources (seq resources)
          namespaces (transient [])
          classes (transient [])
-         paths (transient [])]
+         paths (transient [])
+         found (transient [])]
     (if resources
       (let [^String resource (first resources)
             resources (next resources)]
-        (if-let [class (class-name resource)]
-          (recur resources namespaces (conj! classes class) paths)
+        (if (.endsWith resource ".class")
+          (recur resources
+                 namespaces
+                 (if-let [class (class-name resource)] (conj! classes class) classes)
+                 paths
+                 found)
           (if-let [stem (source-stem resource)]
             (recur resources
                    (conj! namespaces (namespace-name stem))
@@ -114,13 +126,20 @@
                    ;; what a load takes is a path and not a name, so the
                    ;; underscores stay: it names the file rather than what
                    ;; the file provides
-                   (conj! paths (str "/" stem)))
-            (recur resources namespaces classes paths))))
+                   (conj! paths (str "/" stem))
+                   found)
+            ;; A jar holds an entry for each directory in it, written with a
+            ;; slash at the end. A name with nothing at the end of it is not
+            ;; a resource anybody reads.
+            (if (.endsWith resource "/")
+              (recur resources namespaces classes paths found)
+              (recur resources namespaces classes paths (conj! found resource))))))
       (let [classes (persistent! classes)]
         {:namespaces (persistent! namespaces)
          :classes classes
          :packages (vec (prefixes classes))
-         :paths (persistent! paths)}))))
+         :paths (persistent! paths)
+         :resources (persistent! found)}))))
 
 ;;; The classes the runtime brings
 
@@ -275,7 +294,8 @@
      :namespace-prefixes (vec (prefixes namespaces))
      :classes (vec (mapcat :classes scans))
      :packages (vec (mapcat :packages scans))
-     :paths (vec (mapcat :paths scans))}))
+     :paths (vec (mapcat :paths scans))
+     :resources (vec (mapcat :resources scans))}))
 
 ;; Read here, which is process startup: replique.control loads the ops and the
 ;; ops load this. A first completion would otherwise wait a fifth of a second
