@@ -494,11 +494,73 @@
         (.get field nil))
       (catch Throwable _ nil))))
 
+(defn- writable-part?
+  "Whether PART can be written as the namespace or the name of a keyword.
+
+  Walked a character at a time rather than matched against a pattern, because
+  this is asked of every keyword the process holds each time one is being
+  written - a table of fifty thousand is a document somebody parsed, and the
+  answer is owed before the next keystroke."
+  [^String part]
+  (let [length (.length part)]
+    (and (pos? length)
+         ;; a colon at either end, or two of them anywhere, is a token the
+         ;; reader refuses: :::name is not how any keyword is written
+         (not (.startsWith part ":"))
+         (not (.endsWith part ":"))
+         (not (.contains part "::"))
+         ;; and the slash is where the namespace ends, so a second one is a
+         ;; keyword written with two namespaces
+         (not (.contains part "/"))
+         (loop [index 0]
+           (or (= index length)
+               ;; what ends a token or begins a form of its own. A name
+               ;; written with one of them in it is a name the reader stops
+               ;; partway through, and what it reads is a shorter keyword
+               ;; than the one that was offered - or no keyword at all.
+               (let [character (.charAt part index)]
+                 (and (case character
+                        (\" \; \@ \^ \` \~ \( \) \[ \] \{ \} \\ \,) false
+                        true)
+                      (not (Character/isWhitespace character))
+                      (recur (inc index)))))))))
+
+(defn- writable-keyword?
+  "Whether NAMED is a keyword somebody could write.
+
+  Nothing says a keyword was written to exist. `keyword' makes one out of
+  whatever string it is handed, so a process that has read a document has
+  interned one for every key in it - a keyword with a space in its name, or a
+  quote, or nothing at all. None of those can be written back: the reader
+  stops at the space, or refuses the token, and what a client put in the
+  buffer is not the keyword it was offered.
+
+  So they are not offered. What is asked here is the shape the reader takes,
+  drawn a little tighter than the reader draws it - a name that begins with a
+  slash under a namespace is read back fine and is left out all the same,
+  because nothing writes one on purpose and offering less is the error that
+  costs nobody anything. A name that is a slash and nothing else is kept,
+  since that is the one keyword anybody writes with one in it."
+  [^clojure.lang.Symbol named]
+  (let [scope (.getNamespace named)
+        ^String name (.getName named)]
+    (if (nil? scope)
+      (or (= "/" name) (writable-part? name))
+      (and (writable-part? scope)
+           (or (= "/" name)
+               (and (writable-part? name)
+                    ;; a digit at the front of the name is read as a number
+                    ;; where a namespace stands before it, and :a/1 is a
+                    ;; token the reader refuses - though :1 on its own is one
+                    ;; it takes
+                    (not (Character/isDigit (.charAt name 0)))))))))
+
 (defn- interned-keywords
-  "Every keyword this process has interned, as the symbol each is named by."
+  "Every keyword this process has interned that could be written, as the
+  symbol each is named by."
   []
   (when-let [^java.util.Map table @keyword-table]
-    (.keySet table)))
+    (filter writable-keyword? (.keySet table))))
 
 (defn- keywords-of
   "The keywords interned in the namespace named NAMED."

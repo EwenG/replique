@@ -688,6 +688,57 @@
   written, where a var of that name is not one that could be written there"
     (is (empty? (candidates (in-code ":probe-fn"))))))
 
+(def ^:private probe-unwritable
+  "Keywords nothing could write, interned the way anything interns one.
+
+  Nothing declares a keyword. `keyword' makes one out of whatever string it is
+  handed, so a process that has read a document holds one for every key in it,
+  and half of those are names nobody could write back.
+
+  Held in a var, because the table clojure interns keywords in holds them
+  weakly - a test that only made them would be asking about whatever the
+  collector had left."
+  [(keyword "probe-space one")
+   (keyword "probe-semicolon;one")
+   (keyword ":probe-colon")
+   (keyword "probe-trailing:")
+   (keyword "probe::double")
+   ;; a slash inside the name rather than between the two, which is the one
+   ;; of these that `keyword' has to be handed in two pieces to make
+   (keyword "probe-ns" "probe-slash/inside")
+   (keyword "")
+   (keyword "replique.completion-test.probe" "1probe-digit")
+   ;; and one of the same shape that is written fine, so that what is left
+   ;; out is left out for its shape rather than for the word in it
+   (keyword "1probe-writable")])
+
+(deftest a-keyword-nothing-could-write-is-not-offered
+  (is (= 9 (count probe-unwritable)) "the keywords are held rather than collected")
+  (testing "a name the reader stops partway through is a candidate somebody
+  watches turn into a shorter keyword than the one they picked"
+    (is (empty? (candidates (in-code ":probe-spac"))))
+    (is (empty? (candidates (in-code ":probe-semic")))))
+  (testing "and a colon at either end of one is a token it refuses outright,
+  as are two of them anywhere in it: :::name is not how any keyword is
+  written"
+    (is (empty? (candidates (in-code ":probe-col"))))
+    (is (empty? (candidates (in-code ":probe-trail"))))
+    (is (empty? (candidates (in-code ":probe-doub")))))
+  (testing "a slash inside the name is a keyword written under two
+  namespaces, which is one more than the reader takes"
+    (is (empty? (candidates (in-code ":probe-slash-insi")))))
+  (testing "and a keyword with no name at all is written as a lone colon,
+  which names nothing - offered, it would be the shortest of them and so the
+  first thing anybody saw"
+    (is (not (contains? (typed (in-code ":")) ":"))))
+  (testing "a digit at the front of the name is read as a number where a
+  namespace stands before it, under either spelling"
+    (is (empty? (candidates (in-code ":probe/1probe-dig"))))
+    (is (empty? (candidates (in-code "::1probe-dig")))))
+  (testing "though :1 on its own is a token the reader takes, so one written
+  that way is offered"
+    (is (contains? (typed (in-code ":1probe-writ")) ":1probe-writable"))))
+
 (deftest a-keyword-written-with-two-colons-is-read-against-the-namespace
   (testing "::name is a keyword of the namespace it is written in"
     (is (= ["::probe-own"] (candidates (in-code "::probe-ow")))))
