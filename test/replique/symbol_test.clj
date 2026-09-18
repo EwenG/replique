@@ -290,6 +290,54 @@
     (is (nil? (ask {:position :string :text ""})))
     (is (nil? (ask {:position :string :text "   "})))))
 
+(defn- in-string [text] (ask {:position :string :text text}))
+
+(deftest a-string-that-is-already-a-url-is-answered-as-where-it-points
+  (let [jar (:file (in-string "clojure/string.clj"))
+        here (.getAbsolutePath (java.io.File. "deps.edn"))]
+    (is (string/ends-with? jar ".jar") "the jar the rest of this is written against")
+    (testing "a name that carries a protocol has said where it is rather than
+    what to look for, and an entry of an archive travels as both halves, the
+    way every other source does"
+      (is (= {:type "path" :file jar :entry "clojure/string.clj"}
+             (dissoc (in-string (str "jar:file:" jar "!/clojure/string.clj")) :name))))
+    (testing "and a file url as the file it names"
+      (let [found (in-string (str "file:" here))]
+        (is (= "path" (:type found)))
+        (is (= here (:file found)))
+        (is (nil? (:entry found)))))
+    (testing "the name is what was written, since that is what the client read
+    point out of"
+      (is (= (str "file:" here) (:name (in-string (str "file:" here))))))
+    (testing "a url naming nothing is answered with nothing: what one says is
+    where a file would be rather than that one is"
+      (is (nil? (in-string "file:/no/such/file.clj")))
+      (is (nil? (in-string "jar:file:/no/such.jar!/no/such/entry.clj")))
+      (testing "the entry included, which means opening the archive to ask"
+        (is (nil? (in-string (str "jar:file:" jar "!/no/such/entry.clj")))))
+      (testing "and a directory is not a file, whatever url names it"
+        (is (nil? (in-string (str "file:" (.getAbsolutePath (java.io.File. "src"))))))))
+    (testing "one written against a protocol that is not a file is answered
+    with nothing and is not reached for - reading a name is not a reason to
+    touch the network"
+      (is (nil? (in-string "http://example.com/clojure/string.clj")))
+      (is (nil? (in-string "https://example.com/clojure/string.clj"))))))
+
+(deftest a-var-that-was-loaded-from-a-url-is-answered-from-it
+  (testing "a :file is read against the classpath and then the filesystem, and
+  then as the url it already is - which is what a var whose metadata carries
+  one rather than a path has"
+    (let [here (the-ns 'replique.symbol-test)
+          named (intern here 'probe-from-a-url 1)
+          jar (:file (in-string "clojure/string.clj"))]
+      (try
+        (alter-meta! named assoc :file (str "jar:file:" jar "!/clojure/string.clj") :line 7)
+        (let [found (written "probe-from-a-url" :ns "replique.symbol-test")]
+          (is (= jar (:file found)))
+          (is (= "clojure/string.clj" (:entry found)))
+          (is (= 7 (:line found))))
+        (finally (ns-unmap here 'probe-from-a-url))))))
+
 ;;; The positions of a dependency form
 
 (deftest the-slots-of-a-dependency-form

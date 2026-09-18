@@ -34,13 +34,8 @@
 
 ;;; Where a source is
 
-(defn- source-of
-  "Where the file NAMED holds is, as a client opens it.
-
-  NAMED is what the metadata of a var carries: a path read against the
-  classpath, which is what loaded it, or an absolute path where something was
-  loaded from a file directly. Both are looked for, in that order, since the
-  first is what a name written in a namespace nearly always is.
+(defn- at-url
+  "Where URL is, as a client opens it.
 
   A file of a directory answers with the path of that file, and one inside a
   jar answers with the path of the jar and the entry inside it. There is no
@@ -49,24 +44,80 @@
   be able to do it - and an absent :entry is what says the :file is a file
   and can be opened as one.
 
+  A url written against anything else is answered with nothing. Reading a
+  name is not a reason to reach the network, and a http: one parses as
+  happily as the rest - so what is asked is the protocol rather than what
+  answers it. Nothing is opened here either way: a connection is made to be
+  read apart, and reading the jar it names and the entry it names out of it
+  is reading the url rather than fetching what is at the end of it."
+  [^URL url]
+  (condp = (.getProtocol url)
+    "file" {:file (str (Path/of (.toURI url)))}
+    "jar" (let [connection (.openConnection url)]
+            (when (instance? JarURLConnection connection)
+              (let [^JarURLConnection connection connection]
+                {:file (str (Path/of (.toURI (.getJarFileURL connection))))
+                 :entry (.getEntryName connection)})))
+    nil))
+
+(defn- written-url
+  "Where the url NAMED already is, as a client opens it.
+
+  A name that carries a protocol has said where it is rather than what to look
+  for: file:/tmp/notes.clj is a file, and the jar:file:/...!/clojure/string.clj
+  that a classpath hands back is an entry of an archive. Both are answered the
+  way every other source is, so that a client opens one the way it opens the
+  rest.
+
+  Looked for last, after the classpath and the filesystem, because a path is
+  what nearly every name here is and a url is what almost none of them are.
+
+  Whether what it names is there is asked, which nothing asked of the other
+  two: a name found on the classpath was found because something is at it, and
+  a path is answered only where a file is at it - where a url is somebody's
+  text and says where a file would be rather than that one is.
+
+  An entry means opening the archive to ask. A jar is a file with a list
+  inside it and the list is read by opening it, so the url is opened and
+  nothing is read out of what that hands back: what is being asked is whether
+  there was anything to hand back.
+
+  Nothing here says that a name is no url at all. `io/as-url' throws where one
+  cannot be made, and `source-of' reads a throw as the nothing it is - this
+  being the last thing it asks, there is nothing after it for a throw to
+  skip."
+  [^String named]
+  (when-let [^URL url (io/as-url named)]
+    (when-let [source (at-url url)]
+      (when (try
+              (if (:entry source)
+                (with-open [_ (.openStream url)] true)
+                (.isFile (java.io.File. ^String (:file source))))
+              (catch Throwable _ false))
+        source))))
+
+(defn- source-of
+  "Where the file NAMED holds is, as a client opens it.
+
+  NAMED is what the metadata of a var carries: a path read against the
+  classpath, which is what loaded it, or an absolute path where something was
+  loaded from a file directly. Both are looked for, in that order, since the
+  first is what a name written in a namespace nearly always is. And then the
+  name as a url of its own, which is what a name that is already one is.
+
   Nothing where the name reaches nothing, which is what a source deleted
   since the process loaded it is."
   [^String named]
   (when-not (string/blank? named)
     (try
-      (when-let [^URL url (or (io/resource named)
-                              (let [file (java.io.File. named)]
-                                (when (.isFile file) (.toURL (.toURI file)))))]
-        (condp = (.getProtocol url)
-          "file" {:file (str (Path/of (.toURI url)))}
-          "jar" (let [connection (.openConnection url)]
-                  (when (instance? JarURLConnection connection)
-                    (let [^JarURLConnection connection connection]
-                      {:file (str (Path/of (.toURI (.getJarFileURL connection))))
-                       :entry (.getEntryName connection)})))
-          nil))
+      (or (when-let [^URL url (or (io/resource named)
+                                  (let [file (java.io.File. named)]
+                                    (when (.isFile file) (.toURL (.toURI file)))))]
+            (at-url url))
+          (written-url named))
       ;; A path is text somebody's process put in a var, and a name that no
-      ;; url can be made of is one more way of naming nothing.
+      ;; url can be made of - or no path out of the url, which a jar: written
+      ;; over a http: is - is one more way of naming nothing.
       (catch Throwable _ nil))))
 
 (defn- source-at
