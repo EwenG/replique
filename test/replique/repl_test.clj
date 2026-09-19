@@ -1037,6 +1037,33 @@
           (is (= "2" (:value (frame-tagged (eval! r "(+ 1 1)") "ret")))))
         (finally (disconnect r))))))
 
+(deftest a-reload-directive-that-cannot-be-used-says-why
+  (with-process [info nil]
+    (let [r (repl-client info)
+          refused (fn [code] (:message (frame-tagged (eval! r code) "exception")))]
+      (try
+        (testing "it takes a map, like the load it is one of"
+          (let [f (frame-tagged (eval! r "#replique/reload 1") "exception")]
+            (is (= "read-source" (:phase f)))
+            (is (string/includes? (:message f) "#replique/reload takes a map"))))
+        (testing "and nothing in it yet.  A key is a client asking for
+        something this does not do, and quietly doing the other thing is
+        worse than saying that it does not"
+          (is (string/includes? (refused "#replique/reload {:prune true}")
+                                "takes nothing in its map yet")))
+        (testing "a source directive above one is dropped, the way it is above
+        a load: what this reads is files, each from where it is, so the
+        directive was about a form that never came - and left pending it would
+        place the next form the client sends in a file it has nothing to do
+        with"
+          (send! r (str "#replique/src {:file \"/home/me/elsewhere.clj\" :line 99}\n"
+                        "#replique/reload {}"))
+          (recv-until r "prompt")
+          (is (= "\"NO_SOURCE_PATH\"" (:value (frame-tagged (eval! r "*file*") "ret")))))
+        (testing "the repl survives all of it"
+          (is (= "2" (:value (frame-tagged (eval! r "(+ 1 1)") "ret")))))
+        (finally (disconnect r))))))
+
 (deftest a-source-directive-above-a-load-is-dropped
   (testing "where the code comes from is the file's own business - the
   compiler reads it from there - so a #replique/src above a load was about a

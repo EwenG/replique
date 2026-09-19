@@ -70,6 +70,7 @@
                     (or (requiring-resolve (symbol "clojure.analysis" (str sym)))
                         (throw (ex-info (str "No clojure.analysis/" sym) {}))))]
         {:load-file! (named 'load-file!)
+         :stale-reload! (named 'stale-reload!)
          :find-usages (named 'find-usages)
          :find-keyword-usages (named 'find-keyword-usages)
          :find-class-usages (named 'find-class-usages)})
@@ -93,6 +94,11 @@
 (defn- refuse-unless-available!
   "Refuse the request where this process records nothing, and say why.
 
+  WHAT is what this process's clojure does not do, written as the sentence
+  it goes in: a process that records nothing cannot say where a name is used
+  and cannot say what it compiled either, and which of those was asked for
+  is what somebody reading the refusal needs to know.
+
   Asked once, at the top of an op, rather than where each kind of name is
   looked up. A process on stock clojure has no usages of anything, so the
   answer must not depend on what was asked about: a name that happens to
@@ -103,11 +109,11 @@
   Named as what a client would have to change rather than as a missing var.
   Nothing is wrong with the request, and nothing about this process will make
   it work: it is running a clojure that does not record this."
-  []
+  [what]
   (when-not (available?)
     (throw (ex-info (str "This process runs clojure " (clojure-version)
-                         ", which does not record where names are used. Start it on a "
-                         "clojure whose compiler does - see clojure.analysis.")
+                         ", which does not " what ". Start it on a clojure whose "
+                         "compiler does - see clojure.analysis.")
                     {:replique/error :no-analysis}))))
 
 ;;; Naming a file the way the classpath does
@@ -228,6 +234,51 @@
       (analyse source)
       source)))
 
+(defn reload!
+  "Load every file that changed on disk since this process read it.
+
+  Which files those are is something only the compiler knows, and only where
+  it was writing down what it compiled. A file is in the model because
+  something loaded it - a load from an editor, and everything that load
+  required on the way - and the model kept the time each one was last
+  modified when it read it. What changed since is the difference between that
+  and what the disk says now.
+
+  And not only what changed. A macro is expanded where it is used, so a file
+  that uses one holds the old expansion until that file is compiled again:
+  editing a macro leaves every file that expands it wrong, and not one of
+  those files changed. The model records which form expanded which macro, so
+  what is loaded is the files that changed plus the files that expand a macro
+  of one of them, and they are loaded macro first - a file before the files
+  that expand what it defines.
+
+  A file that merely calls a function of a changed file is not loaded, and
+  needs not to be: a call goes through the var every time it runs, so the
+  definition it finds is the new one. It is the compile time dependency that
+  goes stale, and that is the one this follows.
+
+  Nothing is unmapped. A definition deleted from a file leaves its var
+  behind, because loading a file defines what the file says and cannot
+  un-define what it no longer says - and replique already answers that with
+  `:remove-var', a definition taken away by name, by somebody who knows it is
+  gone. Unmapping it here instead would be a second answer to the same
+  question, given silently, in a process where what still uses that var may
+  be something nothing recorded: a call made by reflection, or a file this
+  process compiled before anything was watching.
+
+  Answers the files it loaded, in the order it loaded them, named the way the
+  classpath names them. Which is the one thing here that is news: this is
+  asked for without knowing what it will do, where every other load is asked
+  for by naming the file.
+
+  Fails the way a load fails. The first file that will not compile throws,
+  and the files after it are not loaded - and nothing is lost by that, since
+  a file that failed to load keeps the time it had before and is therefore
+  still changed. Asking again carries on from where this stopped."
+  []
+  (refuse-unless-available! "keep track of what it compiled")
+  ((of :stale-reload!)))
+
 ;;; What was found
 
 (defn- located
@@ -295,7 +346,7 @@
   clojure.core/let\" rather than \"12 usages of let\", which would be a
   heading that does not say which let."
   [msg]
-  (refuse-unless-available!)
+  (refuse-unless-available! "record where names are used")
   (let [found (:symbol (sym/named msg))]
     {:symbol found
      :usages (in-reading-order (remove nil? (usages-of found)))}))

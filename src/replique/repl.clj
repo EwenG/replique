@@ -318,6 +318,51 @@
     ;; loaded, and there is nothing else to say
     nil))
 
+;;; Reloading
+
+;; The other thing an editor asks the repl to load, and the one it cannot
+;; name: everything that changed since the process read it.
+;;
+;;   #replique/reload {}
+;;
+;; Which is a question about the whole codebase and is still asked here
+;; rather than as an op, for everything a load is asked here for.  It
+;; compiles files, so what it produces is the compiler's warnings and the
+;; code's own output, and both belong in the repl that asked; it throws where
+;; a file will not compile, and that is this repl's exception, triaged, with
+;; a trace into the file; and it can take a while, so it has to be
+;; interruptible, which a form evaluated by the repl is and an op is not.
+;;
+;; A map with nothing in it, rather than nothing at all, because a tagged
+;; literal reads the form after it whatever that form is - and what is asked
+;; for here has somewhere to be written down the day there is something to
+;; write.  What goes in it today is nothing, and a client that put something
+;; there is a client asking for something this does not do, so it is told.
+(defrecord ReloadDirective [])
+
+(defn- reload-directive [m]
+  (let [bad (fn [message]
+              (throw (ex-info message {:replique/error :invalid-reload-directive})))]
+    (when-not (map? m)
+      (bad (str "#replique/reload takes a map, got: " (pr-str m))))
+    (when (seq m)
+      (bad (str "#replique/reload takes nothing in its map yet, got: " (pr-str m))))
+    (->ReloadDirective)))
+
+(defn reload!
+  "Load every file that changed since this process read it, holding the lock.
+
+  The same lock a load takes, for the same reason and rather more of it: this
+  is several loads, of files that require each other, and two repls doing it
+  at once is two threads compiling into one namespace - see `load!'.
+
+  What changed, what that makes stale, and what order to load it in is
+  `replique.analysis/reload!'.  The answer is the files it loaded, which a
+  repl prints: what this did is not knowable in advance, so it is the result."
+  []
+  (locking clojure.lang.RT/REQUIRE_LOCK
+    (analysis/reload!)))
+
 ;; Written from the read step, which is above the frames it writes
 (declare prompt-frame)
 
@@ -406,6 +451,14 @@
                 (do (vreset! pending nil)
                     (vreset! moved false)
                     (list `load! {:file (:file input) :entry (:entry input)}))
+
+                ;; A form for the same reasons, and a #replique/src above it
+                ;; dropped for the same one: what this loads is files, each
+                ;; read from where it is
+                (instance? ReloadDirective input)
+                (do (vreset! pending nil)
+                    (vreset! moved false)
+                    (list `reload!))
 
                 ;; the way a socket repl is ended, as in clojure.core.server
                 (identical? :repl/quit input) request-exit
@@ -498,7 +551,8 @@
                  (set! *data-readers* (assoc *data-readers*
                                              'replique/src #'source-directive
                                              'replique/ns #'ns-directive
-                                             'replique/load #'load-directive)))
+                                             'replique/load #'load-directive
+                                             'replique/reload #'reload-directive)))
          :read (make-repl-read conn)
          :eval (fn [form] (interruptible conn #(eval form)))
          ;; The frame is built before the output is flushed: printing a

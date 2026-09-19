@@ -322,3 +322,111 @@
             (disconnect r)
             (client/delete-recursively first-root)
             (client/delete-recursively second-root)))))))
+
+;;; Loading again what changed
+
+(defn- edited-file!
+  "Write SOURCE into DIR under NAME, as a file edited since it was read.
+
+  The time it was last modified is pushed forward rather than left to the
+  clock, because that time is the whole of what says a file changed and a
+  filesystem writes it as coarsely as it likes. Two writes inside one tick of
+  it carry one time, and the second edit would be a file nothing had
+  touched - which is a test that passes or fails on how fast the machine is."
+  [dir name source]
+  (let [path (written-file! dir name source)]
+    (.setLastModified (java.io.File. ^String path) (+ (System/currentTimeMillis) 10000))
+    path))
+
+(defn- value!
+  "What the repl answered CODE with."
+  [r code]
+  (:value (client/frame-tagged (eval! r code) "ret")))
+
+(defn- reloaded!
+  "Ask for everything that changed to be loaded, and answer what was said.
+
+  The files, printed the way a repl prints a value, or the refusal where this
+  process kept no track of what it compiled - one string either way, because
+  what a test wants to say about both is the same sentence."
+  [r]
+  (let [frames (eval! r "#replique/reload {}")]
+    (or (:value (client/frame-tagged frames "ret"))
+        (:message (client/frame-tagged frames "exception")))))
+
+(deftest a-file-edited-since-it-was-read-is-loaded-again
+  (testing "which files those are is a question about the disk and the model
+  together: what was loaded, and what has been written since. Nobody names
+  the files - the point of asking is not knowing which they are"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (written-file! root "probe/edited.clj"
+                         "(ns probe.edited)\n(defn twice [x] (* 2 x))\n")
+          (load! r (written-file! root "probe/uses_edited.clj"
+                                  (str "(ns probe.uses-edited\n"
+                                       "  (:require [probe.edited :as e]))\n"
+                                       "(defn four [x] (e/twice (e/twice x)))\n")))
+          (is (= "8" (value! r "(probe.uses-edited/four 2)")))
+          (edited-file! root "probe/edited.clj"
+                        "(ns probe.edited)\n(defn twice [x] (* 3 x))\n")
+          (if (analysing? c)
+            (do
+              (testing "the file that changed, and that one only: the file
+              calling it goes through the var every time it runs, so what it
+              finds is the new definition without being compiled at all"
+                (is (= "[\"probe/edited.clj\"]" (reloaded! r)))
+                (is (= "18" (value! r "(probe.uses-edited/four 2)"))))
+              (testing "and asking again loads nothing, because loading a file
+              is what records the time it was last modified: a file read a
+              moment ago is a file that has not changed since"
+                (is (= "[]" (reloaded! r)))))
+            (testing "a process whose compiler kept no track of what it
+            compiled cannot know what changed, and says so rather than
+            answering that nothing did"
+              (is (string/includes? (reloaded! r) "keep track of what it compiled"))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
+(deftest a-file-that-expands-a-macro-of-an-edited-file-is-loaded-too
+  (testing "a macro is expanded where it is used, so a file that uses one
+  holds the old expansion until it is compiled again - editing a macro leaves
+  every file that expands it wrong, and not one of those files changed. Which
+  only the compiler can know, because what expanded what is not written in
+  either file"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (written-file! root "probe/macro.clj"
+                         (str "(ns probe.macro)\n"
+                              "(defmacro twice [x] `(* 2 ~x))\n"))
+          (load! r (written-file! root "probe/expands.clj"
+                                  (str "(ns probe.expands\n"
+                                       "  (:require [probe.macro :as m]))\n"
+                                       "(defn four [x] (m/twice (m/twice x)))\n")))
+          (is (= "8" (value! r "(probe.expands/four 2)")))
+          (edited-file! root "probe/macro.clj"
+                        (str "(ns probe.macro)\n"
+                             "(defmacro twice [x] `(* 3 ~x))\n"))
+          (if (analysing? c)
+            (do
+              (testing "both files, the macro first - a file is loaded before
+              the files that expand what it defines, or they would expand the
+              old one again and the reload would have changed nothing"
+                (is (= "[\"probe/macro.clj\" \"probe/expands.clj\"]" (reloaded! r))))
+              (testing "and the expansion the second file holds is the new one"
+                (is (= "18" (value! r "(probe.expands/four 2)")))))
+            (testing "where nothing recorded which form expanded which macro,
+            there is no such thing to ask for"
+              (is (string/includes? (reloaded! r) "keep track of what it compiled"))
+              (is (= "8" (value! r "(probe.expands/four 2)")))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
