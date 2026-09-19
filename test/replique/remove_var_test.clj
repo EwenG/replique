@@ -21,6 +21,91 @@
       (client/frame-tagged "ret")
       :value))
 
+(defn- vars-of [c ns]
+  (:vars (request! c (cond-> {:op :vars :id 1} ns (assoc :ns ns)))))
+
+(defn- written-file!
+  "Write SOURCE into DIR under NAME, and answer the path of it."
+  [dir name source]
+  (let [f (java.io.File. (str dir) (str name))]
+    (spit f source)
+    (.getPath f)))
+
+(deftest the-vars-of-a-namespace-are-what-can-be-chosen-from
+  (testing "the var to remove is nearly never the one at point: renaming a
+  definition and evaluating the file again leaves the process holding both,
+  and the old name is by then written nowhere in the buffer"
+    (with-process [info nil]
+      (let [dir (client/temp-dir)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          ;; Loaded from a file rather than evaluated form by form, because
+          ;; what is being checked is the order they were written in - and a
+          ;; form sent to a repl was written at a socket, which has no lines.
+          (let [path (written-file! dir "probe_listed.clj"
+                                    (str "(ns probe.listed)\n"
+                                         "(defn parse [s] s)\n"
+                                         "(defn- helper [] 1)\n"
+                                         "(def answer 42)\n"
+                                         "(defmacro twice [x] x)\n"))]
+            (eval! r (str "#replique/load " (pr-str {:file path})))
+            (let [found (vars-of c "probe.listed")]
+              (testing "in the order they were written, which is what makes the
+              list read like the file - the definition somebody just renamed is
+              where they would look for it"
+                (is (= ["parse" "helper" "answer" "twice"] (mapv :name found))))
+              (testing "each with what it is, from the list a completion
+              candidate and a :symbol answer use"
+                (is (= ["function" "function" "var" "macro"] (mapv :type found))))
+              (testing "and a private one is said to be private rather than
+              left out: a defn- renamed is a defn- left behind like any other"
+                (is (= [nil true nil nil] (mapv :private found))))
+              (testing "and one the process cannot place goes last: a var
+              interned rather than written carries no file at all, and sorting
+              it by the empty string would put it first - the one place it
+              certainly does not go"
+                (eval! r "(clojure.core/intern 'probe.listed 'made-up 1)")
+                (is (= ["parse" "helper" "answer" "twice" "made-up"]
+                       (mapv :name (vars-of c "probe.listed")))))))
+          (finally (disconnect r) (disconnect c) (client/delete-recursively dir)))))))
+
+(deftest what-can-be-chosen-is-what-can-be-removed
+  (testing "one rule read twice: the vars offered are the interns of the
+  namespace, and the interns of the namespace are what :remove-var finds"
+    (with-process [info nil]
+      (let [r (repl-client info)
+            c (control-client info)]
+        (try
+          (make! r "(ns probe.agreed)" "(defn- quiet [] 1)")
+          (is (= ["quiet"] (mapv :name (vars-of c "probe.agreed"))))
+          (is (= "probe.agreed/quiet" (:removed (remove! c "probe.agreed/quiet"))))
+          (testing "and what a namespace only refers is in neither"
+            (is (not (contains? (set (mapv :name (vars-of c "probe.agreed"))) "map")))
+            (is (= "unknown-var" (:error (remove! c "probe.agreed/map")))))
+          (finally (disconnect r) (disconnect c)))))))
+
+(deftest a-namespace-the-process-does-not-have-holds-no-vars
+  (testing "answered with none rather than refused. Every file is one until it
+  has been loaded, and holding none is a fact about the process"
+    (with-process [info nil]
+      (let [c (control-client info)]
+        (try
+          (let [reply (request! c {:op :vars :ns "no.such.namespace" :id 1})]
+            (is (= "reply" (:tag reply)))
+            (is (= [] (:vars reply))))
+          (finally (disconnect c)))))))
+
+(deftest the-vars-op-needs-a-namespace
+  (with-process [info nil]
+    (let [c (control-client info)]
+      (try
+        (is (= "invalid-message" (:error (request! c {:op :vars :id 1}))))
+        (is (= "invalid-message" (:error (request! c {:op :vars :ns 1 :id 1}))))
+        (testing "and reads the three spellings a client writes a name in"
+          (is (= [] (:vars (request! c {:op :vars :ns 'no.such.ns :id 1})))))
+        (finally (disconnect c))))))
+
 (deftest a-var-is-taken-away-from-everywhere-that-maps-it
   (testing "unmapping a var is not ns-unmap, because a var is rarely in one
   place: one that was referred is in every namespace that referred it, under

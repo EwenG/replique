@@ -157,6 +157,66 @@
                                                      (qualified-name var))))))
                            {} asked)}))
 
+;; The vars a namespace has, for a client to offer a choice of.
+;;
+;; Which is how a definition is taken away, because the var to remove is
+;; nearly never the one at point: renaming a definition and evaluating the
+;; file again leaves the process holding both, and the one to be rid of is the
+;; old name - which is by then written nowhere in the buffer. What a client
+;; can offer is the namespace's own vars, and this is where it reads them.
+;;
+;; `ns-interns' rather than `ns-publics': a defn- renamed is a defn- left
+;; behind like any other. Which is the rule `:remove-var' finds a var by, so
+;; what can be chosen here is exactly what can be removed there.
+;;
+;; Sorted where they were written, which is what makes the list read like the
+;; file - the definition somebody just renamed is where they would look for
+;; it. Only the process can sort them that way, since what says where a var
+;; was written is the var, so it is sorted here rather than by the client, as
+;; the namespaces are. One the process cannot place - a var interned rather
+;; than written, which carries no file - goes last.
+;;
+;; What each one is travels beside it, from the list a completion candidate
+;; and a `:symbol' answer use. What it was written in does not: a client that
+;; wants to open a definition asks `:symbol', which answers the file and the
+;; jar entry properly resolved, and a half resolved file here would be a
+;; second and worse spelling of the same thing.
+
+(defn- written-at
+  "Where VAR was written, as what to sort it among its namespace by.
+
+  The file first and the line inside it, which is what puts the vars of one
+  namespace in the order that namespace's file has them - the order that
+  makes the list read like the file.
+
+  One the process cannot place goes last: a var interned rather than written
+  carries no file at all, and there is nowhere among the ones that were
+  written that it belongs. Sorting it by the empty string would put it
+  first, which is the one place it certainly does not go."
+  [^clojure.lang.Var var]
+  (let [{:keys [file line column]} (meta var)]
+    [(if file 0 1) (str file) (long (or line 0)) (long (or column 0))]))
+
+(defmethod protocol/handle :vars [_ msg]
+  (let [written (or (protocol/as-name (:ns msg))
+                    (throw (ex-info (str "The :vars op needs the :ns to look in, as a name, "
+                                         "got: " (pr-str (:ns msg)))
+                                    {:replique/error :invalid-message})))
+        found (find-ns (symbol written))]
+    ;; A namespace the process does not have is answered with no vars rather
+    ;; than refused. Every file is one until it has been loaded, and holding
+    ;; none is a fact about the process - the same thing `:spellings' means by
+    ;; leaving a name out. A client showing a list of nothing says so better
+    ;; than an error would: there is nothing there to remove.
+    {:vars (if (nil? found)
+             []
+             (->> (ns-interns found)
+                  (sort-by (comp written-at val))
+                  (mapv (fn [[sym var]]
+                          (cond-> {:name (str sym)
+                                   :type (names/var-kind var)}
+                            (:private (meta var)) (assoc :private true))))))}))
+
 ;; Taking a definition away.
 ;;
 ;; Unmapping a var is not `ns-unmap', because a var is rarely in one place. One
