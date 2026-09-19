@@ -2,6 +2,7 @@
   "The ops handled by the control connection."
   (:require [clojure.java.basis :as basis]
             [clojure.repl.deps :as deps]
+            [replique.analysis :as analysis]
             [replique.classpath :as classpath]
             [replique.completion :as completion]
             [replique.names :as names]
@@ -15,7 +16,16 @@
     (assoc info
            :connection (:id conn)
            :uptime (when-let [started-at (:started-at info)]
-                     (- (System/currentTimeMillis) started-at)))))
+                     (- (System/currentTimeMillis) started-at))
+           ;; Whether the compiler of this process writes down what it
+           ;; resolved, which is what :usages is answered out of. Here rather
+           ;; than in the handshake reply, which is what `replique.state/info'
+           ;; is: it is a fact about what this process can be asked, and the
+           ;; handshake is about how to talk to it at all. A client needs no
+           ;; such flag to ask - an op that cannot be answered says so, and
+           ;; says what to start the process on instead - so this is for
+           ;; somebody looking at the process rather than for the code path.
+           :analysis (analysis/available?))))
 
 ;; Protocol smoke test. :value comes back both as JSON - which is lossy, EDN
 ;; keywords and symbols become strings - and as the EDN the process read, which
@@ -156,6 +166,25 @@
                                     (vec (sort (conj (get found var #{})
                                                      (qualified-name var))))))
                            {} asked)}))
+
+;; Where a name is used, which is the question a rename starts with.
+;;
+;; The client sends what it sends for `:symbol' - the slot of the form point
+;; is in, the text written there, the namespace and the locals around it - and
+;; that is not a convenience, it is the whole resolution. What is being asked
+;; about is the var, and the name at point is one of the many ways a namespace
+;; can write one; `:spellings' is the same fact read the other way round.
+;;
+;; A var, a keyword and a class are all answered, because all three are things
+;; somebody renames and none of the three can be found by reading the text: a
+;; keyword written ::thing is of whatever namespace the file is, and
+;; ::other/thing of whatever that alias stands for.
+;;
+;; Answered out of what the compiler resolved rather than out of a search, so
+;; a usage written by a macro is a usage and a name that merely looks the same
+;; is not - see `replique.analysis'.
+(defmethod protocol/handle :usages [_ msg]
+  (analysis/usages (assoc msg :position (protocol/as-keyword (:position msg)))))
 
 ;; The vars a namespace has, for a client to offer a choice of.
 ;;

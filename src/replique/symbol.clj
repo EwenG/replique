@@ -96,7 +96,7 @@
               (catch Throwable _ false))
         source))))
 
-(defn- source-of
+(defn source-of
   "Where the file NAMED holds is, as a client opens it.
 
   NAMED is what the metadata of a var carries: a path read against the
@@ -104,6 +104,11 @@
   loaded from a file directly. Both are looked for, in that order, since the
   first is what a name written in a namespace nearly always is. And then the
   name as a url of its own, which is what a name that is already one is.
+
+  Public because it is what turns any of the ways this process names a source
+  into the two keys a client opens one with, and a var is not the only thing
+  that carries one: the spans an analysis records name a file the way the
+  classpath does - see `replique.analysis'.
 
   Nothing where the name reaches nothing, which is what a source deleted
   since the process loaded it is."

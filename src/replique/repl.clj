@@ -16,6 +16,7 @@
   from."
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
+            [replique.analysis :as analysis]
             [replique.protocol :as protocol]
             [replique.server :as server]
             [replique.state :as state])
@@ -251,8 +252,8 @@
   [^Reader rdr ^String path]
   (clojure.lang.Compiler/load rdr path (.getName (File. path))))
 
-(defn- load-entry!
-  "Load ENTRY of the jar FILE.
+(defn- load-entry-from-jar!
+  "Load ENTRY of the jar FILE, by opening that jar.
 
   Loaded as the entry rather than as the jar: the inner path is what the
   compiler is given, which is what a stack trace shows and what the code being
@@ -272,6 +273,18 @@
       ;; accent in it as two characters.
       (with-open [rdr (io/reader (.getInputStream jar found) :encoding "UTF-8")]
         (load-reader! rdr entry)))))
+
+(defn- load-entry!
+  "Load ENTRY of the jar FILE, analysed where this process can analyse it.
+
+  Through the classpath where that reads this same jar, since a load that is
+  recorded has to be a load the model can name - see `replique.analysis/load!'
+  for the whole of why.  By opening the jar where it does not, which is a jar
+  that is not on the classpath at all or one shadowed by another version of
+  itself, and is the reading that is certainly of the file that was named."
+  [^String file ^String entry]
+  (or (analysis/load-entry! file entry)
+      (load-entry-from-jar! file entry)))
 
 (defn load!
   "Load what a #replique/load directive named, holding the require lock.
@@ -294,7 +307,16 @@
   (locking clojure.lang.RT/REQUIRE_LOCK
     (if entry
       (load-entry! file entry)
-      (clojure.core/load-file file))))
+      (analysis/load! file))
+    ;; Nothing, whichever of those did it.  What a load leaves behind is the
+    ;; namespace it defined, and the value it happens to hand back is whatever
+    ;; the reading it went through happens to hand back - the last form of the
+    ;; file from `load-file', the path from an analysed load, nothing from
+    ;; `load'.  A repl prints that value, so answering with any of them would
+    ;; be answering "this file was loaded" with a different sentence depending
+    ;; on how it was read.  Which is also how it reads as a fact: the file was
+    ;; loaded, and there is nothing else to say
+    nil))
 
 ;; Written from the read step, which is above the frames it writes
 (declare prompt-frame)

@@ -273,12 +273,18 @@
   An entry that cannot be read is one of them. A classpath names directories
   that were never created and jars that were moved, and a completion is not
   the place to report it: the request was about names, and the names of the
-  entries that could be read are still the answer."
+  entries that could be read are still the answer.
+
+  A directory says so, and says where it is. It is asked here anyway, to know
+  which way to read the entry, so carrying the answer out costs nothing - and
+  it is the half of the classpath a path on disk can be named against, which
+  is a question asked of a whole classpath at a time. See `directories'."
   [^Path path]
   (try
     (let [options (make-array LinkOption 0)]
       (cond
-        (Files/isDirectory path options) (collect (directory-resources path))
+        (Files/isDirectory path options) (assoc (collect (directory-resources path))
+                                                :directory path)
         (Files/isRegularFile path options) (collect (jar-resources path))))
     (catch Exception _ nil)))
 
@@ -295,7 +301,10 @@
      :classes (vec (mapcat :classes scans))
      :packages (vec (mapcat :packages scans))
      :paths (vec (mapcat :paths scans))
-     :resources (vec (mapcat :resources scans))}))
+     :resources (vec (mapcat :resources scans))
+     ;; The classes the runtime brings are no entry of the classpath and
+     ;; carry none of these
+     :directories (vec (keep :directory scans))}))
 
 ;; Read here, which is process startup: replique.control loads the ops and the
 ;; ops load this. A first completion would otherwise wait a fifth of a second
@@ -313,6 +322,30 @@
   What was read when the process started, until `rescan!' says otherwise."
   []
   @scanned)
+
+(defn directories
+  "The entries of the classpath that are directories, as absolute paths.
+
+  Which is the half of it a project's own sources are under, and the half a
+  path on disk can be turned into a name on the classpath against - see
+  `replique.analysis/source-path'. A jar is left out because nothing under
+  one has a path: what is in there is an entry, and an entry is already
+  written the way the classpath names it.
+
+  Out of the same reading everything else here comes out of, and stale in the
+  same way until `rescan!'. Which is the point of it being here rather than
+  read afresh per call: an entry is asked whether it is a directory to know
+  which way to read it, so the answer is already paid for, and a classpath
+  this one has not read is a classpath it says nothing else about either. The
+  two agreeing is worth more than one of them being fresher - what a load
+  does with an unrecognised directory is load the file without analysing it,
+  which is the same thing it does for a file that is on no classpath at all.
+
+  Nothing puts a directory on the classpath without a reading: `:add-libs'
+  and `:sync-deps' both end in one, and `:update-classpath' is a client
+  asking for one by itself."
+  []
+  (:directories (scan)))
 
 (defn rescan!
   "Read the classpath again, and return what is on it now."

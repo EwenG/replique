@@ -994,6 +994,24 @@
               (is (= "2" (:value (frame-tagged (eval! r "(+ 1 1)") "ret"))))))
           (finally (disconnect r) (client/delete-recursively dir)))))))
 
+(deftest a-load-is-answered-with-nothing
+  (testing "what a load leaves behind is the namespace it defined, and the
+  value the reading it went through hands back is an accident of that
+  reading - the last form of the file from one, the path it was found under
+  from another.  A repl prints that value, so the answer to a load has to be
+  the same sentence however the file was read"
+    (with-process [info nil]
+      (let [dir (client/temp-dir)
+            r (repl-client info)]
+        (try
+          (let [path (write-file! dir "probe_answered.clj"
+                                  "(ns probe.answered)\n(def answer 42)\n")]
+            (is (= "nil" (:value (frame-tagged (loaded! r {:file path}) "ret"))))
+            (testing "and the file was loaded all the same"
+              (is (= "42" (:value (frame-tagged (eval! r "probe.answered/answer")
+                                                "ret"))))))
+          (finally (disconnect r) (client/delete-recursively dir)))))))
+
 (deftest a-load-directive-that-cannot-be-used-says-why
   (with-process [info nil]
     (let [r (repl-client info)
