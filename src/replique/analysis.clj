@@ -71,6 +71,8 @@
                         (throw (ex-info (str "No clojure.analysis/" sym) {}))))]
         {:load-file! (named 'load-file!)
          :stale-reload! (named 'stale-reload!)
+         :changed-files (named 'changed-files)
+         :stale-files (named 'stale-files)
          :find-usages (named 'find-usages)
          :find-keyword-usages (named 'find-keyword-usages)
          :find-class-usages (named 'find-class-usages)})
@@ -278,6 +280,52 @@
   []
   (refuse-unless-available! "keep track of what it compiled")
   ((of :stale-reload!)))
+
+(defn- by-name
+  "The sources SOURCES point at, as a client opens them, in name order.
+
+  Which is not the order they would be loaded in. That order is decided
+  while the loading happens - a file edited to use a macro it did not use
+  before adds an edge that nothing knew about until it has been compiled
+  once - so a list made beforehand claiming to be it would be claiming to
+  know something it cannot. What this is is a list to read and to open
+  things from, and the order to read a list of files in is their names.
+
+  One that reaches no file is left out, the way a usage of a deleted file
+  is: the model holds what it read, and the disk is free to have moved on."
+  [sources]
+  (vec (sort-by (juxt #(str (:entry %)) #(str (:file %)))
+                (keep sym/source-of sources))))
+
+(defn stale
+  "What would be loaded if this process were asked to load what changed.
+
+  The same question `reload!' answers by doing it, asked without doing it:
+  the file times are read and the macro graph is walked, and nothing is
+  compiled. Which is a question worth asking on its own - what a reload is
+  about to do is a thing to look at before it does it, and \"these two files
+  make those five need compiling\" is not something anybody can work out by
+  looking at their buffers.
+
+  Answered as two lists, because they are two different facts:
+
+    :changed  the file on disk is newer than what this process read
+    :stale    the file has not changed, and what this process holds of it is
+              out of date all the same - it expands a macro of a file that
+              did change, and holds the expansion the old one made
+
+  Disjoint, and together they are what a reload would load. The second is
+  the half nothing but the compiler can know.
+
+  Both are read off one reading of the disk: the files that changed are what
+  the stale ones are worked out from, so asking for them separately would be
+  asking the filesystem about every analysed file twice, and would leave the
+  two answers free to disagree about a file saved in between."
+  []
+  (refuse-unless-available! "keep track of what it compiled")
+  (let [changed ((of :changed-files))]
+    {:changed (by-name changed)
+     :stale (by-name (remove changed ((of :stale-files) changed)))}))
 
 ;;; What was found
 

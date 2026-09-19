@@ -430,3 +430,68 @@
             (disconnect r)
             (disconnect c)
             (client/delete-recursively root)))))))
+
+(defn- stale!
+  "Ask what would be loaded, without anything being loaded."
+  [c]
+  (request! c {:op :stale :id 1}))
+
+(defn- named-files
+  "The files FOUND lists under K, as their own names."
+  [found k]
+  (mapv (fn [{:keys [file]}] (.getName (java.io.File. ^String file))) (k found)))
+
+(deftest what-would-be-loaded-is-answered-without-loading-anything
+  (testing "what a reload is about to do is a thing to look at before it does
+  it - and \"this one file makes that other one need compiling\" is not
+  something anybody can work out by looking at their buffers"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (written-file! root "probe/gone_stale.clj"
+                         (str "(ns probe.gone-stale)\n"
+                              "(defmacro twice [x] `(* 2 ~x))\n"))
+          (load! r (written-file! root "probe/uses_stale.clj"
+                                  (str "(ns probe.uses-stale\n"
+                                       "  (:require [probe.gone-stale :as g]))\n"
+                                       "(defn four [x] (g/twice (g/twice x)))\n")))
+          (if (analysing? c)
+            (do
+              (testing "a file read a moment ago is a file nothing has to do
+              anything about"
+                (let [found (stale! c)]
+                  (is (= [] (named-files found :changed)))
+                  (is (= [] (named-files found :stale)))))
+              (edited-file! root "probe/gone_stale.clj"
+                            (str "(ns probe.gone-stale)\n"
+                                 "(defmacro twice [x] `(* 3 ~x))\n"))
+              (let [found (stale! c)]
+                (testing "the file whose disk copy is newer than what was read"
+                  (is (= ["gone_stale.clj"] (named-files found :changed))))
+                (testing "and, apart from it, the file that did not change and
+                is out of date all the same: it holds the expansion the old
+                macro made.  Two facts about two files, so two lists"
+                  (is (= ["uses_stale.clj"] (named-files found :stale)))))
+              (testing "and nothing was loaded by the asking, which is the
+              whole of what makes it a question: the old expansion is still
+              the one that runs"
+                (is (= "8" (value! r "(probe.uses-stale/four 2)"))))
+              (testing "loading them is what changes the answer, and it empties
+              it - what was asked about is what was loaded"
+                (is (= "[\"probe/gone_stale.clj\" \"probe/uses_stale.clj\"]"
+                       (reloaded! r)))
+                (is (= "18" (value! r "(probe.uses-stale/four 2)")))
+                (let [found (stale! c)]
+                  (is (= [] (named-files found :changed)))
+                  (is (= [] (named-files found :stale))))))
+            (testing "a process that kept no track of what it compiled has no
+            such question to be asked, and says so rather than answering that
+            there is nothing to do"
+              (is (string/includes? (or (refused (stale! c)) "")
+                                    "keep track of what it compiled"))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))

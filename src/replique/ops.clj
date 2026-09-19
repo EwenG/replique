@@ -186,6 +186,20 @@
 (defmethod protocol/handle :usages [_ msg]
   (analysis/usages (assoc msg :position (protocol/as-keyword (:position msg)))))
 
+;; What a #replique/reload would load, asked without loading anything.
+;;
+;; An op rather than a directive, which is the opposite of the reload it is
+;; about, and for the reason that decides it: nothing is compiled. There is
+;; no output to keep in order with a repl, nothing to interrupt, and no repl
+;; needed at all - it is a question about the process, asked the way every
+;; other question about it is.
+;;
+;; Two lists rather than one, because what changed and what that made stale
+;; are two different facts about a file - and the second is the half nobody
+;; can work out by looking at their buffers. See `replique.analysis/stale'.
+(defmethod protocol/handle :stale [_ _]
+  (analysis/stale))
+
 ;; The vars a namespace has, for a client to offer a choice of.
 ;;
 ;; Which is how a definition is taken away, because the var to remove is
