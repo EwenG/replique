@@ -14,12 +14,14 @@
   queue of eval requests, is what makes nested repls, (read-line) and
   debuggers work: *in* is a real stream the code being evaluated can read
   from."
-  (:require [clojure.string :as string]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as string]
             [replique.protocol :as protocol]
             [replique.server :as server]
             [replique.state :as state])
   (:import [clojure.lang LineNumberingPushbackReader]
-           [java.io IOException Writer]))
+           [java.io File IOException Reader Writer]
+           [java.util.jar JarFile]))
 
 (def ^:private default-file "NO_SOURCE_PATH")
 (def ^:private default-source "NO_SOURCE_FILE")
@@ -185,6 +187,115 @@
     (when-not existing (refer-clojure))
     nil))
 
+;;; Loading
+
+;; Evaluating a buffer form by form is not the same as loading the file those
+;; forms are in.  A file is loaded as one unit, its ns form first and its
+;; definitions in the order they are written, which is how the compiler will
+;; see it and how the application will see it - and that is what somebody
+;; means by "load this".  So a client asks for it in band, the way it asks for
+;; everything else the repl is to do rather than evaluate:
+;;
+;;   #replique/load {:file "/home/me/src/foo.clj"}
+;;
+;; Asked here rather than as an op on the control connection, where the rest
+;; of what an editor asks for goes.  What loading a file produces is the
+;; developer's own output - the compiler's reflection warnings, a "WARNING:
+;; foo already refers to" - and it belongs in the repl they asked from, in
+;; order with the result, rather than broadcast to every control connection as
+;; something the application happened to print.  Asked here it is also this
+;; repl's exception when it throws, with the phase clojure.main triages and a
+;; trace pointing into the file; and it is interruptible, because it goes
+;; through the same eval step as any other form.
+;;
+;; A namespace read out of a dependency is not a file: it is an entry inside a
+;; jar, and jumping into one and loading what is there is most of the point of
+;; being able to jump into one.  So the entry travels beside the jar:
+;;
+;;   #replique/load {:file "/home/me/.m2/.../clojure-1.12.5.jar"
+;;                   :entry "clojure/string.clj"}
+;;
+;; Which is how a file inside a jar is already written in this protocol - it
+;; is what the :symbol op answers where a definition was written, and that
+;; answer is exactly what an editor holds when somebody asks to load what they
+;; jumped into.  A url spelling the two of them together would be a second way
+;; to say the same thing, and one with escaping in it: a jar under a directory
+;; with a space in its name is a %20 in a url and is not in a path.
+(defrecord LoadDirective [file entry])
+
+(defn- load-directive [m]
+  (let [bad (fn [message]
+              (throw (ex-info message {:replique/error :invalid-load-directive})))]
+    ;; Before anything asks what it holds, and not as a branch of the cond
+    ;; below: contains? does not answer about a number, it throws about one,
+    ;; and the reader failure a client would then see is about the type of a
+    ;; hash map rather than about the directive it wrote.
+    (when-not (map? m)
+      (bad (str "#replique/load takes a map, got: " (pr-str m))))
+    (cond
+      (not (string? (:file m)))
+      (bad (str "#replique/load takes the :file to load, as a string, got: "
+                (pr-str (:file m))))
+
+      ;; Absent rather than nil is not distinguished: a client building the
+      ;; map out of what :symbol answered has an entry or has nothing, and
+      ;; both of those are what nothing means here.
+      (not (or (nil? (:entry m)) (string? (:entry m))))
+      (bad (str "The :entry of a #replique/load must be a string, got: "
+                (pr-str (:entry m))))
+
+      :else (->LoadDirective (:file m) (:entry m)))))
+
+(defn- load-reader!
+  "Load what RDR holds, as the code of PATH."
+  [^Reader rdr ^String path]
+  (clojure.lang.Compiler/load rdr path (.getName (File. path))))
+
+(defn- load-entry!
+  "Load ENTRY of the jar FILE.
+
+  Loaded as the entry rather than as the jar: the inner path is what the
+  compiler is given, which is what a stack trace shows and what the code being
+  loaded reads as *file*.
+
+  The jar is opened here rather than left to a jar: url, so that an entry that
+  is not in it is said to be missing by name.  What a url does about that is
+  throw a FileNotFoundException whose message is the whole url, which reads as
+  though the jar were the thing that could not be found."
+  [^String file ^String entry]
+  (with-open [jar (JarFile. (File. file))]
+    (let [found (or (.getEntry jar entry)
+                    (throw (ex-info (str "No entry " entry " in " file)
+                                    {:replique/error :invalid-load-directive})))]
+      ;; UTF-8 said rather than left to the platform: clojure source is UTF-8,
+      ;; and a jvm started under a latin-1 locale would otherwise read every
+      ;; accent in it as two characters.
+      (with-open [rdr (io/reader (.getInputStream jar found) :encoding "UTF-8")]
+        (load-reader! rdr entry)))))
+
+(defn load!
+  "Load what a #replique/load directive named, holding the require lock.
+
+  The lock is clojure.lang.RT/REQUIRE_LOCK, the one clojure's own
+  serialized-require takes, and holding it is what keeps two loads from
+  interleaving.  Nothing in clojure.core takes it for a plain require - a
+  process is assumed to have one repl in it - and replique is exactly what
+  makes that untrue: it accepts as many repl connections as an editor opens,
+  each evaluating on a thread of its own.  Two of them loading files that
+  require the same namespace is two threads interning into one namespace, and
+  the half-loaded namespace that comes out of it is a namespace nothing will
+  fix but a restart.
+
+  Held around the load and never around an evaluation.  A lock held for as
+  long as an arbitrary form takes to run is a lock that stops every
+  requiring-resolve in the process while somebody's (Thread/sleep 100000)
+  finishes, which is a worse bargain than the race it would close."
+  [{:keys [file entry]}]
+  (locking clojure.lang.RT/REQUIRE_LOCK
+    (if entry
+      (load-entry! file entry)
+      (clojure.core/load-file file))))
+
 ;; Written from the read step, which is above the frames it writes
 (declare prompt-frame)
 
@@ -257,6 +368,22 @@
                 ;; is not that form
                 (instance? NsDirective input)
                 (do (enter-ns! (:ns input)) (vreset! moved true) (recur))
+
+                ;; Answered with a form rather than done here, so that loading
+                ;; a file is evaluated the way everything else is: its output
+                ;; framed in order, its failure this repl's exception frame,
+                ;; its running interruptible, and one prompt after it.
+                ;;
+                ;; Where the code comes from is the file's own business - the
+                ;; compiler reads it from there, and binds *file* to it for as
+                ;; long as the load lasts - so a #replique/src above this one
+                ;; was about a form that never came. Dropped here rather than
+                ;; left pending, which would place the next form the client
+                ;; sends at a line of a file it has nothing to do with.
+                (instance? LoadDirective input)
+                (do (vreset! pending nil)
+                    (vreset! moved false)
+                    (list `load! {:file (:file input) :entry (:entry input)}))
 
                 ;; the way a socket repl is ended, as in clojure.core.server
                 (identical? :repl/quit input) request-exit
@@ -348,7 +475,8 @@
                  ;; project being worked on must keep working
                  (set! *data-readers* (assoc *data-readers*
                                              'replique/src #'source-directive
-                                             'replique/ns #'ns-directive)))
+                                             'replique/ns #'ns-directive
+                                             'replique/load #'load-directive)))
          :read (make-repl-read conn)
          :eval (fn [form] (interruptible conn #(eval form)))
          ;; The frame is built before the output is flushed: printing a

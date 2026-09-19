@@ -842,6 +842,239 @@
                  (disconnect ctrl)
                  (client/delete-recursively dir))))))
 
+
+;;; Loading
+
+(defn- write-file!
+  "Write SOURCE into DIR under NAME, and answer the path of it."
+  [dir name source]
+  (let [f (java.io.File. (str dir) (str name))]
+    (spit f source)
+    (.getPath f)))
+
+(defn- write-jar!
+  "Write SOURCE into a jar in DIR, at ENTRY, and answer the path of the jar."
+  [dir name entry source]
+  (let [f (java.io.File. (str dir) (str name))]
+    (with-open [out (java.util.jar.JarOutputStream. (java.io.FileOutputStream. f))]
+      (.putNextEntry out (java.util.jar.JarEntry. (str entry)))
+      (.write out (.getBytes (str source) "UTF-8"))
+      (.closeEntry out))
+    (.getPath f)))
+
+(defn- loaded!
+  "Send a load directive for M and read everything it produces."
+  [r m]
+  (eval! r (str "#replique/load " (pr-str m))))
+
+(deftest the-load-directive-loads-a-file
+  (testing "evaluating a buffer form by form is not the same as loading the
+  file those forms are in: a file is loaded as one unit, which is how the
+  compiler and the application will see it"
+    (with-process [info nil]
+      (let [dir (client/temp-dir)
+            r (repl-client info)]
+        (try
+          (let [path (write-file! dir "probe_loaded.clj"
+                                  (str "(ns probe.loaded)\n"
+                                       "(println \"loading\")\n"
+                                       "(defn answer [] 42)\n"))
+                frames (loaded! r {:file path})]
+            (testing "what the file printed is this repl's output, in order with
+            the result - which is why loading is asked for here rather than as
+            an op, where it would reach every control connection as something
+            the application happened to print"
+              (is (= "loading\n" (printed frames "out"))))
+            (testing "and one prompt follows it, as after any other form"
+              (is (= 1 (count (frames-tagged frames "prompt")))))
+            (testing "what it defined is in the process"
+              (is (= "42" (:value (frame-tagged (eval! r "(probe.loaded/answer)") "ret"))))))
+          (finally (disconnect r) (client/delete-recursively dir)))))))
+
+(deftest a-file-is-loaded-under-the-require-lock
+  (testing "the lock clojure's own serialized-require takes. Nothing in
+  clojure.core takes it for a plain require - a process is assumed to have one
+  repl in it - and replique accepting as many repl connections as an editor
+  opens is exactly what makes that not enough"
+    (with-process [info nil]
+      (let [dir (client/temp-dir)
+            r (repl-client info)]
+        (try
+          (let [path (write-file!
+                      dir "probe_locked.clj"
+                      (str "(ns probe.locked)\n"
+                           "(def held (Thread/holdsLock clojure.lang.RT/REQUIRE_LOCK))\n"))]
+            (loaded! r {:file path})
+            (is (= "true" (:value (frame-tagged (eval! r "probe.locked/held") "ret"))))
+            (testing "and it is let go of afterwards: a lock held for as long as
+            an arbitrary form takes to run would stop every requiring-resolve in
+            the process"
+              (is (= "false"
+                     (:value (frame-tagged
+                              (eval! r "(Thread/holdsLock clojure.lang.RT/REQUIRE_LOCK)")
+                              "ret"))))))
+          (finally (disconnect r) (client/delete-recursively dir)))))))
+
+(deftest the-load-directive-loads-a-jar-entry
+  (testing "a namespace read out of a dependency is an entry inside a jar, and
+  jumping into one and loading what is there is most of the point of being able
+  to jump into one. The entry travels beside the jar, which is how a file
+  inside a jar is written everywhere else in this protocol"
+    (with-process [info nil]
+      (let [dir (client/temp-dir)
+            r (repl-client info)]
+        (try
+          (let [jar (write-jar! dir "probe.jar" "probe/jarred.clj"
+                                (str "(ns probe.jarred)\n"
+                                     "(def where *file*)\n"
+                                     "(defn answer [] :from-a-jar)\n"))]
+            (loaded! r {:file jar :entry "probe/jarred.clj"})
+            (is (= ":from-a-jar"
+                   (:value (frame-tagged (eval! r "(probe.jarred/answer)") "ret"))))
+            (testing "loaded as the entry rather than as the jar: the inner path
+            is what a stack trace shows and what the code reads as *file*"
+              (is (= "\"probe/jarred.clj\""
+                     (:value (frame-tagged (eval! r "probe.jarred/where") "ret")))))
+            (testing "and an entry the jar does not hold is said to be missing
+            by name, rather than reported as though the jar were what could not
+            be found"
+              (let [f (frame-tagged (loaded! r {:file jar :entry "probe/nope.clj"})
+                                    "exception")]
+                (is (string/includes? (:message f) "No entry probe/nope.clj")))))
+          (finally (disconnect r) (client/delete-recursively dir)))))))
+
+(deftest a-path-is-a-path-rather-than-a-url
+  (testing "a jar under a directory with a space in its name is a %20 in a url
+  and is not in a path, and the escaping a url would need is escaping neither
+  side has to get right"
+    (with-process [info nil]
+      (let [dir (str (client/temp-dir) java.io.File/separator "a directory")
+            r (repl-client info)]
+        (try
+          (.mkdirs (java.io.File. dir))
+          (let [path (write-file! dir "probe_spaced.clj"
+                                  "(ns probe.spaced)\n(defn answer [] :spaced)\n")]
+            (is (string/includes? path " "))
+            (loaded! r {:file path})
+            (is (= ":spaced" (:value (frame-tagged (eval! r "(probe.spaced/answer)") "ret"))))
+            (testing "and a jar under it too"
+              (let [jar (write-jar! dir "probe spaced.jar" "probe/spaced_jar.clj"
+                                    "(ns probe.spaced-jar)\n(defn answer [] :spaced-jar)\n")]
+                (loaded! r {:file jar :entry "probe/spaced_jar.clj"})
+                (is (= ":spaced-jar"
+                       (:value (frame-tagged (eval! r "(probe.spaced-jar/answer)") "ret")))))))
+          (finally (disconnect r) (client/delete-recursively dir)))))))
+
+(deftest a-file-that-throws-is-this-repl-s-exception
+  (testing "which is the other half of why loading is asked for here: it comes
+  back as this repl's exception frame, with the phase clojure.main triages and
+  a trace pointing into the file"
+    (with-process [info nil]
+      (let [dir (client/temp-dir)
+            r (repl-client info)]
+        (try
+          (let [path (write-file! dir "probe_boom.clj"
+                                  (str "(ns probe.boom)\n"
+                                       "(defn answer [] 1)\n"
+                                       "(/ 1 0)\n"))
+                frames (loaded! r {:file path})
+                f (frame-tagged frames "exception")]
+            (is (some? f))
+            (is (= "execution" (:phase f)))
+            (testing "the message is the one a terminal repl would print, and it
+            names the line of the file that threw - which is what an editor
+            shows, and what it can put point at"
+              (is (string/includes? (:message f) "Divide by zero"))
+              (is (string/includes? (:message f) "probe_boom.clj:3")))
+            (testing "and the trace points into the file rather than into the
+            loading"
+              (is (some #(string/includes? % "probe_boom.clj:3")
+                        (get-in f [:exception :cause :trace]))))
+            (testing "and the repl is still usable"
+              (is (= "2" (:value (frame-tagged (eval! r "(+ 1 1)") "ret"))))))
+          (finally (disconnect r) (client/delete-recursively dir)))))))
+
+(deftest a-load-directive-that-cannot-be-used-says-why
+  (with-process [info nil]
+    (let [r (repl-client info)
+          refused (fn [code] (:message (frame-tagged (eval! r code) "exception")))]
+      (try
+        (testing "it takes a map - and is refused as the directive it is,
+        rather than as the type of a hash map, which is what asking a number
+        what it contains would report"
+          (let [f (frame-tagged (eval! r "#replique/load 1") "exception")]
+            (is (= "read-source" (:phase f)))
+            (is (string/includes? (:message f) "#replique/load takes a map"))))
+        (testing "naming something to load, spelt as a string"
+          (is (string/includes? (refused "#replique/load {}") "the :file to load"))
+          (is (string/includes? (refused "#replique/load {:file 1}") "the :file to load")))
+        (testing "and an entry, where there is one, spelt as a string too"
+          (is (string/includes? (refused "#replique/load {:file \"a.jar\" :entry 1}")
+                                ":entry of a #replique/load must be a string"))
+          (testing "while none at all is a file, which is what an editor holds
+          for code that is not inside a jar"
+            (is (string/includes? (refused "#replique/load {:file \"no_such_file.clj\"}")
+                                  "no_such_file.clj"))))
+        (testing "the repl survives all of it"
+          (is (= "2" (:value (frame-tagged (eval! r "(+ 1 1)") "ret")))))
+        (finally (disconnect r))))))
+
+(deftest a-source-directive-above-a-load-is-dropped
+  (testing "where the code comes from is the file's own business - the
+  compiler reads it from there - so a #replique/src above a load was about a
+  form that never came, and leaving it pending would place the next form the
+  client sends at a line of a file it has nothing to do with"
+    (with-process [info nil]
+      (let [dir (client/temp-dir)
+            r (repl-client info)]
+        (try
+          (let [path (write-file! dir "probe_placed.clj"
+                                  "(ns probe.placed)\n(defn answer [] 1)\n")]
+            (send! r (str "#replique/src {:file \"/home/me/elsewhere.clj\" :line 99}\n"
+                          "#replique/load " (pr-str {:file path})))
+            (recv-until r "prompt")
+            (testing "the very next form, which is the one a directive left
+            pending would have been applied to"
+              (is (= "\"NO_SOURCE_PATH\""
+                     (:value (frame-tagged (eval! r "*file*") "ret")))))
+            (testing "while the file placed its own definitions, from where it is"
+              (is (= (str "\"" path "\"")
+                     (:value (frame-tagged (eval! r "(:file (meta #'probe.placed/answer))")
+                                           "ret"))))))
+          (finally (disconnect r) (client/delete-recursively dir)))))))
+
+(deftest a-namespace-directive-above-a-load-is-answered-by-the-load
+  (testing "a bare #replique/ns is answered with a prompt of its own, since
+  nothing else would say where the repl went. One with something after it is
+  not: the form's own prompt says that, and two prompts for one evaluation is
+  what a client cannot read"
+    (with-process [info nil]
+      (let [dir (client/temp-dir)
+            r (repl-client info)]
+        (try
+          (let [path (write-file! dir "probe_after_ns.clj"
+                                  "(ns probe.after-ns)\n(defn answer [] 1)\n")]
+            ;; With the blank line a file has between two top level forms,
+            ;; which is what makes this reachable: a blank line is what a bare
+            ;; move is acknowledged by, so one arriving after a load that was
+            ;; already answered is what a directive left un-acknowledged turns
+            ;; into a second prompt.
+            (send! r (str "#replique/ns clojure.string\n"
+                          "#replique/load " (pr-str {:file path}) "\n"
+                          "\n"
+                          "(ns-name *ns*)"))
+            (let [frames (recv-until r "prompt")]
+              (is (= 1 (count (frames-tagged frames "prompt"))))
+              (testing "and the load was answered by its own prompt, not by the
+              directive's"
+                (is (= 1 (count (frames-tagged frames "ret"))))))
+            (testing "so the form after the blank line is the next thing
+            answered, and the repl is where the directive put it"
+              (let [frames (recv-until r "prompt")]
+                (is (= "clojure.string" (:value (frame-tagged frames "ret"))))
+                (is (= 1 (count (frames-tagged frames "prompt")))))))
+          (finally (disconnect r) (client/delete-recursively dir)))))))
+
 ;;; Lifecycle
 
 (deftest the-repl-ends-when-the-client-goes

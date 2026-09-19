@@ -157,6 +157,103 @@
                                                      (qualified-name var))))))
                            {} asked)}))
 
+;; Taking a definition away.
+;;
+;; Unmapping a var is not `ns-unmap', because a var is rarely in one place. One
+;; that was referred is in every namespace that referred it, under whatever
+;; name that namespace referred it as - so unmapping it where it was defined
+;; leaves every caller still calling it. That is the long repl's oldest
+;; disease: a definition is renamed, the old name goes on resolving to the var
+;; that is still there, the repl agrees with itself all afternoon, and the
+;; build is the first thing to disagree.
+;;
+;; An op rather than something to evaluate. It produces no output, it is
+;; asked by the editor rather than typed by somebody, and what it did - which
+;; namespaces held the var, and under what names - is an answer rather than a
+;; printed value. It also stays out of the repl's *1, which a form that
+;; removed a var would not.
+;;
+;; Removing a var of clojure.core is not refused. It unmaps it from every
+;; namespace that refers it, which is nearly all of them, and there is no
+;; undoing it short of restarting - but the client is the developer, the name
+;; had to be written out in full to get here, and a process somebody can break
+;; is the price of a process somebody can change.
+
+(defn- var-to-remove
+  "The var a :remove-var names.
+
+  Named where it lives rather than where it is written, which is why the name
+  must be qualified. The name at point in a buffer means whatever the
+  namespace around it maps, and for `map' or `str' that is a var of
+  clojure.core - so \"remove the definition I am pointing at\" must not be a
+  way to unmap clojure.core from the process. Turning what is at point into
+  the name of the var it came from is the `:symbol' op's job, which is the one
+  that reads a buffer.
+
+  Looked up in the interns of the namespace the name is qualified by, rather
+  than resolved. Both refuse a name that a namespace only refers - a referred
+  var is not interned there - but `resolve' asks the namespace the calling
+  thread happens to be in what the qualifier means, and answers through an
+  alias of it. The thread answering an op is in whatever namespace it was left
+  in, which has nothing to do with the request, and a message must mean the
+  same thing whichever thread reads it.
+
+  A name that is interned nowhere is refused rather than answered with
+  nothing done. `:spellings' leaves such a name out, because it asks about
+  several and one the process has not loaded is a fact about the process;
+  this asks for one thing to be done to one var, and a request that found
+  nothing to do has not been carried out."
+  ^clojure.lang.Var [msg]
+  (let [written (or (protocol/as-name (:var msg))
+                    (throw (ex-info (str "The :remove-var op needs the :var to remove, as a "
+                                         "qualified name, got: " (pr-str (:var msg)))
+                                    {:replique/error :invalid-message})))
+        named (symbol written)]
+    (when-not (namespace named)
+      (throw (ex-info (str "A var must be named by a qualified name, got: " (pr-str (:var msg)))
+                      {:replique/error :invalid-message})))
+    (or (when-let [home (find-ns (symbol (namespace named)))]
+          (get (ns-interns home) (symbol (name named))))
+        (throw (ex-info (str "No var is interned as " written)
+                        {:replique/error :unknown-var})))))
+
+(defn- unmap-everywhere!
+  "Unmap VAR wherever it is mapped, and say where that was.
+
+  One sweep over what every namespace maps, rather than the namespace it was
+  interned in plus the `ns-refers' of the others: the interned name is in the
+  `ns-map' of its own namespace, a refer is in the `ns-map' of the namespace
+  that referred it, and a refer under another name is in there under that
+  name. One rule finds all three, and finds each of them by the name it is
+  actually written as - which is also what the answer has to say, because the
+  namespace that referred it as something else is the one whose code will not
+  compile until it is edited."
+  [^clojure.lang.Var the-var]
+  (reduce (fn [acc ns]
+            (let [written (->> (ns-map ns)
+                               (keep (fn [[sym mapped]] (when (identical? mapped the-var) sym)))
+                               sort
+                               vec)]
+              (if (seq written)
+                (do (run! #(ns-unmap ns %) written)
+                    (assoc acc (str (ns-name ns)) (mapv str written)))
+                acc)))
+          {} (all-ns)))
+
+(defmethod protocol/handle :remove-var [_ msg]
+  ;; Under the require lock, which is the one `replique.repl/load!' holds and
+  ;; clojure's own serialized-require takes. Without it a load running on
+  ;; another connection can intern the var again halfway through the sweep,
+  ;; and leave it mapped in every namespace this had not reached yet - which
+  ;; is the state this op exists to get out of, arrived at by asking for it.
+  (locking clojure.lang.RT/REQUIRE_LOCK
+    (let [the-var (var-to-remove msg)]
+      {:removed (qualified-name the-var)
+       ;; Always at least the namespace it was interned in, which is where it
+       ;; was found; the rest are the namespaces that referred it, and they
+       ;; are the ones whose code will not compile until somebody edits it.
+       :unmapped (unmap-everywhere! the-var)})))
+
 ;; Reading the classpath again. It is read when the process starts and kept,
 ;; since walking every jar and every directory of it behind a keystroke is not
 ;; work worth doing - so a file written after that is not found until this is
