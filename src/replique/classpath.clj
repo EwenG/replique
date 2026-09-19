@@ -309,7 +309,7 @@
 ;; Read here, which is process startup: replique.control loads the ops and the
 ;; ops load this. A first completion would otherwise wait a fifth of a second
 ;; for what a process that answers completions was always going to read.
-(defonce ^:private scanned (atom (read-classpath)))
+(defonce ^:private scanned (atom {:reading 0 :names (read-classpath)}))
 
 (defn scan
   "The names on the classpath, as the kinds of name they can be asked for.
@@ -321,7 +321,22 @@
 
   What was read when the process started, until `rescan!' says otherwise."
   []
-  @scanned)
+  (:names @scanned))
+
+(defn reading
+  "Which reading of the classpath this is.
+
+  A number that changes when the classpath is read again and never otherwise,
+  for something holding an answer that was worked out from a reading and
+  needing to know whether it was worked out from this one - see
+  `replique.analysis/stale'.
+
+  A number rather than the reading itself, which is what there is to compare
+  otherwise: the reading is a hundred thousand names, and keeping one to hold
+  the next up against is keeping a copy of the classpath to answer a question
+  about whether it moved."
+  []
+  (:reading @scanned))
 
 (defn directories
   "The entries of the classpath that are directories, as absolute paths.
@@ -348,6 +363,12 @@
   (:directories (scan)))
 
 (defn rescan!
-  "Read the classpath again, and return what is on it now."
+  "Read the classpath again, and return what is on it now.
+
+  The names and the number of the reading are set together, in one swap,
+  because what the number is for is saying which names these are - and two
+  writes would leave a reader free to see the new number beside the old names
+  and conclude that nothing had happened."
   []
-  (reset! scanned (read-classpath)))
+  (let [names (read-classpath)]
+    (:names (swap! scanned (fn [was] {:reading (inc (:reading was)) :names names})))))

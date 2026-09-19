@@ -431,6 +431,28 @@
             (disconnect c)
             (client/delete-recursively root)))))))
 
+(defn- jar-on-classpath!
+  "A jar holding ENTRIES, put on the classpath behind everything on it, and
+  the directory it was written into.
+
+  Behind, which is the whole of what makes it worth writing: the loader hands
+  back the first entry of the classpath that holds a name, so a directory
+  added before this one wins the moment a file of that name is written into
+  it. A jar nothing could ever come before is a jar there is nothing to say
+  about."
+  [entries]
+  (let [dir (client/temp-dir)
+        path (str (java.io.File. (str dir) "library.jar"))]
+    (with-open [out (java.util.jar.JarOutputStream. (java.io.FileOutputStream. path))]
+      (doseq [[entry source] entries]
+        (.putNextEntry out (java.util.jar.JarEntry. ^String entry))
+        (.write out (.getBytes ^String source "UTF-8"))
+        (.closeEntry out)))
+    (.addURL state/class-loader (.toURL (.toURI (java.io.File. path))))
+    (state/adopt-class-loader!)
+    (classpath/rescan!)
+    dir))
+
 (defn- stale!
   "Ask what would be loaded, without anything being loaded."
   [c]
@@ -491,6 +513,92 @@
             there is nothing to do"
               (is (string/includes? (or (refused (stale! c)) "")
                                     "keep track of what it compiled"))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
+(deftest a-file-written-over-one-in-a-jar-is-seen-once-the-classpath-is-read-again
+  (testing "a file inside a jar is not a file anybody edits, so whether it is
+  one is asked once and remembered - which is most of the work of asking what
+  changed, on a codebase whose model is mostly library namespaces. And it
+  stops being true the moment somebody writes a file of that name into a
+  directory earlier on the classpath, which is how a library's namespace is
+  patched"
+    (with-process [info nil]
+      (let [root (source-root!)
+            jar (jar-on-classpath! {"probe/library.clj"
+                                    "(ns probe.library)\n(defn value [] 1)\n"})
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (load! r (written-file! root "probe/uses_library.clj"
+                                  (str "(ns probe.uses-library\n"
+                                       "  (:require [probe.library :as l]))\n"
+                                       "(defn twice [] (* 2 (l/value)))\n")))
+          (is (= "2" (value! r "(probe.uses-library/twice)")))
+          (if (analysing? c)
+            (do
+              (testing "the file in the jar was compiled on the way and is in
+              the model, and nothing about it has changed"
+                (let [found (stale! c)]
+                  (is (= [] (named-files found :changed)))
+                  (is (= [] (named-files found :stale)))))
+              (written-file! root "probe/library.clj"
+                             "(ns probe.library)\n(defn value [] 5)\n")
+              (testing "and writing a file over it changes nothing yet - the
+              same rule the rest of the classpath is read by, which is that a
+              classpath this process has not read is one it says nothing new
+              about.  See `replique.classpath/directories'"
+                (is (= [] (named-files (stale! c) :changed))))
+              (request! c {:op :update-classpath :id 1})
+              (testing "reading it again is what says otherwise: the name that
+              was answered by a jar is answered by a file now, and a file that
+              this process has never read is a file that changed"
+                (is (= ["library.clj"] (named-files (stale! c) :changed))))
+              (testing "and what is loaded is the file, not the entry it was
+              written over"
+                (is (= "[\"probe/library.clj\"]" (reloaded! r)))
+                (is (= "10" (value! r "(probe.uses-library/twice)")))))
+            (testing "a process that recorded nothing has nothing to say about
+            it either way"
+              (is (string/includes? (or (refused (stale! c)) "")
+                                    "keep track of what it compiled"))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)
+            (client/delete-recursively jar)))))))
+
+(deftest a-file-that-is-gone-and-comes-back-is-loaded-again
+  (testing "which is a branch changed under a running process: the file the
+  model holds is nowhere for a moment, and then it is somewhere again with
+  something else in it.  A name nothing answers to is nothing to remember -
+  what was asked was where a file is, and the answer was that it is not
+  anywhere yet"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (load! r (written-file! root "probe/vanishing.clj"
+                                  "(ns probe.vanishing)\n(defn value [] 1)\n"))
+          (is (= "1" (value! r "(probe.vanishing/value)")))
+          (if (analysing? c)
+            (do
+              (.delete (java.io.File. (str root) "probe/vanishing.clj"))
+              (testing "a file that is not there is not a file to load again -
+              loading it would only fail"
+                (is (= [] (named-files (stale! c) :changed))))
+              (edited-file! root "probe/vanishing.clj"
+                            "(ns probe.vanishing)\n(defn value [] 7)\n")
+              (testing "and one that is there again is one this process has
+              never read"
+                (is (= ["vanishing.clj"] (named-files (stale! c) :changed)))
+                (is (= "[\"probe/vanishing.clj\"]" (reloaded! r)))
+                (is (= "7" (value! r "(probe.vanishing/value)")))))
+            (is (string/includes? (or (refused (stale! c)) "")
+                                  "keep track of what it compiled")))
           (finally
             (disconnect r)
             (disconnect c)

@@ -73,6 +73,7 @@
          :stale-reload! (named 'stale-reload!)
          :changed-files (named 'changed-files)
          :stale-files (named 'stale-files)
+         :classpath-changed! (named 'classpath-changed!)
          :find-usages (named 'find-usages)
          :find-keyword-usages (named 'find-keyword-usages)
          :find-class-usages (named 'find-class-usages)})
@@ -117,6 +118,35 @@
                          ", which does not " what ". Start it on a clojure whose "
                          "compiler does - see clojure.analysis.")
                     {:replique/error :no-analysis}))))
+
+(def ^:private told-of
+  "Which reading of the classpath the analysis has been told about."
+  (atom nil))
+
+(defn- tell-of-the-classpath!
+  "Tell the analysis when the classpath has been read again since it heard.
+
+  What it does with being told is forget which of the files it holds were
+  read out of a jar. It skips those when it is asked what changed - a file
+  inside a jar is not a file anybody edits, and resolving every one of them
+  to find that out again is most of the work of asking - and a jar is only
+  where a file is until a directory earlier on the classpath holds one by the
+  same name. Which is a thing somebody does on purpose: a file written over a
+  library's namespace is a file they then want loaded instead of it.
+
+  Told rather than asked, because what the classpath is doing is this
+  process's business and not its compiler's. Told by a number rather than
+  every time, because forgetting costs the classpath being asked about every
+  file it forgot, and paying that on each asking would be paying for the
+  saving.
+
+  Called where the refusal has already been made, so there is a subsystem to
+  tell."
+  []
+  (let [reading (classpath/reading)]
+    (when-not (= reading @told-of)
+      (reset! told-of reading)
+      ((of :classpath-changed!)))))
 
 ;;; Naming a file the way the classpath does
 
@@ -279,6 +309,7 @@
   still changed. Asking again carries on from where this stopped."
   []
   (refuse-unless-available! "keep track of what it compiled")
+  (tell-of-the-classpath!)
   ((of :stale-reload!)))
 
 (defn- by-name
@@ -317,12 +348,17 @@
   Disjoint, and together they are what a reload would load. The second is
   the half nothing but the compiler can know.
 
+  A file a jar answered to is in neither list until the classpath has been
+  read again, which is the one thing here that is not a fact about the disk -
+  see `tell-of-the-classpath!'.
+
   Both are read off one reading of the disk: the files that changed are what
   the stale ones are worked out from, so asking for them separately would be
   asking the filesystem about every analysed file twice, and would leave the
   two answers free to disagree about a file saved in between."
   []
   (refuse-unless-available! "keep track of what it compiled")
+  (tell-of-the-classpath!)
   (let [changed ((of :changed-files))]
     {:changed (by-name changed)
      :stale (by-name (remove changed ((of :stale-files) changed)))}))
