@@ -249,10 +249,17 @@
             r (repl-client info)
             c (control-client info)]
         (try
-          (load! r (written-file! outside "loose.clj"
-                                  (str "(ns probe.loose)\n"
-                                       "(defn twice [x] (* 2 x))\n"
-                                       "(defn four [x] (twice (twice x)))\n")))
+          (let [said (client/printed
+                      (load! r (written-file! outside "loose.clj"
+                                              (str "(ns probe.loose)\n"
+                                                   "(defn twice [x] (* 2 x))\n"
+                                                   "(defn four [x] (twice (twice x)))\n")))
+                      "err")]
+            (when (analysing? c)
+              (testing "and says it was not analysed, where this process could
+              have analysed it: the fallback is otherwise invisible until
+              something is asked about the file and answered with nothing"
+                (is (string/includes? said "without analysing it")))))
           (testing "loaded, which is what was asked for"
             (is (= "8" (-> (eval! r "(probe.loose/four 2)")
                            (client/frame-tagged "ret")
@@ -264,6 +271,93 @@
             (disconnect r)
             (disconnect c)
             (client/delete-recursively outside)))))))
+
+(defn- linked!
+  "Make LINK a symbolic link to TARGET, and answer LINK.
+
+  The two shapes a link takes around a project are both here: a link to a
+  source tree, which is how one is worked on under a name that outlives the
+  worktree behind it, and a link to one file inside a source tree, which is
+  how a file is shared between several of them."
+  [link target]
+  (let [^java.io.File f (java.io.File. ^String (str link))]
+    (.mkdirs (.getParentFile f))
+    (java.nio.file.Files/createSymbolicLink
+     (.toPath f)
+     (java.nio.file.Paths/get (str target) (make-array String 0))
+     (make-array java.nio.file.attribute.FileAttribute 0))
+    (str link)))
+
+(defn- probe-clj
+  "A file naming the namespace NAME, with one function used twice in another."
+  [name]
+  (str "(ns probe." name ")\n"
+       "(defn twice [x] (* 2 x))\n"
+       "(defn four [x] (twice (twice x)))\n"))
+
+(deftest a-project-reached-through-a-link-is-named-the-way-the-classpath-names-it
+  (testing "the directory a process was started in is resolved by the kernel
+  before the process ever sees it, and an editor naming a file resolves
+  nothing - so a project worked on through a link to it is one whose sources
+  the process holds under a directory it spells differently. Every file loaded
+  from that editor would be a file the classpath cannot name, and every load
+  would record nothing at all: silently, since the code still loads"
+    (with-process [info nil]
+      (let [root (source-root!)
+            elsewhere (client/temp-dir)
+            link (linked! (java.io.File. (str elsewhere) "link") root)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (written-file! root "probe/linked.clj" (probe-clj "linked"))
+          (load! r (str (java.io.File. ^String link "probe/linked.clj")))
+          (testing "loaded"
+            (is (= "8" (-> (eval! r "(probe.linked/four 2)")
+                           (client/frame-tagged "ret")
+                           :value))))
+          (when (analysing? c)
+            (testing "and recorded, both calls of it"
+              (is (= [["linked.clj" 3 17 "probe.linked"]
+                      ["linked.clj" 3 24 "probe.linked"]]
+                     (at (usages! c "probe.linked" "twice"))))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively elsewhere)
+            (client/delete-recursively root)))))))
+
+(deftest a-file-linked-into-a-source-root-is-named-under-that-root
+  (testing "the other way a link stands between a name and a file, and the
+  reason the two names are tried in the order they are: this file is under a
+  source root by the name it was opened and loaded under, and somewhere else
+  entirely by the name it resolves to. Resolving first would lose it - which
+  is how one file is shared between several worktrees"
+    (with-process [info nil]
+      (let [root (source-root!)
+            elsewhere (client/temp-dir)
+            real (written-file! elsewhere "shared.clj" (probe-clj "shared"))
+            link (linked! (java.io.File. (str root) "probe/shared.clj") real)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (load! r link)
+          (testing "loaded"
+            (is (= "8" (-> (eval! r "(probe.shared/four 2)")
+                           (client/frame-tagged "ret")
+                           :value))))
+          (when (analysing? c)
+            (testing "and recorded under the name the classpath gives it, which
+            is the one it was loaded under - a namespace of its own, so that
+            what the model holds about it was put there by this load and not by
+            another test's"
+              (is (= [["shared.clj" 3 17 "probe.shared"]
+                      ["shared.clj" 3 24 "probe.shared"]]
+                     (at (usages! c "probe.shared" "twice"))))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively elsewhere)
+            (client/delete-recursively root)))))))
 
 (deftest a-source-root-is-found-once-the-classpath-has-been-read-again
   (testing "which entries of the classpath are directories comes out of the

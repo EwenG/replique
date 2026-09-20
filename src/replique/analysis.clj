@@ -159,6 +159,11 @@
   ^File [^File file]
   (try (.getCanonicalFile file) (catch Exception _ nil)))
 
+(defn- canonical-path
+  "PATH with every symbolic link and every dot resolved away, or nil."
+  ^Path [^Path path]
+  (when-let [^File f (canonical (.toFile path))] (.toPath f)))
+
 (defn- same-file? [^File a ^File b]
   (when-let [a (canonical a)]
     (= a (canonical b))))
@@ -179,12 +184,45 @@
     (and (= "file" (.getProtocol url))
          (same-file? (File. (.toURI url)) (.toFile path)))))
 
+(defn- named-under
+  "What the directories ROOTS call the file at TARGET, or nil.
+
+  The first root holding it wins, and the name it gives is then held up
+  against the classpath - a root can hold a file and still not be where that
+  name is read from, see `reachable-as?'."
+  [^Path target roots]
+  (some (fn [^Path root]
+          (when (and (.startsWith target root) (not= target root))
+            (let [resource (string/join "/" (map str (.relativize root target)))]
+              (when (reachable-as? resource target) resource))))
+        roots))
+
 (defn source-path
   "What the classpath calls the file at PATH, or nil when it calls it nothing.
 
   The path of the file under the classpath directory it is in, written with
   slashes - app/util.clj - which is the name the compiler records while it
   reads that file and the name every span out of it carries.
+
+  Asked twice where it has to be, because a path is a name for a file and not
+  the file, and a link puts two names on one file. First as the two were
+  written, then with both of them resolved.
+
+  Written first, because resolving is not the safer answer: a file linked
+  INTO a source tree - which is how one file is shared between several
+  worktrees - is under a source root by the name it was opened and loaded
+  under, and somewhere else entirely by the name it resolves to. Resolving
+  that one loses it.
+
+  Resolved second, for the tree reached THROUGH a link. The directory a
+  process was started in is resolved by the kernel before the process ever
+  sees it, and an editor naming a file resolves nothing - so a project worked
+  on through a link to it is a project whose every file the classpath cannot
+  name, and every load from that editor records nothing at all. Which is a
+  thing to be got right rather than to be quiet about: the second question is
+  only asked when the first found nothing, where the answer today is no
+  analysis, and it costs one resolution per source root of a load that was
+  going to be given up on.
 
   Nothing for a file that is under no directory of the classpath, which is an
   ordinary thing for a file to be: a scratch buffer, a file in a directory a
@@ -195,11 +233,9 @@
   (let [target (try (.normalize (.toAbsolutePath (Paths/get path (make-array String 0))))
                     (catch Exception _ nil))]
     (when target
-      (some (fn [^Path root]
-              (when (and (.startsWith target root) (not= target root))
-                (let [resource (string/join "/" (map str (.relativize root target)))]
-                  (when (reachable-as? resource target) resource))))
-            (classpath/directories)))))
+      (or (named-under target (classpath/directories))
+          (when-let [real (canonical-path target)]
+            (named-under real (keep canonical-path (classpath/directories))))))))
 
 (defn entry-path
   "What the classpath calls ENTRY of the jar at FILE, or nil.
@@ -220,6 +256,27 @@
 
 ;;; Loading
 
+(defn- not-analysed!
+  "Say that the file at PATH was loaded without being recorded, and why.
+
+  Only where this process could have recorded it, since there is nothing to
+  tell somebody running a clojure that records nothing: the ops that would
+  have read it refuse themselves and say so.
+
+  Said at all because the fallback is otherwise invisible. The file loads,
+  the code runs, and what is missing is an answer nobody has asked for yet -
+  so the first sign of it is a name reported as used nowhere, long after the
+  load that would have explained it. A file under no directory of the
+  classpath is an ordinary thing to load, and this is one line about it
+  rather than a refusal.
+
+  On the error stream, which a repl shows apart from what a program printed:
+  it is a note about the load rather than something the file wrote."
+  [^String path]
+  (binding [*out* *err*]
+    (println (str "Loaded " path " without analysing it: no directory of the "
+                  "classpath holds it, so nothing it defines or uses was recorded."))))
+
 (defn load!
   "Load the file at PATH, analysed where this process can analyse it.
 
@@ -237,7 +294,10 @@
 
   Loaded through the classpath where the file can be named that way, and by
   its path where it cannot - and the second is the plain `load-file' this
-  always did, right down to which file it reads. The difference the first one
+  always did, right down to which file it reads. Said rather than done
+  quietly, where this process could have analysed it: a load that records
+  nothing looks exactly like one that records everything until something is
+  asked about the file - see `not-analysed!'. The difference the first one
   makes to anything but the model is `*file*': a var defined by a load
   through the classpath carries app/util.clj where one defined by a load from
   a path carries the path. Both are what `replique.symbol/source-of' reads,
@@ -252,7 +312,9 @@
         source (when analyse (source-path path))]
     (if source
       (analyse source)
-      (clojure.core/load-file path))))
+      (let [value (clojure.core/load-file path)]
+        (when analyse (not-analysed! path))
+        value))))
 
 (defn load-entry!
   "Load ENTRY of the jar at FILE through the classpath, analysed, or nil.
