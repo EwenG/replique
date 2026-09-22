@@ -394,3 +394,52 @@
         (send! r ":repl/quit")
         (is (= :eof (recv r)))
         (finally (disconnect r))))))
+
+;;; Starting on a namespace
+
+(deftest test-a-repl-can-be-started-on-a-namespace
+  (when (compiling?)
+    ;; What master's `(cljs-repl 'my.app)' was for, and the half of it that
+    ;; matters is not the compile: a repl started on a program is one whose
+    ;; program is IN THE RUNTIME, so the first thing you ask about it answers.
+    (with-repl [r {:dialect :cljs :target :node :main "rt.main-program"}]
+      (testing "nothing is framed for it - there was no form, so there is no ret"
+        (is (= "prompt" (:tag (:prompt r)))))
+      (testing "and it does not move the repl, which :ns would be for"
+        (is (= "cljs.user" (:ns (:prompt r)))))
+      (testing "but the program is loaded, with no require typed"
+        (is (= "4" (:value (frame-tagged (eval! r "(rt.main-program/twice 2)")
+                                         "ret"))))
+        (is (= ":yes" (:value (frame-tagged
+                               (eval! r "rt.main-program/program-was-loaded")
+                               "ret"))))))))
+
+(deftest test-a-main-that-cannot-be-loaded-is-said-before-the-first-prompt
+  (when (compiling?)
+    ;; The failure has somewhere to go and has to go there: a repl whose :main
+    ;; silently did nothing is a repl standing in a program that is not loaded.
+    (let [r (cljs-repl! {:dialect :cljs :target :node :main "rt.no-such-program"})]
+      (try
+        ;; `repl-client' reads the one frame after the reply and calls it the
+        ;; prompt. Here that frame is the exception and the prompt is behind it,
+        ;; which is the ordering under test.
+        (is (= "exception" (:tag (:prompt r))))
+        ;; named as the file it looked for, which is what the compile knows
+        (is (string/includes? (:message (:prompt r)) "rt/no_such_program.cljs")
+            (:message (:prompt r)))
+        (is (= "prompt" (:tag (recv r))))
+        (testing "and the repl is a repl anyway"
+          (is (= "3" (:value (frame-tagged (eval! r "(+ 1 2)") "ret")))))
+        (finally (disconnect r))))))
+
+(deftest test-a-main-that-is-not-a-name-is-refused-by-the-handshake
+  (when (compiling?)
+    ;; Answered where every other malformed field is answered, rather than as a
+    ;; failure to load something that was never a namespace.
+    (let [r (repl-client @the-process
+                         {:dialect :cljs :target :node :main 42} slow)]
+      (try
+        (is (= "error" (:tag (:hello r))))
+        (is (= "invalid-main" (:error (:hello r))))
+        (is (string/includes? (:message (:hello r)) "42"))
+        (finally (disconnect r))))))

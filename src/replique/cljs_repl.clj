@@ -258,68 +258,100 @@
     (flush-output!)
     (protocol/write-frame! conn f)))
 
+(defn- load-main!
+  "Require `main' before the first prompt, and say so only if it failed.
+
+  THE FIRST FORM, WHICH YOU DID NOT TYPE. A repl started on a namespace is
+  started on the program in it: the compile is the slow half - your whole
+  dependency graph - and doing it here means the first form you do type is not
+  the one that pays for it, while the require that follows is what puts the
+  program in the runtime rather than merely on disk.
+
+  QUIET WHEN IT WORKED, because nothing asked. A `ret' frame here would arrive
+  before any prompt and under no form, and a client would have nowhere to put
+  it; a failure has somewhere to go and has to go there, since a repl whose
+  :main silently did nothing is a repl standing in a program that is not
+  loaded.
+
+  A browser with no page open answers that it has no page, which is the same
+  sentence any form gets there and is the useful one: it names the url to open.
+  The namespace is compiled either way - that half needs no runtime - so
+  requiring it again once the page is there costs nothing."
+  [conn flush-output! main]
+  (let [result (try
+                 (cljs/with-evaluation conn
+                   (cljs/eval-form (list 'require (list 'quote main))))
+                 (catch Throwable t
+                   {:status :error :phase :repl
+                    :value (or (ex-message t) (.getName (class t)))}))]
+    (when (= :error (:status result))
+      (report! conn flush-output! result))))
+
 (defn repl
-  "Run a ClojureScript repl on conn until the client disconnects."
-  [conn]
-  (let [out (frame-writer conn "out")
-        err (frame-writer conn "err")
-        ;; Output is flushed before every frame that concludes something, so
-        ;; that a result never comes out before what the form printed. What
-        ;; goes through these two is the COMPILER's output - a warning about an
-        ;; undeclared var - since the program's own printing happens in the
-        ;; runtime and is routed by replique.cljs.
-        flush-output! (fn [] (.flush out) (.flush err))]
-    (binding [*out* out *err* err]
-      (cljs/with-ns* start-ns
-        (fn []
-          (let [rdr (cljs/reader (:in conn))]
-            (try
-              (loop []
-                (flush-output!)
-                (protocol/write-frame! conn (prompt-frame conn))
-                (let [input (try (read-input! conn rdr)
-                                 (catch IOException e (throw e))
-                                 (catch Throwable t
-                                   (skip-line! rdr)
-                                   {:status :error :phase :read
-                                    :value (or (ex-message t) (.getName (class t)))}))]
-                  (cond
-                    (identical? ::eof input) nil
+  "Run a ClojureScript repl on conn until the client disconnects. `main' is a
+  namespace to require before the first prompt, or nil."
+  ([conn] (repl conn nil))
+  ([conn main]
+   (let [out (frame-writer conn "out")
+         err (frame-writer conn "err")
+         ;; Output is flushed before every frame that concludes something, so
+         ;; that a result never comes out before what the form printed. What
+         ;; goes through these two is the COMPILER's output - a warning about an
+         ;; undeclared var - since the program's own printing happens in the
+         ;; runtime and is routed by replique.cljs.
+         flush-output! (fn [] (.flush out) (.flush err))]
+     (binding [*out* out *err* err]
+       (cljs/with-ns* start-ns
+         (fn []
+           (let [rdr (cljs/reader (:in conn))]
+             (try
+               (when main (load-main! conn flush-output! main))
+               (loop []
+                 (flush-output!)
+                 (protocol/write-frame! conn (prompt-frame conn))
+                 (let [input (try (read-input! conn rdr)
+                                  (catch IOException e (throw e))
+                                  (catch Throwable t
+                                    (skip-line! rdr)
+                                    {:status :error :phase :read
+                                     :value (or (ex-message t) (.getName (class t)))}))]
+                   (cond
+                     (identical? ::eof input) nil
 
-                    ;; a directive that answered by itself, or a read that failed
-                    (map? input) (do (report! conn flush-output! input) (recur))
+                     ;; a directive that answered by itself, or a read that failed
+                     (map? input) (do (report! conn flush-output! input) (recur))
 
-                    :else
-                    (let [[form opts] input
-                          result (try
-                                   ;; The interrupt first and the lock second.
-                                   ;; A repl queued behind another repl's long
-                                   ;; evaluation has sent a form and had no
-                                   ;; prompt back, so it is evaluating as far as
-                                   ;; its client is concerned - and :interrupt
-                                   ;; answering "idle" there would be a lie. It
-                                   ;; is the wait this can get you out of; the
-                                   ;; JavaScript already running it cannot.
-                                   (interruptible conn
-                                     #(cljs/with-evaluation conn
-                                        (cljs/eval-form form opts)))
-                                   ;; The flag is left CLEARED, which is what
-                                   ;; `done-evaluating!' just did and what a
-                                   ;; repl about to block on a socket read
-                                   ;; needs: re-raising it here would leak the
-                                   ;; interrupt into the next form.
-                                   (catch InterruptedException _
-                                     {:status :error :phase :repl
-                                      :value "Interrupted."})
-                                   (catch Throwable t
-                                     {:status :error :phase :repl
-                                      :value (or (ex-message t)
-                                                 (.getName (class t)))}))]
-                      (report! conn flush-output! result)
-                      (recur)))))
-              ;; The client is gone, or the connection is being closed
-              (catch IOException _ nil)
-              (finally (flush-output!)))))))))
+                     :else
+                     (let [[form opts] input
+                           result (try
+                                    ;; The interrupt first and the lock second.
+                                    ;; A repl queued behind another repl's long
+                                    ;; evaluation has sent a form and had no
+                                    ;; prompt back, so it is evaluating as far as
+                                    ;; its client is concerned - and :interrupt
+                                    ;; answering "idle" there would be a lie. It
+                                    ;; is the wait this can get you out of; the
+                                    ;; JavaScript already running it cannot.
+                                    (interruptible conn
+                                      #(cljs/with-evaluation conn
+                                         (cljs/eval-form form opts)))
+                                    ;; The flag is left CLEARED, which is what
+                                    ;; `done-evaluating!' just did and what a
+                                    ;; repl about to block on a socket read
+                                    ;; needs: re-raising it here would leak the
+                                    ;; interrupt into the next form.
+                                    (catch InterruptedException _
+                                      {:status :error :phase :repl
+                                       :value "Interrupted."})
+                                    (catch Throwable t
+                                      {:status :error :phase :repl
+                                       :value (or (ex-message t)
+                                                  (.getName (class t)))}))]
+                       (report! conn flush-output! result)
+                       (recur)))))
+               ;; The client is gone, or the connection is being closed
+               (catch IOException _ nil)
+               (finally (flush-output!))))))))))
 
 ;;; The handshake
 
@@ -331,9 +363,15 @@
   handshake is where a client can be told that in one frame and have the
   connection closed, instead of watching every form it sends come back with the
   same message. It is also what the reply's `url' comes from, which is the whole
-  of what a browser repl needs a client to do: open that page."
+  of what a browser repl needs a client to do: open that page.
+
+  `:main' is a namespace to require before the first prompt - see load-main!.
+  Read here rather than there so that a client that wrote something that is not
+  a name learns it from the handshake, where every other malformed field is
+  answered."
   [conn hello]
-  (let [target (cljs/as-target (or (:target hello) cljs/default-target))]
+  (let [target (cljs/as-target (or (:target hello) cljs/default-target))
+        main   (protocol/as-name (:main hello))]
     (cond
       (not (cljs/available?))
       (protocol/write-frame!
@@ -352,6 +390,13 @@
                                  (pr-str (:target hello)))
                             {:targets (mapv name (sort cljs/targets))}))
 
+      (and (some? (:main hello)) (nil? main))
+      (protocol/write-frame!
+       conn (protocol/error hello :invalid-main
+                            (str "A repl started on a namespace is started on"
+                                 " one this can read as a name, and :main was"
+                                 " not one: " (pr-str (:main hello)))))
+
       :else
       (binding [cljs/*target* target]
         (let [runtime (try (cljs/runtime!)
@@ -369,4 +414,4 @@
                                                  :url (:url runtime))))
               ;; after the reply, as for every other connection
               (server/set-role! conn :repl)
-              (repl conn))))))))
+              (repl conn (some-> main symbol)))))))))
