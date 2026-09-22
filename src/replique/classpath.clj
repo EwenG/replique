@@ -29,19 +29,40 @@
 ;;; Reading a name out of a resource
 
 (def ^:private source-extensions
-  "The extensions a namespace of this process is written in. A .cljs file
-  names a namespace of the other of the two worlds ClojureScript compiles
-  with, and this process is the Clojure one."
+  "The extensions a Clojure namespace is written in."
   [".clj" ".cljc"])
 
-(defn- source-stem
-  "The path of RESOURCE without the extension that makes it a namespace, or
-  nil when it is not one."
-  ^String [^String resource]
+(def ^:private cljs-source-extensions
+  "The extensions a ClojureScript namespace is written in.
+
+  A .cljc is in both lists, and that is the point of there being two: one
+  file provides a namespace to each of the two worlds ClojureScript compiles
+  with, and which of them a client is asking about is the thing only the
+  client knows. Read into two lists here rather than sorted out at the
+  question, because the classpath is read once and the question is asked on a
+  keystroke."
+  [".cljs" ".cljc"])
+
+(defn- stem-of
+  "The path of RESOURCE without whichever of EXTENSIONS it ends in, or nil
+  when it ends in none of them."
+  ^String [^String resource extensions]
   (some (fn [^String extension]
           (when (.endsWith resource extension)
             (subs resource 0 (- (.length resource) (.length extension)))))
-        source-extensions))
+        extensions))
+
+(defn- source-stem
+  "The path of RESOURCE without the extension that makes it a Clojure
+  namespace, or nil when it is not one."
+  ^String [^String resource]
+  (stem-of resource source-extensions))
+
+(defn- cljs-source-stem
+  "The path of RESOURCE without the extension that makes it a ClojureScript
+  namespace, or nil when it is not one."
+  ^String [^String resource]
+  (stem-of resource cljs-source-extensions))
 
 (defn- namespace-name
   "The namespace the source at STEM provides.
@@ -107,21 +128,31 @@
   [resources]
   (loop [resources (seq resources)
          namespaces (transient [])
+         cljs-namespaces (transient [])
          classes (transient [])
          paths (transient [])
          found (transient [])]
     (if resources
       (let [^String resource (first resources)
-            resources (next resources)]
+            resources (next resources)
+            ;; Read beside the rest rather than instead of it. A .cljc is a
+            ;; namespace of both worlds, and a .cljs is a resource the way
+            ;; any other file on the classpath is - so what this adds is one
+            ;; more list and not a name taken out of another.
+            cljs-namespaces (if-let [stem (cljs-source-stem resource)]
+                              (conj! cljs-namespaces (namespace-name stem))
+                              cljs-namespaces)]
         (if (.endsWith resource ".class")
           (recur resources
                  namespaces
+                 cljs-namespaces
                  (if-let [class (class-name resource)] (conj! classes class) classes)
                  paths
                  found)
           (if-let [stem (source-stem resource)]
             (recur resources
                    (conj! namespaces (namespace-name stem))
+                   cljs-namespaces
                    classes
                    ;; what a load takes is a path and not a name, so the
                    ;; underscores stay: it names the file rather than what
@@ -132,10 +163,12 @@
             ;; slash at the end. A name with nothing at the end of it is not
             ;; a resource anybody reads.
             (if (.endsWith resource "/")
-              (recur resources namespaces classes paths found)
-              (recur resources namespaces classes paths (conj! found resource))))))
+              (recur resources namespaces cljs-namespaces classes paths found)
+              (recur resources namespaces cljs-namespaces classes paths
+                     (conj! found resource))))))
       (let [classes (persistent! classes)]
         {:namespaces (persistent! namespaces)
+         :cljs-namespaces (persistent! cljs-namespaces)
          :classes classes
          :packages (vec (prefixes classes))
          :paths (persistent! paths)
@@ -295,9 +328,12 @@
   this that cannot change under a running process."
   []
   (let [scans (into [@runtime-classes] (comp (map entry-scan) (remove nil?)) (entries))
-        namespaces (vec (mapcat :namespaces scans))]
+        namespaces (vec (mapcat :namespaces scans))
+        cljs-namespaces (vec (mapcat :cljs-namespaces scans))]
     {:namespaces namespaces
      :namespace-prefixes (vec (prefixes namespaces))
+     :cljs-namespaces cljs-namespaces
+     :cljs-namespace-prefixes (vec (prefixes cljs-namespaces))
      :classes (vec (mapcat :classes scans))
      :packages (vec (mapcat :packages scans))
      :paths (vec (mapcat :paths scans))

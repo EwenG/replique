@@ -255,13 +255,20 @@
   has no file anywhere and is a namespace all the same - and it is the half of
   this that is not read once and kept, since asking for it costs nothing."
   []
-  (map (comp name ns-name) (all-ns)))
+  (map (comp name ns-name) (names/all-namespaces)))
 
 (defmethod groups :namespace [msg]
   (let [prefix (names/named-argument msg :prefix)
-        {:keys [namespace-prefixes] :as read} (classpath/scan)
+        read (classpath/scan)
+        ;; The .clj files or the .cljs ones, which is the same classpath read
+        ;; two ways - a .cljc is in both lists. See
+        ;; `classpath/cljs-source-extensions'.
+        [on-disk namespace-prefixes]
+        (if (names/cljs?)
+          [(:cljs-namespaces read) (:cljs-namespace-prefixes read)]
+          [(:namespaces read) (:namespace-prefixes read)])
         loaded (namespaces)
-        known (concat (:namespaces read) loaded)]
+        known (concat on-disk loaded)]
     [{:type "namespace" :names (under prefix known)}
      ;; The head of a prefix list, which is a name no file carries: what is
      ;; written in (clojure.core.specs [alpha]) is a piece of a namespace and
@@ -279,16 +286,21 @@
 ;; compiles with two of them and the macros of a ClojureScript namespace are
 ;; written in Clojure, so this is the process that has the answer - and it
 ;; stays the process that has it once there is a ClojureScript side answering
-;; :namespace.
-(defmethod groups :namespace-macros [msg] (groups (assoc msg :position :namespace)))
+;; :namespace. Which is what the binding says: the request is about a .cljs
+;; buffer, and this one name in it is a Clojure name.
+(defmethod groups :namespace-macros [msg]
+  (binding [names/*dialect* :clj]
+    (groups (assoc msg :position :namespace))))
 
 (defmethod groups :var [msg]
   (let [named (:namespace msg)
         found (if (= :refer-clojure named)
                 ;; a refer-clojure names no namespace anywhere in itself, and
-                ;; the one it refers from is the one every namespace refers
-                (find-ns 'clojure.core)
-                (find-ns (symbol (names/required-argument msg :namespace))))]
+                ;; the one it refers from is the one every namespace refers -
+                ;; cljs.core where the buffer is ClojureScript, although what
+                ;; is written there is still :refer-clojure
+                (names/core-namespace)
+                (names/find-namespace (names/required-argument msg :namespace)))]
     ;; One group of each kind rather than one of vars, so that a client can
     ;; say which is which without asking again. The namespace rides along for
     ;; the same reason: what is offered under a :refer is written without it,
@@ -299,9 +311,13 @@
        :names (map (comp name key) vars)})))
 
 (defmethod groups :package-or-class [msg]
-  (let [{:keys [classes packages]} (classpath/scan)]
-    [{:type "class" :names (importable (names/text msg) classes)}
-     {:type "package" :names packages}]))
+  ;; Nothing where the buffer is ClojureScript: what an :import names there is
+  ;; a Closure class, which is no class of this jvm - see
+  ;; `symbol/resolved' at the same position.
+  (when-not (names/cljs?)
+    (let [{:keys [classes packages]} (classpath/scan)]
+      [{:type "class" :names (importable (names/text msg) classes)}
+       {:type "package" :names packages}])))
 
 (defn- generated-classes
   "The classes of PACKAGE that no file on the classpath carries.
@@ -328,11 +344,12 @@
       (.getName imported))))
 
 (defmethod groups :class [msg]
-  (let [package (names/required-argument msg :package)]
-    [{:type "class"
-      :names (importable (names/text msg)
-                         (under package (concat (:classes (classpath/scan))
-                                                (generated-classes package))))}]))
+  (when-not (names/cljs?)
+    (let [package (names/required-argument msg :package)]
+      [{:type "class"
+        :names (importable (names/text msg)
+                           (under package (concat (:classes (classpath/scan))
+                                                  (generated-classes package))))}])))
 
 (defn- load-root
   "The directory a load written in NAMESPACE is read from.
@@ -423,9 +440,14 @@
 
   A var carries the namespace it is public in, which is the one thing its own
   name does not say - what is referred is written without it. A class carries
-  the package it is in for the same reason."
+  the package it is in for the same reason.
+
+  What core holds is in here too, and only for ClojureScript, where it is a
+  rule rather than a mapping - see `names/core-refers'. A mapping of the
+  namespace's own wins over it, which it would anyway: what the namespace maps
+  is what a name written there means."
   [ns]
-  (let [mapped (ns-map ns)
+  (let [mapped (merge (names/core-refers ns) (ns-map ns))
         vars (for [[written found] mapped :when (var? found)] [(str written) found])
         classes (for [[written found] mapped :when (class? found)] [(str written) found])]
     (concat
@@ -467,8 +489,7 @@
   No locals are offered beside these, and no classes: a name with a slash in
   it is neither."
   [ns ^String scope]
-  (when-let [found (or (get (ns-aliases ns) (symbol scope))
-                       (find-ns (symbol scope)))]
+  (when-let [found (names/resolve-scope ns scope)]
     (for [[kind vars] (group-by (comp names/var-kind val) (ns-publics found))]
       {:type kind
        :ns (str (ns-name found))
@@ -718,14 +739,14 @@
              ;; full name starts with one of these.
              [{:type "namespace" :names (namespaces)}]
              (when (at-the-head? msg)
-               [{:type "special-form" :names names/special-forms}])
+               [{:type "special-form" :names (names/special-forms)}])
              ;; A class that was not imported is written in full, which means
              ;; written with a dot in it - so until the text holds one, the classes
              ;; offered are the ones the namespace imported and no others.
              ;; Otherwise two letters typed anywhere in code would answer with a
              ;; thousand class names, and the vars they were meant to reach would
              ;; be underneath them.
-             (when (string/includes? written ".")
+             (when (and (not (names/cljs?)) (string/includes? written "."))
                [{:type "class" :names (importable written (:classes (classpath/scan)))}]))))))))
 
 ;;; A path written in a string

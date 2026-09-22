@@ -76,6 +76,7 @@
          :all-cljs-ns   (env 'all-cljs-ns)
          :resolve-var   (env 'resolve-var)
          :resolve-ns    (env 'resolve-ns)
+         :excluded?     (env 'excluded?)
          :requires      (env 'requires)
          :imports       (env 'imports)
          :remove-var!   (env 'remove-var!)
@@ -394,6 +395,25 @@
         (reset! evaluating nil)
         (.unlock lock)))))
 
+(defn with-target-lock*
+  "Call F holding this target's lock, without claiming its output.
+
+  `with-evaluation*' is the other way to hold it, and what differs is who the
+  runtime's output belongs to while it is held. An evaluation owns it, which
+  is the whole of what `runtime-writer' reads. A TOOLING OP DOES NOT: nothing
+  it does makes a runtime print, and a page that logs a failed fetch while it
+  runs is talking to nobody in particular - so claiming the output would send
+  that line down a control connection as a repl's `out' frame, which is a
+  frame no control client is reading for.
+
+  What it is for is the other half: a request that CHANGES this world must not
+  run while something is compiling into it. Which is the reason the Clojure
+  side of the same op takes clojure's require lock."
+  [f]
+  (let [{:keys [^ReentrantLock lock]} (environment)]
+    (.lockInterruptibly lock)
+    (try (f) (finally (.unlock lock)))))
+
 (defmacro with-evaluation
   "Body as the one evaluation happening on `*target*'. See `with-evaluation*'."
   [conn & body]
@@ -458,6 +478,45 @@
   ;; compiler's vars
   (let [{:keys [cenv]} (environment)]
     (with-ns (symbol ns) ((of :resolve-var) cenv (symbol sym)))))
+
+(def core
+  "The namespace every ClojureScript namespace refers whether it says so or not.
+
+  clojure.core's opposite number, and named here because every rule that
+  mentions one mentions the other: what a namespace refers before it refers
+  anything, what a `:refer-clojure' refers from, and what a bare name means
+  where the namespace itself maps nothing of that name."
+  'cljs.core)
+
+(defn resolve-namespace
+  "The ClojureScript namespace SCOPE names from inside NS, or nil.
+
+  What stands before the slash of a qualified name, which is not simply a
+  namespace of that name: ClojureScript resolves an alias first, then the
+  namespace's own name, then the ones it REQUIRED - and a namespace that was
+  merely compiled is reachable through none of them. Clojure is looser here,
+  where `find-ns' answers for anything loaded, so this is a rule of its own
+  rather than the same rule asked of another world.
+
+  Creates nothing. The one branch of the compiler's that would - cljs.core,
+  which every namespace requires said or not - names a namespace this
+  environment compiled before it answered anything at all."
+  [ns scope]
+  (let [{:keys [cenv]} (environment)]
+    (with-ns (symbol ns) ((of :resolve-ns) cenv (symbol scope)))))
+
+(defn excluded?
+  "Whether NS said a bare SYM is not to mean cljs.core's var of that name.
+
+  Which is `:refer-clojure :exclude', and it is the one thing standing between
+  what cljs.core holds and what this namespace can write without a slash.
+  A ClojureScript namespace does not MAP the core vars - the compiler reaches
+  them by a rule rather than by a mapping, so that a namespace of thirty lines
+  is not thirty lines plus a thousand entries - and a reader of that table has
+  to apply the same rule, exclusions and all."
+  [ns sym]
+  (let [{:keys [cenv]} (environment)]
+    ((of :excluded?) cenv (symbol ns) (symbol sym))))
 
 (defn compile-namespace!
   "Compile NS and everything it requires into this process's output directory.

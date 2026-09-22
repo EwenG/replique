@@ -144,9 +144,16 @@
   Which is how a namespace and a load name one: clojure.core/load reads
   clojure/string as clojure/string.clj, and reads a .cljc where there is no
   .clj - so the two are looked for in that order, the order the language
-  looks in."
+  looks in.
+
+  ClojureScript looks in the same order for its own pair, and the .cljc that
+  ends both lists is the same file: one source, read once by each of the two
+  compilers. Which of the two orders is right here is what the dialect says -
+  a .cljs beside a .clj of the same name is two namespaces and not one, and
+  answering a .cljs buffer with the .clj would open the wrong file."
   [^String path]
-  (some (fn [extension] (source-of (str path extension))) [".clj" ".cljc"]))
+  (some (fn [extension] (source-of (str path extension)))
+        (if (names/cljs?) [".cljs" ".cljc"] [".clj" ".cljc"])))
 
 (defn- namespace-source
   "Where the file that requiring the namespace NAMED would load is.
@@ -184,7 +191,9 @@
   The arglists as they are written, one string each, since what a client does
   with them is show them to somebody. The docstring as it stands."
   [^clojure.lang.Var var]
-  (let [{:keys [arglists doc]} (meta var)]
+  (let [metadata (meta var)
+        arglists (names/arglists metadata)
+        doc (:doc metadata)]
     (cond-> {:type (names/var-kind var)
              :name (str (.sym var))
              :ns (str (ns-name (.ns var)))}
@@ -261,7 +270,7 @@
   docstring is the loaded half: a file that has not been read has not said
   what it is for."
   [^String named]
-  (let [found (find-ns (symbol named))
+  (let [found (names/find-namespace named)
         doc (:doc (meta found))
         source (namespace-source named)]
     (when (or found source)
@@ -312,7 +321,7 @@
   "What the special form NAMED is, as the answer carries it, or nil when
   nothing of that name is one."
   [^String named]
-  (when (some #{named} names/special-forms)
+  (when (some #{named} (names/special-forms))
     (merge {:type "special-form" :name named}
            (when-let [arglists (get written-in-a-try named)] {:arglists arglists})
            ;; last, so that a clojure which starts saying what a catch takes
@@ -502,8 +511,7 @@
   namespace where the namespace has one of that name, and a class only where
   it does not."
   [ns ^String scope ^String named]
-  (or (when-let [found (or (get (ns-aliases ns) (symbol scope))
-                           (find-ns (symbol scope)))]
+  (or (when-let [found (names/resolve-scope ns scope)]
         (when-let [var (get (ns-publics found) (symbol named))]
           (of-var var)))
       (when-let [class (names/class-named ns scope)]
@@ -526,12 +534,16 @@
   (let [named (symbol written)]
     (or (when (some #{written} (names/locals-named msg))
           {:type "local" :name written})
+        ;; `resolve-plain' rather than a look in `ns-map', because of the
+        ;; namespace ClojureScript refers without mapping: cljs.core is a rule
+        ;; there and not a thousand entries, and reading the entries alone
+        ;; would say that `map' means nothing.
+        (when-let [var (names/resolve-plain ns written)] (of-var var))
         (let [mapped (get (ns-map ns) named)]
-          (cond (var? mapped) (of-var mapped)
-                (class? mapped) (of-class mapped)))
+          (when (class? mapped) (of-class mapped)))
         (when-let [aliased (get (ns-aliases ns) named)]
           (of-namespace (str (ns-name aliased))))
-        (when (find-ns named) (of-namespace written))
+        (when (names/find-namespace named) (of-namespace written))
         (of-special-form written)
         (when-let [class (names/class-named ns written)]
           (of-class class)))))
@@ -573,16 +585,23 @@
       (of-namespace (if (string/blank? prefix) written (str prefix "." written))))))
 
 ;; What a :require-macros names is a namespace of this world - see
-;; `completion/groups'.
-(defmethod resolved :namespace-macros [msg] (resolved (assoc msg :position :namespace)))
+;; `completion/groups'. Which is why the dialect is put back to Clojure here
+;; and nowhere else: the macros of a ClojureScript namespace are written in
+;; Clojure and live in this jvm, so a :require-macros read in a .cljs buffer
+;; is the one name in that buffer that is not a ClojureScript name at all.
+(defmethod resolved :namespace-macros [msg]
+  (binding [names/*dialect* :clj]
+    (resolved (assoc msg :position :namespace))))
 
 (defmethod resolved :var [msg]
   (let [named (:namespace msg)
         found (if (= :refer-clojure named)
                 ;; a refer-clojure names no namespace anywhere in itself, and
-                ;; the one it refers from is the one every namespace refers
-                (find-ns 'clojure.core)
-                (find-ns (symbol (names/required-argument msg :namespace))))
+                ;; the one it refers from is the one every namespace refers -
+                ;; which in a .cljs buffer is cljs.core, although what is
+                ;; written there is still :refer-clojure
+                (names/core-namespace)
+                (names/find-namespace (names/required-argument msg :namespace)))
         written (names/text msg)]
     (when (and found (not (string/blank? written)))
       (when-let [var (get (ns-publics found) (symbol written))]
@@ -590,7 +609,11 @@
 
 (defmethod resolved :package-or-class [msg]
   (let [written (names/text msg)]
-    (when-not (string/blank? written)
+    ;; Nothing where the buffer is ClojureScript. What an :import names there
+    ;; is a Closure class - goog.string.StringBuffer - which is no class of
+    ;; this jvm, and the packages read off this classpath are a list of names
+    ;; from the wrong language.
+    (when-not (or (names/cljs?) (string/blank? written))
       (or (when-let [class (names/class-named (names/namespace-named msg) written)]
             (of-class class))
           ;; A package is a name no file carries: it is where the classes are
@@ -602,7 +625,7 @@
 (defmethod resolved :class [msg]
   (let [package (names/required-argument msg :package)
         written (names/text msg)]
-    (when-not (string/blank? written)
+    (when-not (or (names/cljs?) (string/blank? written))
       (when-let [class (names/class-named (names/namespace-named msg)
                                           (str package "." written))]
         (of-class class)))))

@@ -48,8 +48,14 @@
 ;; Sorted here rather than by the client. It is the same order for every
 ;; client, it is the order somebody reading a list expects, and the client
 ;; that asked is about to show it to somebody.
-(defmethod protocol/handle :namespaces [_ _]
-  {:namespaces (vec (sort (map (comp str ns-name) (all-ns))))})
+;;
+;; The ClojureScript ones where the request says so, which are a different set
+;; and not a subset: a process can hold clojure.string and cljs.core at once
+;; and neither is the other's. Compiled rather than loaded is what "has" means
+;; there - see `replique.cljs/namespaces'.
+(defmethod protocol/handle :namespaces [_ msg]
+  (names/with-dialect msg
+    {:namespaces (vec (sort (map (comp str ns-name) (names/all-namespaces))))}))
 
 ;; The names that could be written where a name is being written. What is
 ;; asked depends on the slot of the form point is in - a namespace, a var of
@@ -59,7 +65,8 @@
 ;; it read and the text typed there, and what comes back is what could replace
 ;; that text.
 (defmethod protocol/handle :completions [_ msg]
-  (completion/completions (assoc msg :position (protocol/as-keyword (:position msg)))))
+  (names/with-dialect msg
+    (completion/completions (assoc msg :position (protocol/as-keyword (:position msg))))))
 
 ;; What the one name written there is, which is the other half of the same
 ;; question. An editor shows an arglist and a docstring while somebody writes
@@ -72,7 +79,8 @@
 ;; out of a buffer is one job on the client's side, and this is the same
 ;; reading with point moved to the end of what it read.
 (defmethod protocol/handle :symbol [_ msg]
-  (sym/named (assoc msg :position (protocol/as-keyword (:position msg)))))
+  (names/with-dialect msg
+    (sym/named (assoc msg :position (protocol/as-keyword (:position msg))))))
 
 ;; What a namespace calls the vars a client names.
 ;;
@@ -91,12 +99,6 @@
 ;; places. It also leaves this op with no opinion about binding at all: it
 ;; answers how a namespace writes a var, which is as true of a require as of a
 ;; let.
-
-(defn- var-named
-  "The var SYMBOL names, or nil when it names none."
-  [symbol]
-  (when-let [found (try (resolve symbol) (catch Exception _ nil))]
-    (when (var? found) found)))
 
 (defn- vars-asked
   "The vars a client asked about, by the name it wrote each of them as.
@@ -123,7 +125,7 @@
                 (throw (ex-info (str "A var must be named by a qualified name, got: "
                                      (pr-str asked))
                                 {:replique/error :invalid-message})))
-              (if-let [found (var-named named)]
+              (if-let [found (names/interned named)]
                 (assoc acc written found)
                 acc)))
           {} vars))
@@ -135,13 +137,19 @@
   and a var of its own that shadows one of these; and what an alias makes
   writable, which is a way to write a var whatever the namespace maps."
   [ns vars]
-  (let [wanted (set vars)]
-    (as-> {} found
-      (reduce (fn [found [written mapped]]
+  (let [wanted (set vars)
+        spell (fn [found [written mapped]]
                 (if (contains? wanted mapped)
                   (update found mapped (fnil conj #{}) (str written))
-                  found))
-              found (ns-map ns))
+                  found))]
+    (as-> {} found
+      (reduce spell found (ns-map ns))
+      ;; And what core is written as, which for ClojureScript is not among the
+      ;; mappings: cljs.core is referred into every namespace by a rule rather
+      ;; than by a thousand entries, so `map' is a way to write cljs.core/map
+      ;; in a namespace that maps nothing of the name. Empty for Clojure, where
+      ;; the reduce above has already been over every one of them.
+      (reduce spell found (names/core-refers ns))
       (reduce (fn [found [alias aliased]]
                 (reduce (fn [found ^clojure.lang.Var var]
                           (if (= aliased (.ns var))
@@ -157,21 +165,25 @@
 (defmethod protocol/handle :spellings [_ msg]
   ;; The namespace is read the way a completion reads it, which includes what
   ;; a namespace the process does not have is answered as - see
-  ;; `names/namespace-named'.
-  (let [asked (vars-asked (:vars msg))
-        found (written-as (names/namespace-named msg) (vals asked))]
-    ;; Sorted, so that the same namespace answers the same way twice - what
-    ;; the mappings of a namespace are read in is whatever order a map has.
-    ;;
-    ;; The qualified name is in every answer without being looked for: it is
-    ;; how the var can be written in any namespace at all, this one included,
-    ;; and a namespace that shadows the short name has it as the only way
-    ;; left to write it.
-    {:spellings (reduce-kv (fn [acc written var]
-                             (assoc acc written
-                                    (vec (sort (conj (get found var #{})
-                                                     (qualified-name var))))))
-                           {} asked)}))
+  ;; `names/namespace-named'. And which world it is read in, which is the same
+  ;; question asked of the other symbol table: a .cljs buffer writes
+  ;; cljs.core/let as `let' for exactly the reasons a .clj buffer writes
+  ;; clojure.core/let as `let'.
+  (names/with-dialect msg
+    (let [asked (vars-asked (:vars msg))
+          found (written-as (names/namespace-named msg) (vals asked))]
+      ;; Sorted, so that the same namespace answers the same way twice - what
+      ;; the mappings of a namespace are read in is whatever order a map has.
+      ;;
+      ;; The qualified name is in every answer without being looked for: it is
+      ;; how the var can be written in any namespace at all, this one included,
+      ;; and a namespace that shadows the short name has it as the only way
+      ;; left to write it.
+      {:spellings (reduce-kv (fn [acc written var]
+                               (assoc acc written
+                                      (vec (sort (conj (get found var #{})
+                                                       (qualified-name var))))))
+                             {} asked)})))
 
 ;; Where a name is used, which is the question a rename starts with.
 ;;
@@ -247,24 +259,25 @@
     [(if file 0 1) (str file) (long (or line 0)) (long (or column 0))]))
 
 (defmethod protocol/handle :vars [_ msg]
-  (let [written (or (protocol/as-name (:ns msg))
-                    (throw (ex-info (str "The :vars op needs the :ns to look in, as a name, "
-                                         "got: " (pr-str (:ns msg)))
-                                    {:replique/error :invalid-message})))
-        found (find-ns (symbol written))]
-    ;; A namespace the process does not have is answered with no vars rather
-    ;; than refused. Every file is one until it has been loaded, and holding
-    ;; none is a fact about the process - the same thing `:spellings' means by
-    ;; leaving a name out. A client showing a list of nothing says so better
-    ;; than an error would: there is nothing there to remove.
-    {:vars (if (nil? found)
-             []
-             (->> (ns-interns found)
-                  (sort-by (comp written-at val))
-                  (mapv (fn [[sym var]]
-                          (cond-> {:name (str sym)
-                                   :type (names/var-kind var)}
-                            (:private (meta var)) (assoc :private true))))))}))
+  (names/with-dialect msg
+    (let [written (or (protocol/as-name (:ns msg))
+                      (throw (ex-info (str "The :vars op needs the :ns to look in, as a name, "
+                                           "got: " (pr-str (:ns msg)))
+                                      {:replique/error :invalid-message})))
+          found (names/find-namespace written)]
+      ;; A namespace the process does not have is answered with no vars rather
+      ;; than refused. Every file is one until it has been loaded, and holding
+      ;; none is a fact about the process - the same thing `:spellings' means by
+      ;; leaving a name out. A client showing a list of nothing says so better
+      ;; than an error would: there is nothing there to remove.
+      {:vars (if (nil? found)
+               []
+               (->> (ns-interns found)
+                    (sort-by (comp written-at val))
+                    (mapv (fn [[sym var]]
+                            (cond-> {:name (str sym)
+                                     :type (names/var-kind var)}
+                              (:private (meta var)) (assoc :private true))))))})))
 
 ;; Taking a definition away.
 ;;
@@ -321,8 +334,7 @@
     (when-not (namespace named)
       (throw (ex-info (str "A var must be named by a qualified name, got: " (pr-str (:var msg)))
                       {:replique/error :invalid-message})))
-    (or (when-let [home (find-ns (symbol (namespace named)))]
-          (get (ns-interns home) (symbol (name named))))
+    (or (names/interned named)
         (throw (ex-info (str "No var is interned as " written)
                         {:replique/error :unknown-var})))))
 
@@ -347,21 +359,38 @@
                 (do (run! #(ns-unmap ns %) written)
                     (assoc acc (str (ns-name ns)) (mapv str written)))
                 acc)))
-          {} (all-ns)))
+          {} (names/all-namespaces)))
+
+(defn- exclusively*
+  "Call F with nothing else loading into this dialect's world.
+
+  Clojure's require lock, which is the one `replique.repl/load!' holds and
+  clojure's own serialized-require takes. Without it a load running on another
+  connection can intern the var again halfway through the sweep, and leave it
+  mapped in every namespace this had not reached yet - which is the state this
+  op exists to get out of, arrived at by asking for it.
+
+  ClojureScript has a lock of its own and it is the target's, since a target
+  is one set of namespaces and one runtime - see
+  `replique.cljs/with-target-lock*'. Not the require lock, which guards the
+  jvm's namespaces and would be the wrong thing held while the other world is
+  being changed."
+  [f]
+  (if (names/cljs?)
+    (cljs/with-target-lock* f)
+    (locking clojure.lang.RT/REQUIRE_LOCK (f))))
 
 (defmethod protocol/handle :remove-var [_ msg]
-  ;; Under the require lock, which is the one `replique.repl/load!' holds and
-  ;; clojure's own serialized-require takes. Without it a load running on
-  ;; another connection can intern the var again halfway through the sweep,
-  ;; and leave it mapped in every namespace this had not reached yet - which
-  ;; is the state this op exists to get out of, arrived at by asking for it.
-  (locking clojure.lang.RT/REQUIRE_LOCK
-    (let [the-var (var-to-remove msg)]
-      {:removed (qualified-name the-var)
-       ;; Always at least the namespace it was interned in, which is where it
-       ;; was found; the rest are the namespaces that referred it, and they
-       ;; are the ones whose code will not compile until somebody edits it.
-       :unmapped (unmap-everywhere! the-var)})))
+  (names/with-dialect msg
+    (exclusively*
+     (fn []
+       (let [the-var (var-to-remove msg)]
+         {:removed (qualified-name the-var)
+          ;; Always at least the namespace it was interned in, which is where
+          ;; it was found; the rest are the namespaces that referred it, and
+          ;; they are the ones whose code will not compile until somebody
+          ;; edits it.
+          :unmapped (unmap-everywhere! the-var)})))))
 
 ;; Reading the classpath again. It is read when the process starts and kept,
 ;; since walking every jar and every directory of it behind a keystroke is not

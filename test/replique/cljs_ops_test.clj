@@ -1,0 +1,490 @@
+(ns replique.cljs-ops-test
+  "The reading ops, asked about ClojureScript.
+
+  `:namespaces', `:vars', `:symbol', `:completions' and `:remove-var' are one
+  question each and every one of them has two answers, because a process
+  running the compiler holds two symbol tables. Which of them a request is
+  about is the `:dialect' it carries, and these are the tests of that key -
+  what each op says when it is set, and what it says when the process cannot
+  answer for ClojureScript at all.
+
+  Written for both processes, as `replique.cljs-test' is: the compiler is not
+  a dependency of replique, and a process is running with it or without it.
+  With one:
+
+    clojure -M:test:cljs ...
+
+  ONE PROCESS FOR THE WHOLE FILE, for `replique.cljs-repl-test's reason: the
+  first ClojureScript question compiles cljs.core, and the first repl
+  connection starts node on top of it - seconds each, and both of them once
+  per process rather than once per test. What is given up for that is
+  isolation between namespaces, and it is bought back the way that file buys
+  it: every test here works in namespaces of its own.
+
+  The namespaces are named ops.* and the name is this file's own. A test runs
+  inside the process it tests, so a namespace one test makes outlives it - see
+  `replique.spellings-test', where two files sharing a name was a red test for
+  a while."
+  (:require [clojure.string :as string]
+            [clojure.test :refer [deftest is testing use-fixtures]]
+            [replique.cljs :as cljs]
+            [replique.core :as core]
+            [replique.test-client :as client
+             :refer [control-client disconnect eval! recv repl-client request!]]))
+
+(defn- compiling?
+  "Whether the process running this test has a ClojureScript compiler."
+  []
+  (cljs/available?))
+
+;;; One process, and the handshake that is slow
+
+(def ^:private the-process (atom nil))
+
+(def ^:private slow
+  "How long a client waits for a handshake here. A ClojureScript one compiles
+  cljs.core and starts node before it answers."
+  180000)
+
+(defn- with-one-process [f]
+  (let [dir (client/temp-dir)
+        out *out*
+        err *err*]
+    (reset! the-process (core/start! {:directory dir}))
+    (try
+      (binding [*out* out *err* err] (f))
+      (finally (core/stop!) (reset! the-process nil)
+               (client/delete-recursively dir)))))
+
+(use-fixtures :once with-one-process)
+
+;;; Asking
+
+(defn- ask
+  "Put one request and read its reply."
+  [msg]
+  (let [c (control-client @the-process)]
+    (try (request! c (assoc msg :id 1))
+         (finally (disconnect c)))))
+
+(defn- about
+  "The same request, asked about ClojureScript on node."
+  [msg]
+  (ask (assoc msg :dialect :cljs :target :node)))
+
+(defmacro ^:private with-cljs-repl
+  "Body with a ClojureScript repl on node, which is how a namespace is made."
+  [sym & body]
+  `(let [~sym (repl-client @the-process {:dialect :cljs :target :node} slow)]
+     (try ~@body (finally (disconnect ~sym)))))
+
+(defmacro ^:private with-clj-repl
+  [sym & body]
+  `(let [~sym (repl-client @the-process nil slow)]
+     (try ~@body (finally (disconnect ~sym)))))
+
+(defn- candidates
+  "The candidates of a completion reply, as they would be written."
+  [reply]
+  (mapv :candidate (:completions reply)))
+
+(defn- named
+  "The candidate NAMED, with what was said about it, or nil."
+  [reply named]
+  (first (filter #(= named (:candidate %)) (:completions reply))))
+
+(defn- source-of
+  "The file an answer names, as a path that carries its extension.
+
+  The `entry' where there is one, since a source inside a jar answers with
+  the path of the jar and the entry inside it - and it is the entry that is
+  the .clj."
+  [answer]
+  (str (or (:entry answer) (:file answer))))
+
+;;; A process that cannot be asked at all
+
+(deftest test-a-process-without-the-compiler-refuses-a-clojurescript-question
+  ;; Refused rather than answered with nothing, which is the distinction
+  ;; `cljs/refuse-unless-available!' exists to keep: a process with no
+  ;; compiler has no ClojureScript namespaces AT ALL, so an empty list would
+  ;; read as "there is nothing in it" rather than as "this cannot say".
+  (when-not (compiling?)
+    (let [r (about {:op :namespaces})]
+      (is (= "error" (:tag r)))
+      (is (= "no-cljs" (:error r)))
+      (is (string/includes? (:message r) "ClojureScript compiler"))
+      (is (string/includes? (:message r) "classpath")))
+    (testing "and every one of them the same way, since none of them can be
+    answered and the reason is the same one"
+      (doseq [msg [{:op :vars :ns "cljs.core"}
+                   {:op :symbol :position :code :ns "cljs.core" :text "first"}
+                   {:op :completions :position :code :ns "cljs.core" :text "fir"}
+                   {:op :spellings :ns "cljs.core" :vars ["cljs.core/map"]}
+                   {:op :remove-var :var "cljs.core/first"}]]
+        (is (= "no-cljs" (:error (about msg))) (pr-str (:op msg)))))
+    (testing "including the positions that would have answered without reading
+    a symbol table at all, which is why the refusal is at the top of the op and
+    not where a namespace is looked for: what a :flag takes is a list of three
+    keywords, and answering it would be this process saying something about a
+    language it cannot compile"
+      (doseq [msg [{:op :completions :position :flag :text ":rel"}
+                   {:op :completions :position :dependency-type :text ":req"}
+                   {:op :symbol :position :string :text "clojure/core.clj"}]]
+        (is (= "no-cljs" (:error (about msg))) (pr-str (:position msg)))))))
+
+;;; What the client got wrong
+
+(deftest test-a-dialect-this-process-does-not-speak-is-refused-by-name
+  ;; Whether or not there is a compiler: a dialect nothing can answer is a
+  ;; client that believes this process reads a third way, and it is wrong
+  ;; about that on every process.
+  (let [r (ask {:op :namespaces :dialect :fortran})]
+    (is (= "error" (:tag r)))
+    ;; the kind the repl handshake refuses a dialect with, because it is the
+    ;; same mistake asked on another connection
+    (is (= "invalid-dialect" (:error r)))
+    (is (string/includes? (:message r) "fortran"))
+    (is (string/includes? (:message r) "cljs"))))
+
+(deftest test-a-target-there-is-no-such-thing-as-is-refused-by-name
+  (when (compiling?)
+    (let [r (ask {:op :namespaces :dialect :cljs :target :toaster})]
+      (is (= "error" (:tag r)))
+      (is (= "invalid-target" (:error r)))
+      (is (string/includes? (:message r) "toaster"))
+      (is (string/includes? (:message r) "node")))))
+
+(deftest test-a-question-with-no-dialect-is-a-clojure-question
+  ;; Which is what makes this key one a client can leave out. Every message
+  ;; written before there was a second answer goes on meaning what it meant.
+  (let [r (ask {:op :namespaces})]
+    (is (= "reply" (:tag r)))
+    (is (some #{"replique.ops"} (:namespaces r)))
+    ;; cljs.user is the repl's starting namespace on the ClojureScript side
+    ;; and is nothing at all on this one
+    (is (not-any? #{"cljs.user"} (:namespaces r)))))
+
+;;; The namespaces of the two worlds
+
+(deftest test-the-namespaces-of-the-two-worlds-are-two-different-lists
+  (when (compiling?)
+    (with-cljs-repl r
+      (eval! r "#replique/ns ops.listed\n(def here 1)")
+      (let [cljs (:namespaces (about {:op :namespaces}))
+            clj (:namespaces (ask {:op :namespaces}))]
+        (testing "the ClojureScript one holds what the compiler compiled"
+          (is (some #{"cljs.core"} cljs))
+          (is (some #{"ops.listed"} cljs)))
+        (testing "and not what the jvm loaded, which is a different set and
+        not a subset - a process holds both and neither is the other's"
+          (is (not-any? #{"replique.ops"} cljs))
+          (is (not-any? #{"ops.listed"} clj)))
+        (testing "a name in both lists is two namespaces and not one shared:
+        cljs/core.cljc is a ClojureScript namespace AND the jvm namespace its
+        macros are written in, so cljs.core is a name each world has its own
+        of - which is the whole reason a question has to say which it means"
+          (is (some #{"cljs.core"} cljs))
+          (is (some #{"cljs.core"} clj)))
+        (testing "sorted, as the Clojure list is"
+          (is (= (sort cljs) cljs)))))))
+
+;;; What a namespace holds
+
+(deftest test-the-vars-of-a-clojurescript-namespace-in-the-order-they-were-written
+  (when (compiling?)
+    (with-cljs-repl r
+      ;; One `eval!' per form, because `eval!' reads up to the next prompt and
+      ;; this repl writes one prompt per form. A directive is the exception -
+      ;; it moves the repl and reads on, so it shares the prompt of the form
+      ;; under it.
+      (eval! r "#replique/ns ops.held\n(def first-one 1)")
+      (eval! r "(defn second-one [x] x)")
+      (eval! r "(def ^:private third-one 3)")
+      (let [vars (:vars (about {:op :vars :ns "ops.held"}))]
+        (is (= ["first-one" "second-one" "third-one"] (mapv :name vars)))
+        (testing "each one annotated the way a Clojure var is - a def is a
+        var and a defn is a function, read off the same metadata"
+          (is (= ["var" "function" "var"] (mapv :type vars))))
+        (testing "and a private one said to be private, since what can be
+        chosen here is what :remove-var can be asked about"
+          (is (= [nil nil true] (mapv :private vars))))))))
+
+(deftest test-a-clojurescript-namespace-the-compiler-does-not-have-holds-no-vars
+  ;; Answered with none rather than refused, which is what the Clojure side
+  ;; means by it too: every file is a namespace the process does not have
+  ;; until something loads it.
+  (when (compiling?)
+    (let [r (about {:op :vars :ns "ops.never-compiled"})]
+      (is (= "reply" (:tag r)))
+      (is (= [] (:vars r))))))
+
+;;; What a name means
+
+(deftest test-a-core-name-resolves-although-the-namespace-maps-nothing-of-it
+  ;; THE RULE THAT IS NOT A MAPPING. ClojureScript refers cljs.core into every
+  ;; namespace whether it says so or not, and the compiler honours that with a
+  ;; rule rather than with a thousand entries - so a reader that looked only
+  ;; at what the namespace maps would answer that `map' means nothing here.
+  (when (compiling?)
+    (with-cljs-repl r
+      (eval! r "#replique/ns ops.plain\n(def mine 1)")
+      (let [found (:symbol (about {:op :symbol :position :code
+                                   :ns "ops.plain" :text "map"}))]
+        (is (= "function" (:type found)))
+        (is (= "map" (:name found)))
+        (is (= "cljs.core" (:ns found)))
+        (testing "with the file it was written in, which is the .cljs and not
+        the .clj of the same name"
+          (is (string/ends-with? (str (:file found)) "core.cljs"))
+          (is (integer? (:line found))))))))
+
+(deftest test-an-arglist-reads-the-same-way-in-both-dialects
+  ;; ClojureScript writes :arglists QUOTED, because metadata there is data
+  ;; that has to survive into the emitted program. Read as it stands, the
+  ;; first way to call `first' would come back as `quote'.
+  (when (compiling?)
+    (let [cljs (:symbol (about {:op :symbol :position :code
+                                :ns "cljs.core" :text "map"}))
+          clj (:symbol (ask {:op :symbol :position :code
+                             :ns "clojure.core" :text "map"}))]
+      (is (= ["[f]" "[f coll]"] (take 2 (:arglists cljs))))
+      (is (= (:arglists clj) (:arglists cljs)))
+      (is (not-any? #{"quote"} (:arglists cljs))))))
+
+(deftest test-a-name-the-namespace-excluded-is-not-cores
+  ;; :refer-clojure :exclude is the one thing standing between what cljs.core
+  ;; holds and what a namespace can write without a slash, and a reader
+  ;; applying the compiler's rule has to apply that half of it too.
+  (when (compiling?)
+    (with-cljs-repl r
+      (eval! r "(ns ops.excluding (:refer-clojure :exclude [map]))")
+      (is (nil? (:symbol (about {:op :symbol :position :code
+                                 :ns "ops.excluding" :text "map"}))))
+      (testing "and what it did not exclude is untouched"
+        (is (= "cljs.core" (:ns (:symbol (about {:op :symbol :position :code
+                                                 :ns "ops.excluding"
+                                                 :text "filter"})))))))))
+
+(deftest test-a-scope-is-a-namespace-the-namespace-required
+  ;; Where Clojure answers for anything the process has loaded, ClojureScript
+  ;; answers only for what this namespace reached: an alias, its own name, or
+  ;; something it required. A namespace that was merely compiled is a typo
+  ;; away from resolving, and the compiler refuses it.
+  (when (compiling?)
+    (with-cljs-repl r
+      (eval! r "#replique/ns ops.away\n(defn far [] :far)")
+      (eval! r "(ns ops.near (:require [ops.away :as away]))")
+      (testing "through the alias it gave it"
+        (is (= "away/far" (:candidate (named (about {:op :completions :position :code
+                                                     :ns "ops.near" :text "away/f"})
+                                             "away/far"))))
+        (is (= "ops.away" (:ns (:symbol (about {:op :symbol :position :code
+                                                :ns "ops.near" :text "away/far"}))))))
+      (testing "and under its own name, which it required"
+        (is (= "ops.away" (:ns (:symbol (about {:op :symbol :position :code
+                                                :ns "ops.near"
+                                                :text "ops.away/far"}))))))
+      (testing "but not from a namespace that never required it"
+        (eval! r "#replique/ns ops.stranger\n(def unrelated 1)")
+        (is (nil? (:symbol (about {:op :symbol :position :code
+                                   :ns "ops.stranger" :text "ops.away/far"}))))
+        (is (= [] (candidates (about {:op :completions :position :code
+                                      :ns "ops.stranger" :text "ops.away/"}))))))))
+
+;;; What could be written
+
+(deftest test-a-completion-offers-the-core-names-a-namespace-can-write
+  (when (compiling?)
+    (with-cljs-repl r
+      (eval! r "#replique/ns ops.typing\n(def partly 1)")
+      (let [reply (about {:op :completions :position :code
+                          :ns "ops.typing" :text "part"})]
+        (testing "what cljs.core holds, although the namespace maps none of it"
+          (is (= "cljs.core" (:ns (named reply "partial"))))
+          (is (= "function" (:type (named reply "partial")))))
+        (testing "beside what the namespace does map"
+          (is (= "ops.typing" (:ns (named reply "partly")))))))))
+
+(deftest test-a-completion-offers-a-namespace-nobody-has-compiled
+  ;; Read off the classpath rather than out of the compiler, which is what
+  ;; makes it an answer for a namespace a require has not reached yet - and
+  ;; the classpath is read twice, once for each extension. See
+  ;; `classpath/cljs-source-extensions'.
+  (when (compiling?)
+    (let [reply (about {:op :completions :position :namespace :text "rt.main"})]
+      (is (some #{"rt.main-program"} (candidates reply))))
+    (testing "and the Clojure list does not hold it, because a .cljs is a
+    namespace of one world only"
+      (is (not-any? #{"rt.main-program"}
+                    (candidates (ask {:op :completions :position :namespace
+                                      :text "rt.main"})))))))
+
+(deftest test-a-file-that-is-both-is-a-namespace-of-both-worlds
+  ;; A .cljc, which is the one extension in both lists. One file, read once by
+  ;; each of the two compilers.
+  (let [cljs? (compiling?)
+        clj (candidates (ask {:op :completions :position :namespace :text "rt.shared"}))]
+    (is (some #{"rt.shared-thing"} clj))
+    (when cljs?
+      (is (some #{"rt.shared-thing"}
+                (candidates (about {:op :completions :position :namespace
+                                    :text "rt.shared"})))))))
+
+(deftest test-a-class-is-not-an-answer-in-clojurescript
+  ;; A name before a slash or after a dot reaches a JavaScript object there,
+  ;; and answering it out of this jvm's classpath would be answering a
+  ;; question about one language with a fact about another.
+  (when (compiling?)
+    (testing "nothing at the position an :import is written at"
+      (is (= [] (candidates (about {:op :completions :position :package-or-class
+                                    :text "String"}))))
+      (is (nil? (:symbol (about {:op :symbol :position :package-or-class
+                                 :text "java.util.Date"})))))
+    (testing "and no class where code is written, although the jvm has one of
+    that name and the Clojure side answers with it"
+      (is (nil? (:symbol (about {:op :symbol :position :code :ns "cljs.core"
+                                 :text "java.util.Date"}))))
+      (is (= "class" (:type (:symbol (ask {:op :symbol :position :code
+                                           :ns "clojure.core"
+                                           :text "java.util.Date"}))))))
+    (testing "and a string literal is not a java.lang.String to read members
+    off, which is what reading the target as this jvm would make of it"
+      (is (nil? (:symbol (about {:op :symbol :position :code :ns "cljs.core"
+                                 :target "\"x\"" :text ".length"})))))
+    (testing "and none is offered either, although a name with a dot in it is
+    exactly where the Clojure side starts offering them"
+      (is (= [] (candidates (about {:op :completions :position :code
+                                    :ns "cljs.core" :text "java.util.Da"}))))
+      (is (some #{"java.util.Date"}
+                (candidates (ask {:op :completions :position :code
+                                  :ns "clojure.core" :text "java.util.Da"})))))))
+
+(deftest test-a-macro-namespace-is-read-in-the-clojure-world
+  ;; The one name in a .cljs buffer that is not a ClojureScript name. The
+  ;; macros of a ClojureScript namespace are written in Clojure and live in
+  ;; this jvm, so a :require-macros is asked of this world although everything
+  ;; around it is asked of the other.
+  (when (compiling?)
+    ;; clojure.java.io and not clojure.string, which would prove nothing:
+    ;; there is a clojure/string.cljs beside the clojure/string.clj, so a name
+    ;; in both worlds is answered either way round. A namespace only this jvm
+    ;; has is what says which world was read.
+    ;;
+    ;; AND NOT clojure.walk EITHER, WHICH IS WHAT THIS USED TO SAY. It was a
+    ;; jvm-only name on the day it was written and it is not one now: the
+    ;; ClojureScript standard library grew a clojure/walk.cljs, so the name
+    ;; this test leant on moved into both worlds and the second half of it
+    ;; started failing. The property is right and the witness was perishable -
+    ;; a `java' in the name is what makes this one not perish, since a
+    ;; namespace wrapping java.io is not a namespace ClojureScript will ever
+    ;; have.
+    (testing "a namespace only the jvm has is offered, and is what it says"
+      (is (some #{"clojure.java.io"}
+                (candidates (about {:op :completions :position :namespace-macros
+                                    :text "clojure.java.i"}))))
+      (is (= "namespace" (:type (:symbol (about {:op :symbol :position :namespace-macros
+                                                 :text "clojure.java.io"}))))))
+    (testing "and it is not offered at the position beside it, which is the
+    same request with one key changed"
+      (is (not-any? #{"clojure.java.io"}
+                    (candidates (about {:op :completions :position :namespace
+                                        :text "clojure.java.i"}))))
+      (is (nil? (:symbol (about {:op :symbol :position :namespace
+                                 :text "clojure.java.io"})))))
+    (testing "a name both worlds have is answered with the file of whichever
+    world the position names - one request, one key apart"
+      (is (string/ends-with? (source-of (:symbol (about {:op :symbol :position :namespace
+                                                         :text "clojure.string"})))
+                             ".cljs"))
+      (is (string/ends-with? (source-of (:symbol (about {:op :symbol
+                                                         :position :namespace-macros
+                                                         :text "clojure.string"})))
+                             ".clj")))))
+
+
+;;; What a namespace calls a var
+
+(deftest test-what-a-clojurescript-namespace-writes-a-core-var-as
+  ;; The same question `:spellings' answers for Clojure, asked of the other
+  ;; table - and the answer has to come out of the compiler's rule rather than
+  ;; out of the mappings, because cljs.core is referred by a rule.
+  (when (compiling?)
+    (with-cljs-repl r
+      (eval! r "#replique/ns ops.spelt\n(def unrelated 1)")
+      (let [spellings (:spellings (about {:op :spellings :ns "ops.spelt"
+                                          :vars ["cljs.core/map"]}))]
+        (is (= ["cljs.core/map" "map"] (:cljs.core/map spellings))))
+      (testing "and a name the namespace excluded is written only in full,
+      which is the one way left to write it there"
+        (eval! r "(ns ops.spelt-not (:refer-clojure :exclude [map]))")
+        (is (= ["cljs.core/map"]
+               (:cljs.core/map (:spellings (about {:op :spellings :ns "ops.spelt-not"
+                                                   :vars ["cljs.core/map"]}))))))
+      (testing "an alias is another way to write it, as it is in Clojure"
+        (eval! r "(ns ops.spelt-aliased (:require [cljs.core :as c]))")
+        (is (= ["c/map" "cljs.core/map" "map"]
+               (:cljs.core/map (:spellings (about {:op :spellings :ns "ops.spelt-aliased"
+                                                   :vars ["cljs.core/map"]})))))))))
+
+(deftest test-a-clojure-var-is-not-a-spelling-in-the-other-world
+  ;; clojure.core/map and cljs.core/map are two vars, and a question about one
+  ;; of them asked of the other world names nothing to answer about.
+  (when (compiling?)
+    (let [spellings (:spellings (about {:op :spellings :ns "cljs.user"
+                                        :vars ["clojure.core/map" "cljs.core/map"]}))]
+      (is (nil? (:clojure.core/map spellings)))
+      (is (= ["cljs.core/map" "map"] (:cljs.core/map spellings))))
+    (testing "and the other way round, on the Clojure side"
+      (let [spellings (:spellings (ask {:op :spellings :ns "clojure.core"
+                                        :vars ["clojure.core/map" "cljs.core/map"]}))]
+        (is (= ["clojure.core/map" "map"] (:clojure.core/map spellings)))))))
+
+;;; Taking a definition away
+
+(deftest test-a-clojurescript-var-is-taken-away-from-every-namespace-that-had-it
+  (when (compiling?)
+    (with-cljs-repl r
+      (eval! r "#replique/ns ops.home\n(defn gone [] :here)")
+      (eval! r "(ns ops.calls (:require [ops.home :refer [gone]]))")
+      (eval! r "(ns ops.renames (:require [ops.home :refer [gone] :rename {gone went}]))")
+      (let [reply (about {:op :remove-var :var "ops.home/gone"})]
+        (is (= "reply" (:tag reply)))
+        (is (= "ops.home/gone" (:removed reply)))
+        (testing "named where each namespace writes it, which is what says
+        whose code will not compile until somebody edits it"
+          (is (= {:ops.home ["gone"] :ops.calls ["gone"] :ops.renames ["went"]}
+                 (:unmapped reply))))
+        (testing "and it resolves nowhere afterwards"
+          (is (nil? (:symbol (about {:op :symbol :position :code
+                                     :ns "ops.home" :text "gone"}))))
+          (is (nil? (:symbol (about {:op :symbol :position :code
+                                     :ns "ops.renames" :text "went"})))))))))
+
+(deftest test-removing-a-clojurescript-var-leaves-the-clojure-one-alone
+  ;; The two worlds hold the same name at once, and a request that named one
+  ;; of them must not reach into the other.
+  (when (compiling?)
+    (with-cljs-repl cljs-repl
+      (with-clj-repl clj-repl
+        (eval! cljs-repl "#replique/ns ops.twice\n(defn both [] :in-javascript)")
+        (eval! clj-repl "(ns ops.twice)")
+        (eval! clj-repl "(defn both [] :on-the-jvm)")
+        (is (= "ops.twice/both" (:removed (about {:op :remove-var :var "ops.twice/both"}))))
+        (testing "the Clojure var of that very name is still there"
+          (is (= "function" (:type (:symbol (ask {:op :symbol :position :code
+                                                  :ns "ops.twice" :text "both"}))))))
+        (testing "and removing that one is a second request"
+          (is (= "ops.twice/both"
+                 (:removed (ask {:op :remove-var :var "ops.twice/both"}))))
+          (is (nil? (:symbol (ask {:op :symbol :position :code
+                                   :ns "ops.twice" :text "both"})))))))))
+
+(deftest test-a-clojurescript-var-that-is-interned-nowhere-is-refused
+  ;; As the Clojure side refuses it, and for the same reason: this asks for
+  ;; one thing to be done to one var, and a request that found nothing to do
+  ;; has not been carried out.
+  (when (compiling?)
+    (let [r (about {:op :remove-var :var "ops.nowhere/nothing"})]
+      (is (= "error" (:tag r)))
+      (is (= "unknown-var" (:error r))))))

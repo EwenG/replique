@@ -119,7 +119,7 @@
   scope - so a text drawn from these is a text that reaches one of the
   readings rather than falling out of all of them."
   (vec (concat (pool :namespaces) (pool :aliases) (pool :classes) (pool :vars)
-               names/special-forms
+               (names/special-forms)
                (map #(str "." %) (pool :members))
                (map #(str ".-" %) (pool :members))
                (map #(str ":" %) (pool :keywords))
