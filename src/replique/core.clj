@@ -2,7 +2,8 @@
   "Starting and stopping a replique process. Replique owns the process it
   runs in - it is started by replique.main, never hosted by an application -
   so stopping is really only what a test does between two processes."
-  (:require [replique.json :as json]
+  (:require [replique.cljs :as cljs]
+            [replique.json :as json]
             [replique.output :as output]
             [replique.server :as server]
             [replique.state :as state]
@@ -282,6 +283,9 @@
       (try (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
            (catch IllegalStateException _)))
     (output/uninstall!)
+    ;; Before the server, because this deletes a directory and the connections
+    ;; are what might still be compiling into it
+    (cljs/release!)
     (when server (server/stop-server! server))
     (when port-file-claimed (delete-port-file! port-file))
     (reset! state/process nil)

@@ -1,8 +1,10 @@
 (ns replique.repl-test
   (:require [clojure.string :as string]
             [clojure.test :refer [deftest is testing]]
+            [replique.classpath :as classpath]
             [replique.core]
             [replique.output]
+            [replique.state :as state]
             [replique.test-client :as client
              :refer [connect send! recv request! disconnect with-process
                      control-client repl-client eval! recv-until
@@ -419,6 +421,36 @@
             (is (= "nil" (:value (frame-tagged (recv-until r "prompt") "ret")))))
           (finally (disconnect r)))))))
 
+(defn- only-a-file!
+  "A namespace that is on the classpath and has not been loaded, and its name.
+
+  WRITTEN HERE RATHER THAN BORROWED. The test below needs a namespace nothing
+  has loaded, and for a long time it borrowed one of clojure's own - which is a
+  premise about the whole process rather than about this test, and a premise
+  anything can take away. Putting a ClojureScript compiler on the classpath
+  took it away: cljs/core.cljc requires clojure.set, so a process that answers
+  one ClojureScript question has loaded it, and the test then asserted
+  something false about a perfectly correct process.
+
+  A namespace written under a directory made for this run cannot be loaded by
+  accident, because nothing else knows its name. Named with a number for the
+  same reason: two runs in one jvm are two namespaces, and the second must not
+  find the first one loaded.
+
+  Added to the loader the whole process shares, which is what every thread of a
+  running process reads the classpath through - see `replique.analysis-test',
+  which puts a source root up the same way."
+  []
+  (let [dir  (client/temp-dir)
+        ns   (symbol (str "probe.onlyafile" (System/nanoTime)))
+        file (java.io.File. (str dir) (str (string/replace (str ns) \. \/) ".clj"))]
+    (.mkdirs (.getParentFile file))
+    (spit file (str "(ns " ns ")\n(def marker :loaded)\n"))
+    (.addURL state/class-loader (.toURL (.toURI (java.io.File. (str dir)))))
+    (state/adopt-class-loader!)
+    (classpath/rescan!)
+    ns))
+
 (deftest a-namespace-that-is-only-a-file-is-made-empty-and-then-loaded
   (testing "the honest limit of creating a namespace that does not exist:
   one that exists only as a file on the classpath is made empty here, and
@@ -427,15 +459,17 @@
   loaded, not by what namespaces exist - so the empty one is a namespace
   that heals rather than one that shadows the file for good"
     (with-process [info nil]
-      (let [r (repl-client info)]
+      (let [r  (repl-client info)
+            ns (only-a-file!)]
         (try
-          (is (= "false" (:value (frame-tagged (eval! r "(some? (find-ns 'clojure.set))")
-                                               "ret"))))
-          (send! r "#replique/ns clojure.set\n(some? (resolve 'union))")
+          (is (= "false" (:value (frame-tagged
+                                  (eval! r (str "(some? (find-ns '" ns "))")) "ret")))
+              "the premise: nothing has loaded it")
+          (send! r (str "#replique/ns " ns "\n(some? (resolve 'marker))"))
           (is (= "false" (:value (frame-tagged (recv-until r "prompt") "ret"))))
           (is (= "true" (:value (frame-tagged
-                                 (eval! r (str "(do (require 'clojure.set) "
-                                               "(some? (resolve 'clojure.set/union)))"))
+                                 (eval! r (str "(do (require '" ns ") "
+                                               "(some? (resolve '" ns "/marker)))"))
                                  "ret"))))
           (finally (disconnect r)))))))
 

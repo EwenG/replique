@@ -13,4 +13,17 @@
   ;; of the checkout next to this one.
   :analysis {:override-deps
              {org.clojure/clojure
-              {:local/root "../replique-clj/target/clojure-1.12.5-r1.jar"}}}}}
+              {:local/root "../replique-clj/target/clojure-1.12.5-r1.jar"}}}
+
+  ;; The ClojureScript compiler this process answers .cljs questions out of.
+  ;; Not a dependency either, and for a second reason on top of the analysis's:
+  ;; it needs the forked clojure to run at all, because a ClojureScript
+  ;; namespace is a clojure.lang.Namespace in a NamespaceWorld and stock
+  ;; clojure has no such class. So this alias carries the override with it -
+  ;; `clojure -M:test:cljs' - and there is no combination that puts the
+  ;; compiler on the classpath of a stock clojure.
+  :cljs {:override-deps
+         {org.clojure/clojure
+          {:local/root "../replique-clj/target/clojure-1.12.5-r1.jar"}}
+         :extra-deps
+         {replique/replique-cljs {:local/root "../replique-cljs"}}}}}

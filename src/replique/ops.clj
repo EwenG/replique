@@ -4,6 +4,7 @@
             [clojure.repl.deps :as deps]
             [replique.analysis :as analysis]
             [replique.classpath :as classpath]
+            [replique.cljs :as cljs]
             [replique.completion :as completion]
             [replique.names :as names]
             [replique.protocol :as protocol]
@@ -25,7 +26,12 @@
            ;; such flag to ask - an op that cannot be answered says so, and
            ;; says what to start the process on instead - so this is for
            ;; somebody looking at the process rather than for the code path.
-           :analysis (analysis/available?))))
+           :analysis (analysis/available?)
+           ;; And whether it compiles ClojureScript, which is the same kind of
+           ;; fact and is answered the same way: a .cljs buffer that gets no
+           ;; completions is a process without the compiler on its classpath,
+           ;; and this is where somebody looking for the reason finds it.
+           :cljs (cljs/available?))))
 
 ;; Protocol smoke test. :value comes back both as JSON - which is lossy, EDN
 ;; keywords and symbols become strings - and as the EDN the process read, which
