@@ -14,6 +14,16 @@
 
 (defn- of [spellings var] (get spellings (keyword var)))
 
+;; The namespaces below are this file's own, and the names have to be: a test
+;; runs inside the process it is testing, so a namespace one test makes is
+;; still there when the next test file runs, and a second file that wrote
+;; a name another file had written would be answered about that file's rather
+;; than its own. Which is not a hazard that stays theoretical - it was one,
+;; here, until it was found: remove_var_test makes a `probe.renamed' with no
+;; :refer-clojure clause, so the ns macro refers the whole of clojure.core
+;; into it, and the form below then added `lettuce' to a namespace that
+;; already wrote `let'. A refer adds and never takes away, so re-evaluating an
+;; ns form cannot undo what the first one did.
 (deftest what-a-namespace-writes-a-var-as
   (with-process [info nil]
     (let [a (repl-client info)
@@ -22,28 +32,28 @@
       (try
         (testing "a namespace that refers core plainly writes let, and the
         qualified name is a way to write it wherever it is written"
-          (make! "(ns probe.plain)")
-          (is (= ["clojure.core/let" "let"] (of (written-as c "probe.plain") "clojure.core/let"))))
+          (make! "(ns probe.writes-plainly)")
+          (is (= ["clojure.core/let" "let"] (of (written-as c "probe.writes-plainly") "clojure.core/let"))))
 
         (testing "an alias is another way to write it, and does not take the
         first one away"
-          (make! "(ns probe.aliased (:require [clojure.core :as c]))")
+          (make! "(ns probe.writes-aliased (:require [clojure.core :as c]))")
           (is (= ["c/let" "clojure.core/let" "let"]
-                 (of (written-as c "probe.aliased") "clojure.core/let"))))
+                 (of (written-as c "probe.writes-aliased") "clojure.core/let"))))
 
         (testing "a namespace that excluded it and defined its own writes let
         for a var that is not this one, so let is not a way to write this one"
-          (make! "(ns probe.shadowed (:refer-clojure :exclude [let]))"
+          (make! "(ns probe.writes-shadowed (:refer-clojure :exclude [let]))"
                  "(def let :something-else)")
-          (let [found (written-as c "probe.shadowed")]
+          (let [found (written-as c "probe.writes-shadowed")]
             (is (= ["clojure.core/let"] (of found "clojure.core/let")))
             (testing "and what it did not exclude is untouched"
               (is (= ["clojure.core/fn" "fn"] (of found "clojure.core/fn"))))))
 
         (testing "referred under another name, it is written by that name"
-          (make! "(ns probe.renamed (:refer-clojure :rename {let lettuce}))")
+          (make! "(ns probe.writes-renamed (:refer-clojure :rename {let lettuce}))")
           (is (= ["clojure.core/let" "lettuce"]
-                 (of (written-as c "probe.renamed") "clojure.core/let"))))
+                 (of (written-as c "probe.writes-renamed") "clojure.core/let"))))
 
         (finally (disconnect a) (disconnect c))))))
 
