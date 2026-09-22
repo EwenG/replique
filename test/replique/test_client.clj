@@ -9,14 +9,16 @@
            [java.nio.file Files Path Paths]
            [java.nio.file.attribute FileAttribute]))
 
-(defn connect [{:keys [host port]}]
+(defn connect
+  ([info] (connect info 10000))
+  ([{:keys [host port]} timeout]
   (let [socket (doto (Socket. ^String host (int port))
-                 (.setSoTimeout 10000))]
+                 (.setSoTimeout (int timeout)))]
     {:socket socket
      :in (BufferedReader. (InputStreamReader. (.getInputStream socket)
                                               StandardCharsets/UTF_8))
      :out (BufferedWriter. (OutputStreamWriter. (.getOutputStream socket)
-                                                StandardCharsets/UTF_8))}))
+                                                StandardCharsets/UTF_8))})))
 
 (defn send! [{:keys [^BufferedWriter out]} msg]
   (.write out (if (string? msg) msg (pr-str msg)))
@@ -72,11 +74,20 @@
 ;;; reads the frames it produces, until the prompt says the repl is ready
 ;;; again.
 
-(defn repl-client [info]
-  (let [client (connect info)
-        hello (request! client {:op :hello :role :repl :id 0})
-        prompt (recv client)]
-    (assoc client :hello hello :prompt prompt)))
+(defn repl-client
+  "A repl connection, handshaken and standing at its first prompt.
+
+  `extra' is merged into the :hello - :dialect and :target for a ClojureScript
+  one. A ClojureScript handshake compiles cljs.core and starts a runtime before
+  it answers, which is seconds rather than milliseconds, so the timeout is the
+  caller's to raise."
+  ([info] (repl-client info nil))
+  ([info extra] (repl-client info extra 10000))
+  ([info extra timeout]
+   (let [client (connect info timeout)
+         hello (request! client (merge {:op :hello :role :repl :id 0} extra))
+         prompt (when (= "reply" (:tag hello)) (recv client))]
+     (assoc client :hello hello :prompt prompt))))
 
 (defn recv-until
   "Read frames until one of them has that tag, and return them all."

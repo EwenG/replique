@@ -187,6 +187,72 @@
 (defn event [event-name m]
   (frame (merge m {:tag "event" :event event-name})))
 
+(def ^:private max-buffered-output
+  "Flush a buffering writer once it grows past this. A form that prints a lot
+  without ever emitting a newline must not hold everything in memory."
+  8192)
+
+(defn buffering-writer
+  "A Writer that hands what is written to it to EMIT!, one flush at a time.
+
+  Buffered, and handed over per flush rather than per write: clojure flushes at
+  the end of every println, so a line of output is one call to EMIT!. A form
+  that prints without ever emitting a newline is handed over by size instead.
+
+  WHAT IT IS FOR is a frame, or an event, or whichever of the two the
+  destination turns out to be - which is why EMIT! is a function and not a
+  connection. A repl writes its output to the client that asked for it; a
+  ClojureScript runtime writes to whoever is evaluating in it at the time, and
+  to nobody in particular the rest of the time.
+
+  Thread safe, because the thing writing is the developer's own code and
+  nothing says it is one thread."
+  ^Writer [emit!]
+  (let [sb (StringBuilder.)
+        take-buffer!
+        (fn [mid-output?]
+          (locking sb
+            (let [n (.length sb)
+                  ;; A surrogate pair must never be split across two frames:
+                  ;; each half alone is not valid text, and both would go out
+                  ;; as U+FFFD. clojure prints a string one char at a time, so
+                  ;; a long string holding an emoji lands on this. Only worth
+                  ;; holding back mid-output: a flush is the end of what was
+                  ;; printed, and a lone surrogate there is what the code
+                  ;; really wrote.
+                  n (if (and mid-output? (pos? n)
+                             (Character/isHighSurrogate (.charAt sb (dec n))))
+                      (dec n)
+                      n)]
+              (when (pos? n)
+                (let [n (int n)
+                      s (.substring sb 0 n)]
+                  (.delete sb (int 0) n)
+                  s)))))
+        emit-buffer! (fn [mid-output?]
+                       (when-let [s (take-buffer! mid-output?)]
+                         (emit! s)))
+        append! (fn [x]
+                  (locking sb
+                    (cond
+                      (instance? String x) (.append sb ^String x)
+                      (integer? x) (.append sb (char (int x)))
+                      :else (.append sb ^chars x))
+                    (.length sb)))
+        append-range! (fn [x off len]
+                        (locking sb
+                          (if (instance? String x)
+                            (.append sb ^String x (int off) (int (+ (int off) (int len))))
+                            (.append sb ^chars x (int off) (int len)))
+                          (.length sb)))]
+    (proxy [Writer] []
+      (write
+        ([x] (when (>= (long (append! x)) max-buffered-output) (emit-buffer! true)))
+        ([x off len] (when (>= (long (append-range! x off len)) max-buffered-output)
+                       (emit-buffer! true))))
+      (flush [] (emit-buffer! false))
+      (close [] (emit-buffer! false)))))
+
 ;;; Writing
 
 (defn- frame->line
