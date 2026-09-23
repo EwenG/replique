@@ -228,6 +228,114 @@
   environments
   (atom {}))
 
+;;; How it is compiled
+;;
+;; HERE, between the environments and the code that makes one, because that is
+;; what the two halves of this need. `set-option!' refuses one change once a
+;; compile environment exists, which it has to read above; everything that
+;; builds an options map is below, and every one of them reads `options'.
+
+(def option-keys
+  "The compiler options a project can set. See `set-option!'.
+
+  THE WHOLE OF THEM, and there are three. This compiler reads six keys from an
+  options map, and the other three are not a project's to choose:
+
+    :out-dir       the environment's own - a temporary directory per target,
+                   and the one place everything looking at this process is
+                   looking
+    :source-paths  already right without being said: it defaults to the
+                   directory entries of the classpath
+                   (`clojure.cljs.driver/default-source-paths'), which is
+                   exactly what this process was started with
+    :main          a repl's rather than a project's. It arrives in the
+                   handshake, because it is what one connection wants to stand
+                   in and not something about the program
+
+  What is left:
+
+    :closure-library  compile against the Closure Library on the classpath
+                      instead of the subset this compiler carries. What a
+                      project whose own code or whose libraries reach past that
+                      subset - goog.style, goog.net.XhrIo, goog.functions -
+                      turns on. Having the library on the classpath is not
+                      enough and is not meant to be: anything depending on
+                      ClojureScript brings it, so its presence says nothing
+                      about intent. See `clojure.cljs.goog'
+    :npm              how npm packages are built, as a map: :build, :acquire,
+                      :root, :esbuild, :dev. See `clojure.cljs.npm'
+    :static-dispatch  compile a call to a var of known shape as a call to the
+                      arity that answers it. Faster, and it does not survive a
+                      redefinition that drops that arity"
+  #{:closure-library :npm :static-dispatch})
+
+(defonce ^{:doc
+           "What this process compiles with, over the compiler's own defaults.
+
+  Empty until something sets one, and what is not in here is not passed on: an
+  option absent from a compilation's map is the compiler's default, which is
+  the one place those are written down. Copying them here would be writing them
+  twice, and the copy is the one that would drift.
+
+  Read at every compilation rather than read once into the environment when it
+  is made - see `compiler-opts'."}
+  options
+  (atom {}))
+
+(defn set-option!
+  "Set the compiler option K to V for this process, and answer with all of them.
+
+  WHAT AN INIT SCRIPT CALLS. A compile environment is made on the first
+  ClojureScript question asked of this process and is never asked for options
+  again, so a project says what it needs in `.replique/init.clj' - which is read
+  before the process listens, and so before there is anybody to ask a first
+  question.
+
+  Refuses a key that is not an option rather than remembering it. An option
+  nobody reads looks exactly like one that worked, and what would have shown
+  otherwise is a compilation minutes later, on another thread, with the init
+  script long out of sight.
+
+  :closure-library is refused once this process has compiled something. Every
+  other option is read afresh at each compilation and can be changed whenever;
+  the Closure tree cannot, because the output directory already holds files
+  compiled against one of them, and a program holding goog.string from the
+  subset and goog.style from the library is one nobody can reason about."
+  [k v]
+  (when-not (contains? option-keys k)
+    (throw (ex-info (str "Not a ClojureScript compiler option: " (pr-str k)
+                         ". The options are: "
+                         (apply str (interpose ", " (sort (map str option-keys))))
+                         ".")
+                    {:option k :options (vec (sort option-keys))})))
+  ;; Setting it to what it already says is not a change, and refusing it would
+  ;; be refusing an init script the right to state what is already true. As
+  ;; booleans, because that is what the compiler reads it as
+  ;; (`clojure.cljs.goog/library-option'): an option absent and an option set
+  ;; to false are the same tree, and telling them apart here would refuse a
+  ;; script for writing down the default.
+  (when (and (= :closure-library k)
+             (not= (boolean v) (boolean (:closure-library @options)))
+             (seq @environments))
+    (throw (ex-info (str "The Closure Library cannot be chosen once ClojureScript"
+                         " has been compiled. This process has compiled for "
+                         (apply str (interpose ", " (sort (map name (keys @environments)))))
+                         " already, and its output holds files compiled against"
+                         " the other tree. It is set in .replique/init.clj, which"
+                         " is read before this process listens.")
+                    {:option k :targets (vec (sort (keys @environments)))})))
+  (swap! options assoc k v))
+
+(defn- compiler-opts
+  "The options a compilation into OUT-DIR runs under.
+
+  OUT-DIR LAST, so that it is not among the things an init script can set. It
+  is the environment's: the runtime fetches its modules from there and the ops
+  read what was written there, so a compilation that went anywhere else would
+  be a compilation nothing is looking at."
+  [out-dir]
+  (assoc @options :out-dir out-dir))
+
 (defn- make-output-dir!
   "A directory to compile into, deleted when the process stops.
 
@@ -262,7 +370,7 @@
       ;;
       ;; The driver directly rather than `compile-namespace!' below, which asks
       ;; for the environment this is still making.
-      ((of :compile-namespace!) (:cenv made) 'cljs.core {:out-dir (:out-dir made)})
+      ((of :compile-namespace!) (:cenv made) 'cljs.core (compiler-opts (:out-dir made)))
       made)))
 
 (defn environment
@@ -530,7 +638,7 @@
    (let [{:keys [cenv ^File out-dir]} (environment)]
      (with-ns (symbol ns)
        ((of :compile-namespace!) cenv (symbol ns)
-        (cond-> {:out-dir out-dir}
+        (cond-> (compiler-opts out-dir)
           source-paths (assoc :source-paths source-paths)))))))
 
 ;;; Evaluating
@@ -592,7 +700,7 @@
   ([form] (eval-form form nil))
   ([form {:keys [text file]}]
    (let [{:keys [cenv ^File out-dir]} (environment)
-         run #((of :eval-form) cenv (runtime!) form {:out-dir out-dir} text)]
+         run #((of :eval-form) cenv (runtime!) form (compiler-opts out-dir) text)]
      (if file
        (with-bindings* {(of :source-file) file} run)
        (run)))))

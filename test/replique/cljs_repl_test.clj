@@ -47,7 +47,7 @@
   (let [dir (client/temp-dir)
         out *out*
         err *err*]
-    (reset! the-process (core/start! {:directory dir}))
+    (reset! the-process (core/start! {:directory dir :init false}))
     (try
       ;; the streams the process replaced, for the reason `with-process' gives:
       ;; what clojure.test prints would otherwise be broadcast as output events

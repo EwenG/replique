@@ -54,12 +54,17 @@
   The body prints to the streams the process replaced: a test runs inside
   the process it is testing, which no editor does, and what clojure.test
   prints would otherwise be broadcast as output events - arriving on the
-  control connections the test is reading frames from."
+  control connections the test is reading frames from.
+
+  NO INIT SCRIPTS, unless a test asks for them. One of the two lives in the
+  home directory of whoever is running the tests, so a suite that read them
+  would be testing a different process on every machine - and passing on the
+  machine that wrote the script is the worst way to find that out."
   [[info-sym opts] & body]
   `(let [dir# (temp-dir)
          out# *out*
          err# *err*
-         ~info-sym (core/start! (merge {:directory dir#} ~opts))]
+         ~info-sym (core/start! (merge {:directory dir# :init false} ~opts))]
      (try (binding [*out* out# *err* err#] ~@body)
           (finally (core/stop!) (delete-recursively dir#)))))
 

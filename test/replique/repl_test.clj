@@ -858,7 +858,7 @@
     (let [dir (client/temp-dir)
           out *out*
           err *err*
-          info (replique.core/start! {:directory dir})
+          info (replique.core/start! {:directory dir :init false})
           ctrl (control-client info)]
       (try
         (binding [*out* out *err* err]

@@ -31,7 +31,7 @@
   than asked of replique.core, which this namespace is careful not to need
   before it has tried to load it - a classpath that cannot is a start failure
   it has to be able to report."
-  [:process-id :host :port :directory :port-file])
+  [:process-id :host :port :directory :port-file :init])
 
 (defn- property-name ^String [k] (str property-prefix (name k)))
 
@@ -74,7 +74,8 @@
       (prop :host) (assoc :host (prop :host))
       (prop :port) (assoc :port (read-prop :port))
       (prop :directory) (assoc :directory (prop :directory))
-      (prop :port-file) (assoc :port-file (prop :port-file)))))
+      (prop :port-file) (assoc :port-file (prop :port-file))
+      (prop :init) (assoc :init (read-prop :init)))))
 
 (defn- parse-args [args]
   (case (count args)

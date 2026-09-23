@@ -472,7 +472,7 @@
 
 (deftest port-file-lifecycle
   (let [dir (temp-dir)
-        info (core/start! {:directory dir})
+        info (core/start! {:directory dir :init false})
         port-file (Paths/get (str dir) (into-array String [".replique" "processes"
                                                            (str (:process-id info) ".json")]))]
     (try
@@ -482,7 +482,7 @@
       (core/stop!)
       (is (not (Files/exists port-file (make-array java.nio.file.LinkOption 0))))
       (testing "the process can be started again"
-        (core/start! {:directory dir :process-id (:process-id info)})
+        (core/start! {:directory dir :init false :process-id (:process-id info)})
         (is (Files/exists port-file (make-array java.nio.file.LinkOption 0)))
         (core/stop!))
       (finally (core/stop!) (delete-recursively dir)))))
@@ -499,7 +499,7 @@
         (Files/createDirectories (.getParent port-file) (make-array FileAttribute 0))
         (spit (str port-file) written)
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"process-id \"taken\" is taken"
-                              (core/start! {:directory dir :process-id "taken"})))
+                              (core/start! {:directory dir :init false :process-id "taken"})))
         (testing "the file of the process that is registered is left as it was"
           (is (= written (slurp (str port-file)))))
         (testing "nothing was started, so there is nothing to unwind"
@@ -519,11 +519,11 @@
           (fn []
             (is (thrown-with-msg? clojure.lang.ExceptionInfo
                                   #"Could not start the process in "
-                                  (core/start! {:directory dir :process-id "unwound"})))))
+                                  (core/start! {:directory dir :init false :process-id "unwound"})))))
         (testing "nothing is left started, so the server was closed with it"
           (is (not (state/started?))))
         (testing "and the name is free: the next start is a start, not a refusal"
-          (let [info (core/start! {:directory dir :process-id "unwound"})]
+          (let [info (core/start! {:directory dir :init false :process-id "unwound"})]
             (is (= "unwound" (:process-id info)))
             (is (Files/exists (Paths/get (str dir) (into-array String
                                                                [".replique" "processes"
@@ -704,7 +704,7 @@
           _ (Files/createDirectories shared (make-array FileAttribute 0))
           _ (Files/setPosixFilePermissions
              shared (java.nio.file.attribute.PosixFilePermissions/fromString "rwxr-xr-x"))
-          info (core/start! {:directory dir
+          info (core/start! {:directory dir :init false
                              :port-file (str shared "/replique.json")})]
       (try
         (is (= "rwxr-xr-x"
@@ -769,7 +769,7 @@
     said java.lang.Long and nothing a client could act on"
       (let [dir (temp-dir)]
         (try
-          (let [t (try (core/start! {:directory dir :host 42})
+          (let [t (try (core/start! {:directory dir :init false :host 42})
                        nil
                        (catch Throwable t t))]
             (is (some? t))
@@ -896,7 +896,7 @@
              (spit (str pf) winner)
              (throw (java.nio.file.FileAlreadyExistsException. (str pf))))}
           (fn []
-            (let [t (try (core/start! {:directory dir :process-id "contested"})
+            (let [t (try (core/start! {:directory dir :init false :process-id "contested"})
                          nil
                          (catch clojure.lang.ExceptionInfo t t))]
               (is (some? t))

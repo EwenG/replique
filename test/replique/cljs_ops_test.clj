@@ -50,7 +50,7 @@
   (let [dir (client/temp-dir)
         out *out*
         err *err*]
-    (reset! the-process (core/start! {:directory dir}))
+    (reset! the-process (core/start! {:directory dir :init false}))
     (try
       (binding [*out* out *err* err] (f))
       (finally (core/stop!) (reset! the-process nil)

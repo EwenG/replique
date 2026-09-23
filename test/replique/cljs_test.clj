@@ -136,3 +136,87 @@
     ;; the same var asked two different ways
     (is (= (cljs/resolve-var 'cljs.core 'map) (cljs/resolve-var 'cljs.user 'map)))
     (is (= 'cljs.core (ns-name (:ns (meta (cljs/resolve-var 'cljs.user 'map))))))))
+
+;;; What it is compiled with
+
+(defn- with-options*
+  "Call F with this process's compiler options put back afterwards.
+
+  They are a process-wide atom rather than a thread binding, because that is
+  what they are: an init script sets them once, before anything can ask a
+  question. So a test that set one and walked away would be setting it for
+  every test after it."
+  [f]
+  (let [before @cljs/options]
+    (try (f) (finally (reset! cljs/options before)))))
+
+(defmacro ^:private with-options [& body]
+  `(with-options* (fn [] ~@body)))
+
+(deftest test-an-option-that-is-not-one-is-refused
+  ;; Rather than remembered. An option nobody reads looks exactly like one that
+  ;; worked, and what would have shown otherwise is a compilation minutes
+  ;; later, on another thread, with the init script long out of sight. So the
+  ;; refusal happens where the mistake is, and names what the options are.
+  ;;
+  ;; No compiler needed: this is about the name of the option and not about
+  ;; anything the option does. A process with no compiler still reads the init
+  ;; script that sets one.
+  (with-options
+    (let [t (try (cljs/set-option! :optimizations :advanced) nil
+                 (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? t) "a key that is not an option must be refused")
+      (let [message (.getMessage t)]
+        (is (re-find #":optimizations" message) "and name the key that was wrong")
+        (is (re-find #":closure-library" message) "and say what the options are"))
+      (is (not (contains? @cljs/options :optimizations))
+          "and leave nothing behind, which is the point of refusing"))
+    (testing "and one that is one is kept, and answered with"
+      (let [answered (cljs/set-option! :static-dispatch true)]
+        (is (= true (:static-dispatch @cljs/options)))
+        (is (= @cljs/options answered) "set-option! answers with all of them")))))
+
+(deftest test-an-option-reaches-the-compilation
+  ;; The whole point of the atom, and the thing that would break silently: an
+  ;; option this process was configured with has to be in the map every
+  ;; compilation runs under, or it is a setting that reads back correctly and
+  ;; does nothing.
+  ;;
+  ;; :npm is the one that can be witnessed without another dependency. A string
+  ;; require is what makes clojure.cljs.npm run at all, and what it decides is
+  ;; reported: with nothing turned off it looks for a node_modules and says it
+  ;; found none, and with :build false it does not look, and says that instead.
+  ;; Two different answers about one fixture, which no default could produce.
+  (when (compiling?)
+    (with-options
+      (reset! cljs/options {})
+      (is (= :no-root (:why (:js-build (cljs/compile-namespace! 'rt.npm-program))))
+          "without the option, the bundler is looked for")
+      (cljs/set-option! :npm {:build false})
+      (is (= :disabled (:why (:js-build (cljs/compile-namespace! 'rt.npm-program))))
+          "with it, it is not - which only the option map can have said"))))
+
+(deftest test-the-closure-tree-cannot-change-once-something-is-compiled
+  ;; The one option with a lifetime. Every other one is read afresh at each
+  ;; compilation and can be changed whenever; this one cannot, because the
+  ;; output directory already holds files compiled against one tree, and a
+  ;; program holding goog.string from the subset and goog.style from the
+  ;; library is one nobody can reason about.
+  ;;
+  ;; Which is also why it is a choice and not a detection: anything depending
+  ;; on ClojureScript brings google-closure-library along, so having it on the
+  ;; classpath says nothing about wanting to compile against it.
+  (when (compiling?)
+    (with-options
+      ;; the environment first, so that this does not depend on what any other
+      ;; test in this namespace has already asked for
+      (cljs/environment)
+      (let [t (try (cljs/set-option! :closure-library (not (boolean (:closure-library @cljs/options))))
+                   nil
+                   (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? t) "changing it after a compilation must be refused")
+        (is (re-find #"Closure Library" (.getMessage t)))
+        (is (re-find #"init.clj" (.getMessage t)) "and say where it is set instead"))
+      (testing "and saying again what it already says is not a change"
+        (is (map? (cljs/set-option! :closure-library (boolean (:closure-library @cljs/options))))
+            "an init script must be free to write down the default")))))

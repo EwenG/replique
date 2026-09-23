@@ -59,7 +59,18 @@
                     {:host host})))
   host)
 
-(def ^:private option-keys #{:process-id :host :port :directory :port-file})
+(defn- validate-init
+  "Whether the init scripts are read. True or false and nothing else: this is
+  the one option that turns something off, and an option that turned it off for
+  every value but one would be an option nobody can read twice. See
+  `load-init-scripts!'."
+  [init]
+  (when-not (boolean? init)
+    (throw (ex-info (str "Invalid :init: " (pr-str init) ". :init is true or false.")
+                    {:init init})))
+  init)
+
+(def ^:private option-keys #{:process-id :host :port :directory :port-file :init})
 
 (defn- validate-opts
   "Refuse an option that is not one, rather than drop it. The options are how
@@ -90,9 +101,10 @@
     :host       host to bind to, defaults to the loopback address
     :port       0 (the default) binds to a free port
     :directory  where the port file is written, defaults to the working dir
-    :port-file  overrides the port file location, relative to :directory"
+    :port-file  overrides the port file location, relative to :directory
+    :init       read the init scripts, default true - see `load-init-scripts!'"
   [opts]
-  (let [{:keys [process-id host port directory port-file]} (validate-opts opts)
+  (let [{:keys [process-id host port directory port-file init]} (validate-opts opts)
         process-id (if (some? process-id)
                      (validate-process-id process-id)
                      (str (UUID/randomUUID)))
@@ -117,7 +129,12 @@
      :port-file (absolute
                  (if port-file
                    (.resolve (path directory) (path port-file))
-                   (path directory ".replique" "processes" (str process-id ".json"))))}))
+                   (path directory ".replique" "processes" (str process-id ".json"))))
+     ;; True where nothing says, because the scripts are what a project has
+     ;; already said about itself. False is for a client that is starting this
+     ;; process to find out what it does WITHOUT them - a test of replique
+     ;; itself, and the answer to an init script that broke a start
+     :init (if (some? init) (validate-init init) true)}))
 
 (defn- set-permissions! [^Path p ^String perms]
   ;; Best effort: fails on filesystems that are not posix
@@ -192,6 +209,71 @@
 (defn- delete-port-file! [^Path port-file]
   (try (Files/deleteIfExists port-file) (catch Exception _)))
 
+;;; What the project says before anything connects
+
+(defn- init-scripts
+  "The init scripts of DIRECTORY, in the order they are read: the user's, then
+  the project's.
+
+  BESIDE THE PORT FILE, in the .replique directory a process already writes its
+  name into, and under :directory rather than the working directory - a process
+  told to run for a project elsewhere reads that project's script and not the
+  one where it happens to have been started.
+
+  Two of them because they say different kinds of thing. A user's says how they
+  like a repl - what *print-length* is, what their editor needs - and holds for
+  every project they open; a project's says what the project is, and has the
+  last word because it is the one under version control. One file where both
+  names point at the same place: a process started in the home directory reads
+  it once, not twice."
+  [directory]
+  (distinct [(path (System/getProperty "user.home") ".replique" "init.clj")
+             (path directory ".replique" "init.clj")]))
+
+(defn- load-init-scripts!
+  "Read the init scripts of DIRECTORY. See `init-scripts'.
+
+  CODE RATHER THAN CONFIGURATION, and deliberately: what these files do is
+  mostly not settable. They install hooks that are functions, define macros and
+  put them where a library will find them, require a namespace early because
+  something downstream reads a var at load time, make the directories a build
+  writes into. A format holding only data would cover the smallest part of that
+  and leave a second place to look for the rest.
+
+  BEFORE THE SERVER IS BOUND, because what they say is what a connection finds.
+  A repl that connected while one was still running would be standing in a
+  process half configured, and a compile environment made before the compiler
+  options were read would hold none of them.
+
+  AFTER THE PORT FILE IS LOOKED FOR, because a script does things - the ones in
+  the wild make directories and write marker files - and a start about to be
+  refused for a name it cannot have must not do them first.
+
+  THROUGH THE LOADER EVERY CONNECTION SHARES, so that a script adding a library
+  adds it where the rest of the process will look. The thread is put back the
+  way it was found: it is the thread that started the process, not a connection,
+  and it does not keep what it borrowed.
+
+  A script that throws is a start that failed, reported the way every other one
+  is - the client that spawned the process gets a start-failed naming the file,
+  and the trace goes to stderr. The alternative is a process that comes up
+  configured differently from what its own project says, which is a difference
+  nobody notices until something behaves oddly hours later."
+  [directory]
+  (let [thread (Thread/currentThread)
+        borrowed (.getContextClassLoader thread)]
+    (.setContextClassLoader thread state/class-loader)
+    (try
+      (doseq [^Path script (init-scripts directory)]
+        (when (Files/exists script (make-array LinkOption 0))
+          (try
+            (load-file (str script))
+            (catch Throwable t
+              (throw (ex-info (str "Could not read the init script " script)
+                              {:init-script (str script)} t))))))
+      (finally
+        (.setContextClassLoader thread borrowed)))))
+
 (defn start!
   "Start the replique process. See normalize-opts for the options. Returns the
   process info - the same map that is written to the port file.
@@ -205,7 +287,7 @@
   ([opts]
    (when (state/started?)
      (throw (ex-info "This process is already started" {:process-info (state/info)})))
-   (let [{:keys [process-id host port directory port-file]} (normalize-opts opts)
+   (let [{:keys [process-id host port directory port-file init]} (normalize-opts opts)
          ;; Before the server is bound and before anything is installed, so
          ;; that a refusal costs nothing and unwinds nothing.  The port file
          ;; is how anything finds a process: taking the name of a process
@@ -217,6 +299,7 @@
          _ (when (Files/exists port-file (make-array LinkOption 0))
              (throw (ex-info (taken-message process-id port-file directory)
                              {:process-id process-id :port-file (str port-file)})))
+         _ (when init (load-init-scripts! directory))
          server (server/start-server {:host host
                                       :port port
                                       :name "replique"
