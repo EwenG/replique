@@ -98,6 +98,13 @@
          ;; evaluated in
          :eval-form     (rpl 'eval-form)
          :node-runtime  (rpl 'node-runtime)
+         ;; and the tooling's half: raw JavaScript, in every runtime, within a
+         ;; bound - see `eval-js'. ONE KEY AND NOT TWO, although the compiler
+         ;; has `evaluate-within' beside it: this map is all or nothing by
+         ;; design, so a key nothing calls could do nothing here but make
+         ;; `available?' false against a compiler that happens not to have it,
+         ;; and take the reading ops and the node repl down with it
+         :evaluate-all-within (rpl 'evaluate-all-within)
          ;; and the reader a form is read with, which is the compiler's and not
          ;; clojure's: it resolves in the ClojureScript world and reads
          ;; #?(:cljs ...) the right way round
@@ -1123,6 +1130,50 @@
      (if file
        (with-bindings* {(of :source-file) file} run)
        (run)))))
+
+(defn eval-js
+  "Evaluate the JavaScript JS in every runtime of `*target*', giving up after
+  MS, and answer what came back:
+
+    {:status :success/:error :value \"...\"}
+
+  `eval-form's shape, out of the same runtimes. Everything around the
+  evaluation is what differs.
+
+  RAW JAVASCRIPT, BECAUSE WHAT ASKS IS NOT A REPL. Swapping a stylesheet is
+  JavaScript with no ClojureScript anywhere in it, and the only road to it
+  through `eval-form' would be compiling a `(js* \"...\")' wrapper around a
+  string that is already the answer - an analyzer pass and a source map to
+  produce what was in hand.
+
+  EVERY RUNTIME, BECAUSE A PAGE IS NOT THE PAGE. The application is open and so
+  is the tab beside it, and a stylesheet that reloaded in one of them is a
+  stylesheet that did not reload.
+
+  WITHIN MS, AND THE BOUND IS NOT OPTIONAL. What asks this asks it while
+  somebody types, and what it asks may be a tab that has been asleep since
+  yesterday. `clojure.cljs.repl/evaluate-all-within' tells the two apart in its
+  answer - `busy' where the question never got in front of a page, `timed-out'
+  where a page has it and is still thinking - which are different things to
+  have to report.
+
+  AND IT DOES NOT TAKE THE TARGET'S LOCK, which is the deliberate one.
+  `with-evaluation*' is how a repl takes its turn, and a turn behind a
+  `require' of a hundred namespaces is a minute long. A stylesheet reload
+  queued there would arrive after exactly the wait it exists to avoid. It does
+  not claim the target's output either, so anything this printed while a repl
+  was evaluating would come out framed as that repl's - it prints nothing,
+  which is what makes that acceptable rather than a defect.
+
+  The runtime is started where there is none, as `eval-form' starts one, and a
+  browser with no page connected answers with the URL to open rather than
+  waiting for somebody to open it."
+  [js ms]
+  ;; The runtime in a let, so that what refuses a process without the compiler
+  ;; is `environment' in writing rather than by argument evaluation order:
+  ;; `of' answers nil where there is none, and nil is not a thing to call
+  (let [runtime (runtime!)]
+    ((of :evaluate-all-within) runtime js ms)))
 
 ;;; What happens after a load
 

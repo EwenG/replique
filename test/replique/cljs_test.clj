@@ -138,6 +138,102 @@
     (is (= (cljs/resolve-var 'cljs.core 'map) (cljs/resolve-var 'cljs.user 'map)))
     (is (= 'cljs.core (ns-name (:ns (meta (cljs/resolve-var 'cljs.user 'map))))))))
 
+
+;;; Raw JavaScript, for what is not a repl
+
+(def ^:private js-ms
+  "The bound every `eval-js' here is asked within.
+
+  Generous, because none of these is testing the deadline - what is bounded is
+  a browser that may be a sleeping tab, and the runtime under these is node,
+  which is a process that answers or has died. `clojure.cljs.repl's busy and
+  timed-out are tested where they are decided, in the compiler's repl-test."
+  10000)
+
+(deftest test-raw-javascript-is-evaluated-without-being-compiled
+  ;; The seam M1 exists to be. What asks is tooling - a stylesheet reload -
+  ;; holding a string of JavaScript with no ClojureScript anywhere in it, and
+  ;; the only road to the runtime before this was `eval-form', which would have
+  ;; meant compiling a (js* "...") wrapper around the answer to produce the
+  ;; answer.
+  (when (compiling?)
+    (binding [cljs/*target* :node]
+      (is (= {:status :success :value "2"} (cljs/eval-js "1 + 1" js-ms)))
+      ;; what came back is what the RUNTIME printed, so a JavaScript string
+      ;; arrives with its quotes in it - see `eval-form'
+      (is (= {:status :success :value "\"ab\""} (cljs/eval-js "'a' + 'b'" js-ms)))
+      (testing "and what it threw comes back as what it threw"
+        (let [r (cljs/eval-js "(function () { throw new Error('boom'); })()" js-ms)]
+          (is (= :error (:status r)))
+          (is (re-find #"boom" (str (:value r))))))
+      (testing "and the bound is the caller's"
+        ;; 0ms is past before any runtime can answer, which is the one way to
+        ;; witness the bound on node without wedging it: node answers by
+        ;; position, so a script that never returns would take every evaluation
+        ;; after it with it.
+        (let [r (cljs/eval-js "1 + 1" 0)]
+          (is (= :error (:status r)))
+          (is (re-find #"0ms" (str (:value r)))))
+        (is (= {:status :success :value "2"} (cljs/eval-js "1 + 1" js-ms))
+            "and giving up leaves the runtime there for the next question")))))
+
+(deftest test-it-is-the-broadcasting-one-that-was-wired-up
+  ;; Which cannot be witnessed here, and so is asserted as the wiring it is.
+  ;; Node is ONE runtime: `evaluate-all-within' and `evaluate-within' answer
+  ;; identically on it, so no behaviour in this process can tell them apart.
+  ;; The fan-out itself is the transport's and is tested against a real page in
+  ;; the compiler's browser-test. What this catches is the wire coming off the
+  ;; wrong terminal - and it matters here because a stylesheet that reloaded in
+  ;; the tab you happen to be evaluating in, and in none of the others, is a
+  ;; reload you would report as working.
+  (when (compiling?)
+    ;; the var and not its value, which is what `subsystem' holds throughout
+    (is (identical? (requiring-resolve 'clojure.cljs.repl/evaluate-all-within)
+                    (#'cljs/of :evaluate-all-within)))))
+
+(deftest test-it-does-not-wait-behind-the-repl
+  ;; THE POINT OF THE SEAM, and the thing a later edit would quietly undo by
+  ;; reaching for `with-evaluation' because everything else that evaluates uses
+  ;; it. A repl's turn is as long as what it is evaluating - a `require' of a
+  ;; hundred namespaces is a minute - and a stylesheet reload queued behind one
+  ;; arrives after exactly the wait it exists to avoid.
+  ;;
+  ;; Witnessed rather than timed: the lock is held until this says so, so an
+  ;; answer that arrives while it is still held is an answer that did not wait
+  ;; for it. The deref bound is there so that a change which DOES take the lock
+  ;; fails this test instead of hanging the suite on a deadlock.
+  (when (compiling?)
+    (binding [cljs/*target* :node]
+      ;; the runtime before the lock: starting node is the environment's, takes
+      ;; seconds, and is not what is being timed
+      (cljs/eval-js "1" js-ms)
+      (let [held     (promise)
+            release  (promise)
+            released (atom false)
+            holder   (future (cljs/with-target-lock*
+                              (fn []
+                                (deliver held true)
+                                (deref release js-ms nil)
+                                (reset! released true))))]
+        (try
+          (is (deref held js-ms nil) "the lock was taken")
+          (let [answer (future (cljs/eval-js "1 + 1" js-ms))
+                r      (deref answer js-ms ::waited)]
+            (is (= {:status :success :value "2"} r)
+                "answered while another thread held this target's lock")
+            (is (false? @released)
+                "and answered before that thread let it go"))
+          (finally
+            (deliver release true)
+            (deref holder js-ms nil)))))))
+
+(deftest test-a-process-without-the-compiler-refuses-raw-javascript-too
+  ;; And refuses rather than failing on a nil: `of' answers nil where there is
+  ;; no compiler, and nil is not a thing to call. The refusal comes from
+  ;; `environment', which is why the runtime is asked for first.
+  (when-not (compiling?)
+    (is (some? (refused #(cljs/eval-js "1 + 1" js-ms))))))
+
 ;;; What it is compiled with
 
 (defn- with-options*
