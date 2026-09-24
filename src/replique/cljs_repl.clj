@@ -459,7 +459,23 @@
                                                  :target (name target)
                                                  :connection (:id conn)
                                                  ;; nil on node, and dropped
-                                                 :url (:url runtime))))
+                                                 :url (:url runtime)
+                                                 ;; SAID BACK, because a client
+                                                 ;; that did not ask may be the
+                                                 ;; one reading this: a second
+                                                 ;; editor attaching to a repl
+                                                 ;; it did not start has the
+                                                 ;; reply and nothing else, and
+                                                 ;; which program the repl is
+                                                 ;; standing on is a thing to
+                                                 ;; show. Master said the same
+                                                 ;; in every repl-meta; here
+                                                 ;; the handshake is where a
+                                                 ;; connection's facts are, and
+                                                 ;; this one does not change.
+                                                 ;; Absent when none was named,
+                                                 ;; and dropped like `url'.
+                                                 :main main)))
               ;; after the reply, as for every other connection
               (server/set-role! conn :repl)
               (repl conn (some-> main symbol)))))))))

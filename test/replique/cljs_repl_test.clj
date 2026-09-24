@@ -420,6 +420,10 @@
     ;; you ask about it answers. The browser is the other way round and is
     ;; `test-a-main-on-the-browser-is-compiled-with-no-page' below.
     (with-repl [r {:dialect :cljs :target :node :main "rt.main-program"}]
+      (testing "the reply says which program, for a client that did not ask"
+        ;; A second editor attaching to a repl it did not start has the reply
+        ;; and nothing else. Master said the same thing in every repl-meta.
+        (is (= "rt.main-program" (:main (:hello r))) (pr-str (:hello r))))
       (testing "nothing is framed for it - there was no form, so there is no ret"
         (is (= "prompt" (:tag (:prompt r)))))
       (testing "and it does not move the repl, which :ns would be for"
@@ -448,6 +452,15 @@
       (is (= "true" (:value (frame-tagged
                              (eval! r "(.-__rt_loaded_program js/globalThis)")
                              "ret")))))))
+
+(deftest test-a-repl-started-on-nothing-says-nothing-about-a-main
+  (when (compiling?)
+    ;; Absent rather than null, which is this protocol's rule everywhere: a
+    ;; client reads the key being there, and emacs's json parser maps null and
+    ;; false to sentinel objects a caller then has to know about.
+    (with-repl [r nil]
+      (is (= "reply" (:tag (:hello r))))
+      (is (not (contains? (:hello r) :main)) (pr-str (:hello r))))))
 
 (deftest test-a-main-that-cannot-be-loaded-is-said-before-the-first-prompt
   (when (compiling?)
