@@ -15,7 +15,8 @@
   The first question asked of the compiler compiles cljs.core, which is
   seconds. That is why these tests share one process and one environment
   rather than making one each."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.java.io :as io]
+            [clojure.test :refer [deftest is testing]]
             [replique.cljs :as cljs]
             [replique.ops]
             [replique.test-client :as client
@@ -220,3 +221,79 @@
       (testing "and saying again what it already says is not a change"
         (is (map? (cljs/set-option! :closure-library (boolean (:closure-library @cljs/options))))
             "an init script must be free to write down the default")))))
+
+;;; The directory it compiles into
+
+(defn- a-directory-with-something-in-it
+  "A directory holding a file in a subdirectory of its own, which is the shape
+  an output directory has and the shape `File.deleteOnExit' will not delete."
+  ^java.io.File []
+  (let [dir (io/file (System/getProperty "java.io.tmpdir")
+                     (str "replique-cljs-hook-test-" (System/nanoTime)))]
+    (.mkdirs (io/file dir "ns" "app"))
+    (spit (io/file dir "ns" "app" "core.js") "// a module\n")
+    dir))
+
+(deftest test-an-output-directory-goes-when-the-process-is-killed-rather-than-stopped
+  ;; The ending `release!' does not cover. A process stopped through
+  ;; `replique.core/stop!' closes its runtimes and deletes what it compiled; a
+  ;; process that is merely SIGTERMed or ^C-ed never runs a line of that, and
+  ;; what it leaves behind is a temporary directory of a few hundred megabytes
+  ;; that nothing will ever look at again. This is the hook that covers it.
+  (let [dir  (a-directory-with-something-in-it)
+        hook (#'cljs/delete-at-exit! dir)
+        rt   (Runtime/getRuntime)]
+    (try
+      (is (.isDirectory dir))
+      ;; REGISTERED WITH THE JVM, which is the half a hook that is merely built
+      ;; would not have: removing it answers true only for one that is on the
+      ;; list. Put straight back, so this test leaves the process as it was.
+      (is (true? (.removeShutdownHook rt hook)) "the hook is on the jvm's list")
+      (.addShutdownHook rt hook)
+      ;; and what the jvm will run when it goes
+      (.run hook)
+      (is (not (.exists dir))
+          "the tree goes, which is what File.deleteOnExit could not have done")
+      ;; TWICE IS NOT AN ERROR, because `release!' may have got there first and
+      ;; a hook that threw would print a stack trace over whatever the user was
+      ;; reading on the way out
+      (.run hook)
+      (finally
+        (.removeShutdownHook rt hook)
+        (when (.exists dir) (#'cljs/delete-tree! dir))))))
+
+(deftest test-the-environment-keeps-the-hook-that-will-delete-its-directory
+  ;; Kept rather than registered and forgotten, and that is what makes the
+  ;; orderly ending able to undo the other one: a process stopped inside a jvm
+  ;; that goes on running - which is every test in this suite - would otherwise
+  ;; leave a hook per environment behind, each one a promise about a directory
+  ;; that is already gone.
+  (when (compiling?)
+    (let [{:keys [out-dir out-dir-hook]} (cljs/environment)
+          rt (Runtime/getRuntime)]
+      (is (instance? Thread out-dir-hook) "the environment carries its hook")
+      (is (.isDirectory ^java.io.File out-dir))
+      (is (true? (.removeShutdownHook rt out-dir-hook)) "and it is registered")
+      (.addShutdownHook rt out-dir-hook))))
+
+(deftest test-stopping-takes-the-hook-off-with-the-directory
+  ;; `release!' empties the environments atom, so this runs in the process that
+  ;; has none to empty - the one without a compiler. What it tests is not about
+  ;; the compiler anyway: it is what release! does with the two things an
+  ;; environment holds about its directory.
+  (when-not (compiling?)
+    (let [dir  (a-directory-with-something-in-it)
+          hook (#'cljs/delete-at-exit! dir)
+          rt   (Runtime/getRuntime)]
+      (try
+        (swap! @#'cljs/environments assoc ::fake
+               {:out-dir dir :out-dir-hook hook :runtime (atom nil)})
+        (cljs/release!)
+        (is (not (.exists dir)) "the directory goes")
+        (is (false? (.removeShutdownHook rt hook))
+            "and the hook goes with it, rather than outliving what it was about")
+        (finally
+          (swap! @#'cljs/environments dissoc ::fake)
+          (.removeShutdownHook rt hook)
+          (when (.exists dir) (#'cljs/delete-tree! dir)))))))
+

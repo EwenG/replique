@@ -347,6 +347,59 @@
   [out-dir]
   (assoc @options :out-dir out-dir))
 
+(defn- delete-tree!
+  [^File f]
+  (when (.isDirectory f) (run! delete-tree! (.listFiles f)))
+  (.delete f))
+
+(defn- delete-at-exit!
+  "Arrange for DIR to go when this jvm does, and answer the hook that will do it.
+
+  WHAT `File.deleteOnExit' CANNOT DO, and it is the idiom this is named after.
+  That one deletes a FILE, and a directory only while it is empty - this one is
+  about to hold a module and a source map per namespace, which for a real program
+  is a thousand files. It also keeps its list forever, so a long-lived process
+  that made several would hold every path it ever named. A hook that deletes the
+  tree is the same promise kept for a directory.
+
+  BESIDE THE ORDERLY PATH RATHER THAN INSTEAD OF IT. `release!' is what a process
+  being STOPPED does, and it does more than this: it closes the runtimes first,
+  because one of them is serving the directory that is about to go. This is what
+  is left when nobody called stop! - a ^C in the terminal the process was started
+  from, a SIGTERM from whatever supervises it, an editor exiting. The two are not
+  a fallback pair, they are two different endings, and `release!' takes the hook
+  off the list when it gets there first.
+
+  NOT EVERY ENDING IS A SHUTDOWN, and the honest limit is worth writing down: a
+  SIGKILL and a hard crash run no hook, here or anywhere, so a directory can
+  still be orphaned. What would cover that is a sweep of the siblings at startup,
+  which is a different piece of work and not this one.
+
+  A HOOK THAT CANNOT THROW. One that did would print a stack trace out of a
+  process that is already leaving, over whatever the user was reading. And a
+  registration is refused once shutdown has begun, which is not a failure either:
+  it means the jvm is already doing what the hook was for."
+  ^Thread [^File dir]
+  (let [hook (Thread. ^Runnable (fn [] (try (delete-tree! dir) (catch Throwable _ nil)))
+                      "replique-cljs-output")]
+    (try (.addShutdownHook (Runtime/getRuntime) hook)
+         (catch IllegalStateException _ nil))
+    hook))
+
+(defn- forget-at-exit!
+  "Take HOOK off the jvm's list, for a directory that has already gone.
+
+  Because a process can be stopped without the jvm ending - `replique.core/stop!'
+  is a function, and the tests call it many times in one jvm - and a hook nobody
+  removed is a promise about a directory that is not there any more. Removed the
+  way `stop!' removes its own, refusal and all: `IllegalStateException' here says
+  shutdown has begun, and a hook that is about to run is not one to argue with."
+  [^Thread hook]
+  (when hook
+    (try (.removeShutdownHook (Runtime/getRuntime) hook)
+         (catch IllegalStateException _ nil)))
+  nil)
+
 (defn- make-output-dir!
   "A directory to compile into, deleted when the process stops.
 
@@ -362,9 +415,14 @@
   "A compile environment for TARGET, with cljs.core already in it."
   [t]
   (with-ns 'cljs.user
-    (let [made {:target   t
+    (let [out-dir (make-output-dir!)
+          made {:target   t
                 :cenv     ((of :compile-env) {:ns 'cljs.user :core-macros 'cljs.core})
-                :out-dir  (make-output-dir!)
+                :out-dir  out-dir
+                ;; WHAT DELETES IT WHEN NOBODY STOPS THIS PROCESS. Kept here
+                ;; rather than forgotten, so that `release!' can take it off the
+                ;; list again - see `delete-at-exit!'.
+                :out-dir-hook (delete-at-exit! out-dir)
                 ;; One evaluation at a time on this target - see `with-evaluation*'
                 :lock     (ReentrantLock. true)
                 ;; and who is having it, which is what the runtime's own output
@@ -882,11 +940,6 @@
 
 ;;; Letting go
 
-(defn- delete-tree!
-  [^File f]
-  (when (.isDirectory f) (run! delete-tree! (.listFiles f)))
-  (.delete f))
-
 (defn release!
   "Forget every environment, stop every runtime, and delete what they compiled
   into.
@@ -899,10 +952,14 @@
   a repl blocked on a page that will never answer - and because the browser
   runtime is serving the directory that is about to go."
   []
-  (doseq [[_ {:keys [runtime ^File out-dir]}] (first (reset-vals! environments {}))]
+  (doseq [[_ {:keys [runtime ^File out-dir out-dir-hook]}]
+          (first (reset-vals! environments {}))]
     (when-let [^Closeable rt @runtime]
       (try (.close rt) (catch Throwable _ nil)))
-    (when out-dir (delete-tree! out-dir)))
+    (when out-dir (delete-tree! out-dir))
+    ;; AFTER the directory and not instead of it: the hook is a promise about a
+    ;; directory, and the promise is kept here rather than dropped
+    (forget-at-exit! out-dir-hook))
   nil)
 
 ;;; The seam: the two things that are world-bound
