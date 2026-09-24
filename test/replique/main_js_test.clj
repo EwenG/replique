@@ -235,6 +235,75 @@
         (finally (.setWritable (io/file dir "locked" "main.js") true)
                  (client/delete-recursively dir))))))
 
+;;; The menu: which programs this project has
+
+(deftest test-the-menu-is-the-program-each-module-s-page-loads
+  ;; THE WHOLE OF WHAT `mainNs' IS FOR. The browser never reads it - the page
+  ;; imports `mainPath' - so the name is in the file for whoever finds the
+  ;; file, and what they learn from it is which programs this project can be
+  ;; started on. Master's editor harvested exactly this, in the pass that
+  ;; refreshed the ports, and offered it when a ClojureScript repl was asked
+  ;; for; here the walk is the process's and the menu has to be asked for.
+  (when (compiling?)
+    (let [dir (client/temp-dir)]
+      (try
+        (stale! dir "a/main.js" "http://localhost:1/" "my.app")
+        (stale! dir "b/main.js" "http://localhost:2/" "my.admin")
+        (stale! dir "c/main.js" "http://localhost:3/" nil)
+        (let [found   (cljs/main-modules dir)
+              by-file (into {} (map (juxt :file :main)) found)]
+          (is (= 3 (count found)))
+          (is (= #{"my.app" "my.admin"} (set (keep :main found))))
+          (testing "each name is answered beside the file it was read out of"
+            (is (= "my.app" (get by-file (str (io/file dir "a" "main.js")))))
+            (is (= "my.admin" (get by-file (str (io/file dir "b" "main.js"))))))
+          (testing "a module naming no program is answered all the same"
+            ;; What was found is a fact about the files rather than only about
+            ;; the names in them, and a page with no program in it is a thing
+            ;; to want: leaving it out would be a client shown two modules in a
+            ;; project that has three.
+            (let [none (str (io/file dir "c" "main.js"))]
+              (is (contains? by-file none))
+              (is (nil? (get by-file none))))))
+        (finally (client/delete-recursively dir))))))
+
+(deftest test-the-menu-is-read-and-nothing-is-written
+  ;; ASKED WITHOUT A PORT, which is the difference between this and the
+  ;; refresh answering twice. A client asking which programs a project has
+  ;; must not start a browser runtime by asking - and a file whose
+  ;; modification time means something to somebody's build must not be touched
+  ;; by a question.
+  (when (compiling?)
+    (let [dir (client/temp-dir)]
+      (try
+        (let [f (stale! dir "main.js" "http://localhost:9999/" "my.app")]
+          (.setLastModified f 1000000)
+          (is (= [{:file (str f) :main "my.app"}] (cljs/main-modules dir)))
+          (testing "the file was not written"
+            (is (= 1000000 (.lastModified f))))
+          (testing "and the port it names is the stale one it named before"
+            ;; Which is the whole assertion: had this refreshed anything it
+            ;; would have had to start the runtime to have a port at all.
+            (is (= "9999" (port-of (slurp f))))))
+        (finally (client/delete-recursively dir))))))
+
+(deftest test-the-menu-comes-from-the-walk-that-finds-them
+  ;; One walk and one rule for what a main module is, so that a project shows
+  ;; the same modules in a menu as the refresh moves. Master's file is the one
+  ;; that matters: a menu claiming it would offer a namespace read out of a
+  ;; file this replique does not own.
+  (when (compiling?)
+    (let [dir (client/temp-dir)]
+      (try
+        (stale! dir "src/main.js" "http://localhost:1/" "my.app")
+        (stale! dir "node_modules/some-package/main.js" "http://localhost:1/" "theirs")
+        (stale! dir ".git/hooks/main.js" "http://localhost:1/" "hook")
+        (masters! dir "src/replique-1.js")
+        (ordinary! dir "src/app.js")
+        (let [found (cljs/main-modules dir)]
+          (is (= [{:file (str (io/file dir "src" "main.js")) :main "my.app"}] found)))
+        (finally (client/delete-recursively dir))))))
+
 ;;; The wiring: when it happens on its own
 
 (deftest test-starting-a-browser-runtime-refreshes-the-project-s-main-modules

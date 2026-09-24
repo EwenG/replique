@@ -1,6 +1,7 @@
 (ns replique.control-test
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.data.json :as djson]
+            [clojure.java.io :as io]
             [clojure.string :as string]
             [replique.control]
             [replique.core :as core]
@@ -175,6 +176,34 @@
         (finally
           (remove-ns 'replique.ops-test-made)
           (disconnect client))))))
+
+;; THE MENU A CLIENT OFFERS WHEN IT STARTS A ClojureScript REPL, and a process
+;; with no compiler in it still has one: reading the first line of the .js
+;; files under a directory is not a question about ClojureScript, and what the
+;; pages here load is true whether or not this process could compile any of it.
+;; The refusal belongs where the compiler is actually needed - :main-js writes
+;; one of these files, and a repl started on one of these namespaces compiles
+;; it.
+;;
+;; The fixture is written by hand and not by `replique.cljs/main-js', which is
+;; the one thing a process without the compiler cannot do. What the walk reads
+;; is the first line and one constant; that those are what that writer writes
+;; is asserted where it is - see `replique.main-js-test'.
+(deftest main-modules-are-answered-without-a-compiler
+  (with-process [info nil]
+    (let [client (control-client info)
+          f      (io/file (:directory info) "assets" "main.js")]
+      (try
+        (io/make-parents f)
+        (spit f (str "//replique-2 main module\n"
+                     "const host = \"127.0.0.1\";\n"
+                     "const port = \"1\";\n"
+                     "const mainNs = \"my.app\";\n"))
+        (spit (io/file (:directory info) "assets" "vendor.js") "export const x = 1;\n")
+        (let [reply (request! client {:op :main-modules :id 6})]
+          (is (= "reply" (:tag reply)) (pr-str reply))
+          (is (= [{:file (str f) :main "my.app"}] (:modules reply))))
+        (finally (disconnect client))))))
 
 (deftest unknown-op
   (with-process [info nil]

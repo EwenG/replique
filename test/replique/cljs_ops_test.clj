@@ -562,3 +562,36 @@
     (let [r (ask {:op :main-js})]
       (is (= "error" (:tag r)))
       (is (= "invalid-message" (:error r))))))
+
+(deftest test-which-programs-this-project-has
+  ;; THE OTHER HALF OF `mainNs'. A main module names the namespace its page
+  ;; loads for whoever finds the file - the browser imports `mainPath' and
+  ;; never reads the name - and this is the op that reader asks. What it
+  ;; answers is a menu: which programs this project can be started on, which is
+  ;; what a client offers as the `:main' of a ClojureScript repl so that the
+  ;; page's import lands on a program rather than on a 404. Replique 1 built
+  ;; the same list by walking the project from the editor.
+  (when (compiling?)
+    (let [dir (io/file (:directory (ask {:op :process-info})))
+          a   (io/file dir "menu-a" "main.js")
+          b   (io/file dir "menu-b" "main.js")]
+      (try
+        (ask {:op :main-js :file (str a) :main "ops.menu"})
+        (ask {:op :main-js :file (str b)})
+        (let [r       (ask {:op :main-modules})
+              by-file (into {} (map (juxt :file :main)) (:modules r))]
+          (is (= "reply" (:tag r)) (pr-str r))
+          (testing "both were found, and each is named beside its program"
+            (is (= "ops.menu" (get by-file (str a))))
+            (testing "and the one naming no program is answered all the same"
+              (is (contains? by-file (str b)))
+              (is (nil? (get by-file (str b))))))
+          (testing "they are the files this process wrote and not a list it kept"
+            ;; Nothing is remembered between asks: these live in an
+            ;; application's own assets and are edited by whoever edits those.
+            (client/delete-recursively (.getParentFile a))
+            (let [again (into #{} (map :file) (:modules (ask {:op :main-modules})))]
+              (is (not (contains? again (str a))))
+              (is (contains? again (str b))))))
+        (finally (doseq [^java.io.File d [(.getParentFile a) (.getParentFile b)]]
+                   (when (.exists d) (client/delete-recursively d))))))))

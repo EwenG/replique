@@ -550,6 +550,28 @@
             f (if (.isAbsolute f) f (io/file (:directory (state/info)) file))]
         (cljs/write-main-js! f named)))))
 
+;; Which programs this project can be started on, read out of the files that
+;; name them. A main module says `mainNs' for a reader rather than for the
+;; browser - the page imports `mainPath' and never looks at the name - and this
+;; is the op that reader asks. Master's editor built the same menu by walking
+;; the project itself, in the pass where it refreshed the ports; the walk lives
+;; here now, so the menu has to be asked for.
+;;
+;; NOT REFUSED WITHOUT A COMPILER, unlike :main-js. Walking a directory for
+;; files whose first line says what they are is not a question about
+;; ClojureScript, and a process that cannot compile a line of it can still say
+;; truthfully which programs the pages under it load. The refusal belongs where
+;; the compiler is actually needed - writing one of these files, and starting a
+;; repl on one of these namespaces.
+;;
+;; NOTHING IS REMEMBERED BETWEEN ASKS. What is being asked about is written into
+;; an application's own assets and is edited by whoever edits those, so a list
+;; kept here would be a list that is right until somebody moves a file.
+(defmethod protocol/handle :main-modules [_ _]
+  {:modules (if-let [dir (:directory (state/info))]
+              (cljs/main-modules dir)
+              [])})
+
 (defmethod protocol/handle :interrupt [_ msg]
   (let [id (:connection msg)
         target (get (state/connections) id)]

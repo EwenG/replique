@@ -804,13 +804,53 @@
 
   WHAT WAS FOUND IS ANSWERED RATHER THAN KEPT, `:main' most of all: an editor
   that found these files learns from them which namespaces this project can be
-  started on, and that is where master's menu of them came from. Nothing asks
-  for it yet, and it costs a key to carry it out of a walk already done."
+  started on, and that is where master's menu of them came from. `main-modules'
+  is that question asked on its own, by a client that wants the menu and not
+  the move."
   [dir ^String url]
   (let [^URI u (URI. url)
         host   (str "const host = \"" (.getHost u) "\";")
         port   (str "const port = \"" (.getPort u) "\";")]
     (mapv #(refreshed! % host port) (main-js-files (io/file dir)))))
+
+(defn- program-of
+  "The namespace the page of the main module FILE loads, or nil.
+
+  NIL ALSO WHERE THE FILE COULD NOT BE READ, which is what `begins-with-marker?'
+  answers for one it cannot open. A module that went away between the walk that
+  found it and this is a file the answer is now silent about, and not a reason
+  for the menu of all the others to be a refusal."
+  [^File file]
+  (try (second (re-find main-ns-line (slurp file)))
+       (catch Throwable _ nil)))
+
+(defn main-modules
+  "Every main module under DIR, and the program each one's page loads.
+
+  THE MENU, WHICH IS THE WHOLE OF WHAT `mainNs' IS FOR. A main module names the
+  namespace its page loads so that whoever finds the file learns which programs
+  this project can be started on - master's editor harvested exactly this, in
+  the pass that refreshed the port, and offered it when a ClojureScript repl was
+  asked for. The BROWSER never reads it: the page imports `mainPath', and a name
+  is of no use to it.
+
+  READ AND NOT WRITTEN, AND ASKED WITHOUT A PORT. `refresh-main-js!' answers the
+  same namespaces and has to be given a url, because moving the files is what it
+  is for; this is the question on its own, and a client asking which programs a
+  project has must not start a browser runtime by asking it.
+
+  One map per module found:
+
+    {:file where it is
+     :main the namespace its page loads, or nil where it names none}
+
+  A MODULE THAT NAMES NONE IS STILL ANSWERED, because what was found is a fact
+  about the files rather than only about the names in them: a page with no
+  program in it is a thing to want, and a client showing what is here would
+  otherwise show nothing where one is."
+  [dir]
+  (mapv (fn [^File f] {:file (str f) :main (program-of f)})
+        (main-js-files (io/file dir))))
 
 (defn- refresh-main-js-on-start!
   "The refresh a browser runtime does when it starts, which is the only moment
