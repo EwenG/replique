@@ -985,14 +985,23 @@
   What a REPL's require and a client's load both come down to. Here rather than
   in each of them because the output directory is the environment's, and a
   compilation that wrote somewhere else would be a compilation nothing is
-  looking at."
+  looking at.
+
+  WHAT THIS ENVIRONMENT ALREADY HOLDS IS NOT COMPILED AGAIN, which is the driver's
+  doing and not this function's: an environment lives as long as this process, so
+  the second ask for a namespace in it is free. `:reload-all' is how a caller says
+  it wants the graph read off disk regardless - the only way to pick up a file
+  edited outside this process - and it is what a repl starting on a `:main' asks
+  for. See clojure.cljs.driver/ensure!."
   ([ns] (compile-namespace! ns nil))
-  ([ns {:keys [source-paths]}]
+  ([ns {:keys [source-paths reload reload-all]}]
    (let [{:keys [cenv ^File out-dir]} (environment)]
      (with-ns (symbol ns)
        ((of :compile-namespace!) cenv (symbol ns)
         (cond-> (compiler-opts out-dir)
-          source-paths (assoc :source-paths source-paths)))))))
+          source-paths (assoc :source-paths source-paths)
+          reload       (assoc :reload true)
+          reload-all   (assoc :reload-all true)))))))
 
 ;;; Evaluating
 

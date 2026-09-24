@@ -329,13 +329,27 @@
   disk - and that failure is still framed whether or not anything is connected,
   which is the half a liveness test must not swallow. It is framed WITH ITS
   TRACE, for the reason `failed-here' gives: nothing else here says which
-  macro, in whose library, the compiler was inside when it gave up."
+  macro, in whose library, the compiler was inside when it gave up.
+
+  THE GRAPH IS READ OFF DISK HERE AND NOWHERE ELSE. The compiler compiles nothing
+  the environment already holds, which is what makes loading one file at a repl
+  cost one file; starting a repl on a `:main' is the moment worth undoing that
+  for, because it is what a person does when they want the program rebuilt."
   [conn flush-output! main]
   ;; The target lock and not `with-evaluation', which would claim this target's
   ;; output for CONN while the compile ran: a compile makes no runtime print, so
   ;; the only thing that could arrive is a page logging a failed fetch of its
   ;; own - and that line would come out framed as this repl's.
-  (if-let [failed (try (cljs/with-target-lock* #(cljs/compile-namespace! main))
+  ;; :reload-all, which is what makes starting a repl on a :main mean what it has
+  ;; always meant: the graph read off disk. The driver compiles nothing this
+  ;; environment already holds, and holding it is the usual case here - a second
+  ;; repl on a process that compiled this program an hour ago would otherwise
+  ;; stand in whatever was on disk an hour ago, and a file edited in between would
+  ;; be missed by the one action a person takes when they want a clean build. It
+  ;; costs what it has always cost, and it is paid once per repl rather than once
+  ;; per form.
+  (if-let [failed (try (cljs/with-target-lock*
+                        #(cljs/compile-namespace! main {:reload-all true}))
                        nil
                        (catch Throwable t (failed-here :compile t)))]
     (report! conn flush-output! failed)
