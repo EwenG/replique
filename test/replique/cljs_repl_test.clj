@@ -14,11 +14,15 @@
   once per test. What the tests give up for it is isolation between
   namespaces, which they buy back by each using a namespace of its own.
 
-  The target is node throughout. The browser one cannot be driven without a
-  page, and what a page would exercise is the transport rather than this role -
-  the compiler's own `browser-test' is where that is tested, against a node
-  process running the browser client."
-  (:require [clojure.string :as string]
+  The target is node almost throughout. The browser one cannot be driven without
+  a page, and what a page would exercise is the transport rather than this role
+  - the compiler's own `browser-test' is where that is tested, against a node
+  process running the browser client. THE EXCEPTION IS `:main', whose whole
+  point is that it needs no page: the two tests of it on the browser are the
+  ones at the bottom of this file, and they start the two servers and never open
+  anything."
+  (:require [clojure.java.io :as io]
+            [clojure.string :as string]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [replique.cljs :as cljs]
             [replique.core :as core]
@@ -70,6 +74,16 @@
   "What the repls in this file are asking of, from inside the process."
   []
   (binding [cljs/*target* :node] (cljs/environment)))
+
+(defn- browser-env
+  "The same, for the one target the `:main' tests below use.
+
+  A SECOND ENVIRONMENT, not a second view of the first: two targets compile two
+  different programs out of the same sources, so this one has its own symbol
+  table and its own output directory and knows nothing of what the node repls
+  in this file have compiled."
+  []
+  (binding [cljs/*target* :browser] (cljs/environment)))
 
 ;;; What a handshake says
 
@@ -399,9 +413,12 @@
 
 (deftest test-a-repl-can-be-started-on-a-namespace
   (when (compiling?)
-    ;; What master's `(cljs-repl 'my.app)' was for, and the half of it that
-    ;; matters is not the compile: a repl started on a program is one whose
-    ;; program is IN THE RUNTIME, so the first thing you ask about it answers.
+    ;; What master's `(cljs-repl 'my.app)' was for. ON NODE THE LOAD HAPPENS
+    ;; TOO, which is the half this test is about: there is no page to do it and
+    ;; the process dialled back before the handshake replied, so a repl started
+    ;; on a program is one whose program is IN THE RUNTIME and the first thing
+    ;; you ask about it answers. The browser is the other way round and is
+    ;; `test-a-main-on-the-browser-is-compiled-with-no-page' below.
     (with-repl [r {:dialect :cljs :target :node :main "rt.main-program"}]
       (testing "nothing is framed for it - there was no form, so there is no ret"
         (is (= "prompt" (:tag (:prompt r)))))
@@ -413,6 +430,24 @@
         (is (= ":yes" (:value (frame-tagged
                                (eval! r "rt.main-program/program-was-loaded")
                                "ret"))))))))
+
+(deftest test-a-main-on-node-is-in-the-runtime-before-the-first-form
+  (when (compiling?)
+    ;; THE HALF THE TEST ABOVE CANNOT SEE. Referring to a namespace is enough to
+    ;; make the runtime fetch it - `(rt.main-program/twice 2)' answers whether
+    ;; or not anything required it first - so every assertion that asks the
+    ;; program about itself passes with :main compiling and not loading. What
+    ;; distinguishes them is a side effect at LOAD time, read by a form that
+    ;; mentions no ClojureScript and so cannot be what caused it.
+    ;;
+    ;; And it is worth distinguishing because it is the whole of what :main buys
+    ;; on node: the first form you send is not the one that pays for your
+    ;; dependency graph, and a program whose top level starts something has
+    ;; started it by the first prompt.
+    (with-repl [r {:dialect :cljs :target :node :main "rt.loaded-program"}]
+      (is (= "true" (:value (frame-tagged
+                             (eval! r "(.-__rt_loaded_program js/globalThis)")
+                             "ret")))))))
 
 (deftest test-a-main-that-cannot-be-loaded-is-said-before-the-first-prompt
   (when (compiling?)
@@ -443,3 +478,147 @@
         (is (= "invalid-main" (:error (:hello r))))
         (is (string/includes? (:message (:hello r)) "42"))
         (finally (disconnect r))))))
+
+;;; Starting on a namespace, where the runtime is a page nobody has opened
+
+(deftest test-a-main-on-the-browser-is-compiled-with-no-page
+  (when (compiling?)
+    ;; WHAT :main PROMISES IS THE OUTPUT DIRECTORY. The browser's runtime is a
+    ;; page a human opens when they get to it, and the page is what loads the
+    ;; program - it asks this process's server for the modules its namespaces
+    ;; were compiled into. So the compile is replique's half and the load is
+    ;; not, and this is the test that the half that is replique's happens with
+    ;; nothing connected and nothing waiting.
+    ;;
+    ;; It is also the test that nothing is FRAMED for it. Requiring into a
+    ;; browser with no page answers "No browser is connected. Open ..." - a
+    ;; sentence that is right for a form you typed and wrong for a :main, where
+    ;; it would be the whole of what a repl started on a program had to say.
+    (with-repl [r {:dialect :cljs :target :browser :main "rt.main-program"}]
+      (testing "the frame after the reply is the prompt, not an exception"
+        (is (= "prompt" (:tag (:prompt r))) (pr-str (:prompt r))))
+      (testing "and it did not move the repl"
+        (is (= "cljs.user" (:ns (:prompt r)))))
+      (testing "the namespace is in this target's symbol table"
+        (is (some? (binding [cljs/*target* :browser]
+                     (cljs/find-namespace 'rt.main-program)))))
+      (testing "and the module a page would fetch is on disk"
+        ;; The path the fork emits, spelled the way it emits it: namespaces
+        ;; under ns/, named as they are named rather than munged. A page's
+        ;; import of the entry module is a GET of exactly this, which is why
+        ;; this file and not the symbol table is the promise.
+        (let [^java.io.File out (:out-dir (browser-env))
+              module (io/file out "ns" "rt" "main-program.js")]
+          (is (.isFile module)
+              (str "not in " out ": "
+                   (pr-str (mapv str (rest (file-seq out)))))))))))
+
+(deftest test-a-main-on-the-browser-that-cannot-compile-is-still-framed
+  (when (compiling?)
+    ;; THE HALF A LIVENESS TEST MUST NOT SWALLOW. Not framing "no browser is
+    ;; connected" is one thing; not framing a namespace that is not there would
+    ;; be a repl standing in a program that was never compiled and saying
+    ;; nothing about it - and on the browser there is no later moment when
+    ;; anybody finds out, because the page's fetch of it 404s in a console
+    ;; replique is not reading.
+    (let [r (cljs-repl! {:dialect :cljs :target :browser
+                         :main "rt.no-such-program"})]
+      (try
+        (is (= "exception" (:tag (:prompt r))) (pr-str (:prompt r)))
+        (is (string/includes? (:message (:prompt r)) "rt/no_such_program.cljs")
+            (:message (:prompt r)))
+        (is (= "prompt" (:tag (recv r))))
+        (finally (disconnect r))))))
+
+;;; What happens after a load
+
+(defmacro ^:private with-hook
+  "Body with a hook registered under PREFIX, and taken off again afterwards."
+  [prefix f & body]
+  `(do (swap! cljs/env-hooks assoc ~prefix ~f)
+       (try ~@body (finally (swap! cljs/env-hooks dissoc ~prefix)))))
+
+(defn- a-file
+  "A .cljs file holding NS, written under DIR, as a #replique/load directive."
+  [dir ns src]
+  (let [f (io/file (str dir) (str (string/replace (str ns) "." "/") ".cljs"))]
+    (.mkdirs (.getParentFile f))
+    (spit f (str "(ns " ns ")\n" src "\n"))
+    (str "#replique/load {:file \"" (.getPath f) "\"}\n")))
+
+(deftest test-a-hook-fires-after-a-load-and-after-nothing-else
+  (when (compiling?)
+    ;; WHAT MASTER'S env-hooks WERE FOR: a program whose top level built
+    ;; something - a React tree - has to be told when its code was replaced
+    ;; underneath it, and nothing in this protocol knows that on its behalf.
+    ;;
+    ;; WHAT FIRES ONE IS A LOAD DIRECTIVE, which is a client SAYING it loaded
+    ;; something rather than replique working it out. Master worked it out, and
+    ;; could: its namespaces are the JVM's, so a watch on every var's root
+    ;; caught a redefinition and ns-map identity caught a var arriving. Neither
+    ;; reads a ClojureScript namespace of this compiler - a var of one is
+    ;; unbound and its value is in JavaScript - so this is the floor, and the
+    ;; ceiling is for the compiler to say what it compiled.
+    (let [dir   (client/temp-dir)
+          fired (atom [])]
+      (try
+        (with-hook 'hk.watched (fn [e] (swap! fired conj (:namespace e)))
+          (with-repl [r nil]
+            (testing "a load of a namespace it covers"
+              (eval! r (a-file dir 'hk.watched.one "(def v :one)"))
+              (is (= ['hk.watched.one] @fired) (pr-str @fired)))
+
+            (testing "loading it again"
+              (eval! r (a-file dir 'hk.watched.one "(def v :two)"))
+              (is (= 2 (count @fired))))
+
+            (testing "a require is not a load directive, and does not fire it"
+              (eval! r "(require 'hk.watched.one :reload)")
+              (is (= 2 (count @fired))))
+
+            (testing "nor does a defn typed at the repl - load the file it is in"
+              (eval! r "#replique/ns hk.watched.one\n(defn typed [] :here)")
+              (is (= 2 (count @fired))))
+
+            (testing "nor a form that loaded nothing at all"
+              (eval! r "(+ 1 2)")
+              (is (= 2 (count @fired))))
+
+            (testing "and neither does a load of a namespace no hook covers"
+              (eval! r (a-file dir 'hk.elsewhere "(def v :other)"))
+              (is (= 2 (count @fired))))))
+        (finally (client/delete-recursively dir))))))
+
+(deftest test-a-hook-does-not-fire-for-a-load-that-failed
+  (when (compiling?)
+    ;; A file that would not compile did not replace the program that is
+    ;; running, and saying it did is the one thing a hook must not be told.
+    (let [dir   (client/temp-dir)
+          fired (atom 0)]
+      (try
+        (with-hook 'hk.broken (fn [_] (swap! fired inc))
+          (with-repl [r nil]
+            (let [frames (eval! r (a-file dir 'hk.broken.one "(def v (this-is-not-a-thing))"))]
+              (is (= "exception" (:tag (frame-tagged frames "exception")))
+                  (pr-str frames)))
+            (is (zero? @fired))
+            (testing "and the repl is a repl anyway"
+              (is (= "3" (:value (frame-tagged (eval! r "(+ 1 2)") "ret")))))))
+        (finally (client/delete-recursively dir))))))
+
+(deftest test-a-hook-that-throws-does-not-take-the-repl-with-it
+  (when (compiling?)
+    ;; What it was called after happened - the file loaded - so turning the
+    ;; hook's failure into the form's failure would report the wrong thing
+    ;; about the wrong thing. It goes to err, and the form's own result follows.
+    (let [dir (client/temp-dir)]
+      (try
+        (with-hook 'hk.throwing (fn [_] (throw (ex-info "the hook is broken" {})))
+          (with-repl [r nil]
+            (let [frames (eval! r (a-file dir 'hk.throwing.one "(def v :one)"))]
+              (is (= "ret" (:tag (frame-tagged frames "ret"))) (pr-str frames))
+              (is (string/includes? (printed frames "err") "the hook is broken")
+                  (pr-str frames)))
+            (testing "and the repl goes on"
+              (is (= "3" (:value (frame-tagged (eval! r "(+ 1 2)") "ret")))))))
+        (finally (client/delete-recursively dir))))))

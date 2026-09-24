@@ -222,7 +222,16 @@
             (instance? LoadDirective form)
             (do (vreset! pending nil) (vreset! moved false)
                 (let [r (load-input form)]
-                  (if (seq? r) [r nil] r)))
+                  ;; :load is the namespace this is loading, and it is the one
+                  ;; thing `replique.cljs/env-hooks' fires after. Carried on the
+                  ;; opts rather than worked out from the form below, because
+                  ;; this is the only place that KNOWS: by the time it is a
+                  ;; (load-file ...) it looks like any other form somebody could
+                  ;; have typed, and loading does not move the repl, so nothing
+                  ;; afterwards says what was loaded either.
+                  (if (seq? r)
+                    [r {:load (cljs/declared-namespace (:file form))}]
+                    r)))
 
             (instance? ReloadDirective form)
             (do (vreset! pending nil) (vreset! moved false) reload-refusal)
@@ -259,37 +268,60 @@
     (protocol/write-frame! conn f)))
 
 (defn- load-main!
-  "Require `main' before the first prompt, and say so only if it failed.
+  "Compile `main' before the first prompt, and put it in the runtime if there is
+  one to put it in.
 
-  THE FIRST FORM, WHICH YOU DID NOT TYPE. A repl started on a namespace is
-  started on the program in it: the compile is the slow half - your whole
-  dependency graph - and doing it here means the first form you do type is not
-  the one that pays for it, while the require that follows is what puts the
-  program in the runtime rather than merely on disk.
+  THE COMPILE IS THE PROMISE, and it is a promise about the OUTPUT DIRECTORY
+  rather than about the runtime. A repl started on a namespace is started on the
+  program in it: the compile is the slow half - your whole dependency graph - so
+  doing it here means the first form you type is not the one that pays for it,
+  and the directory the runtime fetches its modules from holds the program
+  before anybody is told the repl is ready. It needs no runtime at all, which is
+  the point of doing it separately - replique master's `ensure-compiled' did
+  exactly this, and did it before the line that says it is waiting for the
+  browser to connect.
+
+  THE LOAD IS NOT THE PROMISE, because on the browser it is not replique's to
+  make. The page is opened when you get to it and THE PAGE LOADS THE PROGRAM:
+  the application's own page asks this process's server for the modules its
+  namespaces were compiled into, as it did under master. So a `:main' given
+  before a page is open is not a failure and is not framed as one - it did the
+  half that was its to do, and the other half is waiting on a human. On node
+  there is no page and nobody else to do it - `runtime!' does not return until
+  the process has dialled back - so the require happens and the program is in
+  the runtime by the first prompt.
 
   QUIET WHEN IT WORKED, because nothing asked. A `ret' frame here would arrive
   before any prompt and under no form, and a client would have nowhere to put
-  it; a failure has somewhere to go and has to go there, since a repl whose
-  :main silently did nothing is a repl standing in a program that is not
-  loaded.
-
-  A browser with no page open answers that it has no page, which is the same
-  sentence any form gets there and is the useful one: it names the url to open.
-  The namespace is compiled either way - that half needs no runtime - so
-  requiring it again once the page is there costs nothing."
+  it. A FAILURE TO COMPILE has somewhere to go and has to go there, since a repl
+  whose :main did not compile is a repl standing in a program that is not on
+  disk - and that failure is still framed whether or not anything is connected,
+  which is the half a liveness test must not swallow."
   [conn flush-output! main]
-  (let [result (try
-                 (cljs/with-evaluation conn
-                   (cljs/eval-form (list 'require (list 'quote main))))
-                 (catch Throwable t
-                   {:status :error :phase :repl
-                    :value (or (ex-message t) (.getName (class t)))}))]
-    (when (= :error (:status result))
-      (report! conn flush-output! result))))
+  ;; The target lock and not `with-evaluation', which would claim this target's
+  ;; output for CONN while the compile ran: a compile makes no runtime print, so
+  ;; the only thing that could arrive is a page logging a failed fetch of its
+  ;; own - and that line would come out framed as this repl's.
+  (if-let [failed (try (cljs/with-target-lock* #(cljs/compile-namespace! main))
+                       nil
+                       (catch Throwable t
+                         {:status :error :phase :repl
+                          :value (or (ex-message t) (.getName (class t)))}))]
+    (report! conn flush-output! failed)
+    (when (cljs/runtime-connected?)
+      (let [result (try
+                     (cljs/with-evaluation conn
+                       (cljs/eval-form (list 'require (list 'quote main))))
+                     (catch Throwable t
+                       {:status :error :phase :repl
+                        :value (or (ex-message t) (.getName (class t)))}))]
+        (when (= :error (:status result))
+          (report! conn flush-output! result))))))
 
 (defn repl
   "Run a ClojureScript repl on conn until the client disconnects. `main' is a
-  namespace to require before the first prompt, or nil."
+  namespace to compile - and, where there is a runtime for it, load - before the
+  first prompt, or nil. See `load-main!'."
   ([conn] (repl conn nil))
   ([conn main]
    (let [out (frame-writer conn "out")
@@ -334,7 +366,23 @@
                                     ;; JavaScript already running it cannot.
                                     (interruptible conn
                                       #(cljs/with-evaluation conn
-                                         (cljs/eval-form form opts)))
+                                         (let [r (cljs/eval-form form opts)]
+                                           ;; INSIDE the evaluation, because a
+                                           ;; hook may evaluate and what it
+                                           ;; prints belongs beside what the
+                                           ;; form printed - this target's
+                                           ;; output is still this connection's
+                                           ;; here and is not once this returns.
+                                           ;;
+                                           ;; AFTER A LOAD AND AFTER NOTHING
+                                           ;; ELSE, and only where it worked: a
+                                           ;; file that would not compile did
+                                           ;; not replace the program that is
+                                           ;; running.
+                                           (when (and (:load opts)
+                                                      (not= :error (:status r)))
+                                             (cljs/run-hooks! (:load opts)))
+                                           r)))
                                     ;; The flag is left CLEARED, which is what
                                     ;; `done-evaluating!' just did and what a
                                     ;; repl about to block on a socket read
@@ -365,7 +413,7 @@
   same message. It is also what the reply's `url' comes from, which is the whole
   of what a browser repl needs a client to do: open that page.
 
-  `:main' is a namespace to require before the first prompt - see load-main!.
+  `:main' is a namespace to compile before the first prompt - see load-main!.
   Read here rather than there so that a client that wrote something that is not
   a name learns it from the handshake, where every other malformed field is
   answered."

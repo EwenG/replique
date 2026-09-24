@@ -1,6 +1,7 @@
 (ns replique.ops
   "The ops handled by the control connection."
   (:require [clojure.java.basis :as basis]
+            [clojure.java.io :as io]
             [clojure.repl.deps :as deps]
             [replique.analysis :as analysis]
             [replique.classpath :as classpath]
@@ -511,6 +512,44 @@
 ;; interrupt flag, and nothing else: Thread.stop is gone since jdk 20 and the
 ;; jvm offers no other way. An infinite loop that computes has to be waited
 ;; out, or the process restarted.
+;; The module an application's own page loads to reach this process's
+;; ClojureScript. `:main' compiles a program into the output directory and stops
+;; there - on the browser the runtime is a page somebody opens, and the page is
+;; what loads the program - so this is the other half of that arrangement, and
+;; it is the half that lives in the project rather than in a temp directory.
+;;
+;; THE PROCESS WRITES IT AND THE CLIENT SAYS WHERE, because neither of them
+;; knows both things. Where it goes is a fact about the application's assets,
+;; which replique has never seen; what goes in it is the port two servers are
+;; listening on this minute, which the client cannot know and which is different
+;; every time. Replique master split it the same way, and this is the op its
+;; :output-main-js-files was.
+;;
+;; A RELATIVE :file IS RELATIVE TO THE PROCESS'S :directory and not to its
+;; working directory, for the reason the port file is: a client that named the
+;; process's directory once should not have to know where the jvm was started.
+(defmethod protocol/handle :main-js [_ msg]
+  (cljs/refuse-unless-available! "write a ClojureScript main module")
+  (let [file (:file msg)
+        main (:main msg)
+        named (protocol/as-name main)]
+    (cond
+      (not (string? file))
+      (throw (ex-info (str "The :main-js op needs the :file to write, got: "
+                           (pr-str file))
+                      {:replique/error :invalid-message}))
+
+      (and (some? main) (nil? named))
+      (throw (ex-info (str "A main module is written for a namespace this can"
+                           " read as a name, and :main was not one: "
+                           (pr-str main))
+                      {:replique/error :invalid-main}))
+
+      :else
+      (let [f (io/file file)
+            f (if (.isAbsolute f) f (io/file (:directory (state/info)) file))]
+        (cljs/write-main-js! f named)))))
+
 (defmethod protocol/handle :interrupt [_ msg]
   (let [id (:connection msg)
         target (get (state/connections) id)]
