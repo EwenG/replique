@@ -32,14 +32,17 @@
   process can be asked at all - `available?' - and an op that cannot be
   answered says so and says what to start the process on instead."
   (:require [clojure.java.io :as io]
+            [clojure.string :as string]
             [replique.directives :as directives]
             [replique.output :as output]
-            [replique.protocol :as protocol])
+            [replique.protocol :as protocol]
+            [replique.state :as state])
   (:import [java.io Closeable File Writer]
            [java.net URI]
            [java.nio.file Files]
            [java.nio.file.attribute FileAttribute]
-           [java.util.concurrent.locks ReentrantLock]))
+           [java.util.concurrent.locks ReentrantLock]
+           [java.util.regex Matcher]))
 
 ;;; Whether this process can answer at all
 
@@ -457,6 +460,11 @@
                            " once - and a repl on node needs none of it.")
                       {:replique/error :no-cljs}))))
 
+;; `runtime!' refreshes the main modules of the project when it starts the
+;; browser runtime, and those live in the section below - which in turn needs
+;; `runtime!' for the port to refresh them to.
+(declare refresh-main-js-on-start!)
+
 (defn runtime!
   "The JavaScript runtime of `*target*', started on the first ask.
 
@@ -485,6 +493,14 @@
                            :browser ((browser-runtime) {:dir out-dir
                                                        :out (runtime-writer env)}))]
                 (reset! runtime made)
+                ;; THE PORT IS NEW AND THE FILES NAMING THE OLD ONE ARE STILL
+                ;; THERE. A main module is written into an application's own
+                ;; assets and outlives every process that ever wrote it, so
+                ;; this - the moment there is a port at all - is the moment the
+                ;; ones under this project stop being stale. See
+                ;; `refresh-main-js-on-start!'.
+                (when (= :browser target)
+                  (refresh-main-js-on-start! (:url made)))
                 made))))))
 
 (defn runtime-connected?
@@ -645,6 +661,184 @@
       (io/make-parents file)
       (spit file (main-js url main))
       {:file (str file) :url url :main (when main (str main))})))
+
+;;; Finding them again, and the port that went stale
+
+(defn- begins-with-marker?
+  "Whether FILE is one of ours, which its first line is the whole of.
+
+  BOUNDED AT THE LENGTH OF THE MARKER rather than reading a line, because this
+  is asked of every .js file under a project and some of them are one minified
+  line of several megabytes. A reader hands back what it has rather than what
+  was asked of it, so it is read until the buffer is full or there is no more."
+  [^File file]
+  (let [n   (count main-js-marker)
+        buf (char-array n)]
+    (try
+      (with-open [r (io/reader file)]
+        (loop [got 0]
+          (if (= got n)
+            (= main-js-marker (String. buf))
+            (let [read (.read r buf got (- n got))]
+              (if (neg? read)
+                false
+                (recur (+ got read)))))))
+      (catch Throwable _ false))))
+
+(defn- searched?
+  "Whether the walk for main modules goes into DIR.
+
+  A WALK IS THE PRICE OF NOT BEING TOLD WHERE THE FILES ARE - the one who knows
+  is whoever wrote the application's page, and that was not replique - and
+  these are what keeps it from also being the price of starting a repl. A dot
+  directory is somebody's metadata and .git is enormous. node_modules is tens
+  of thousands of .js files and not one of them was written by this. A symbolic
+  link is how the walk of a project becomes the walk of a disk, or of itself.
+
+  .REPLIQUEIGNORE IS REPLIQUE 1'S FILE, read here for its sake rather than on
+  its merits: master walks for the same reason and a project that already has
+  them has them for this. Master's own source says the mechanism is the wrong
+  one - a build directory gets deleted and recreated without the file in it -
+  so this is a compatibility, and a list said in the init script is where it
+  should end up."
+  [^File dir]
+  (let [name (.getName dir)]
+    (and (.canRead dir)
+         (not (.startsWith name "."))
+         (not= "node_modules" name)
+         (not (Files/isSymbolicLink (.toPath dir)))
+         (not (.exists (File. dir ".repliqueignore"))))))
+
+(defn main-js-files
+  "Every main module under DIR, found the way a client would have to find it.
+
+  BY THE FIRST LINE AND NOT BY A LIST KEPT SOMEWHERE, because the file outlives
+  the process that wrote it - that is the whole of what makes it go stale - and
+  a process started tomorrow has never heard of it and still has to find it.
+
+  A SYMBOLIC LINK TO A FILE IS FOLLOWED, although a link to a directory is not:
+  a file somebody linked into their project is a file they meant to be there,
+  and master writes through it too."
+  [^File dir]
+  (reduce (fn [found ^File f]
+            (cond
+              (.isDirectory f)
+              (if (searched? f) (into found (main-js-files f)) found)
+
+              (and (.endsWith (.getName f) ".js") (begins-with-marker? f))
+              (conj found f)
+
+              :else found))
+          []
+          (or (.listFiles dir) [])))
+
+;; The two lines that go stale and the one an editor reads. Each constant is on
+;; a line of its own for exactly this - see `main-js'.
+(def ^:private host-line #"(?m)^const host = \"[^\"]*\";$")
+(def ^:private port-line #"(?m)^const port = \"[^\"]*\";$")
+(def ^:private main-ns-line #"(?m)^const mainNs = \"([^\"]*)\";$")
+
+(defn- trouble
+  "Say what went wrong with FILE, and answer for it anyway.
+
+  ONE FILE FAILING IS NOT THE WALK FAILING - a main module somebody made read
+  only is a thing that happens - so what could not be done is reported and the
+  rest are still done."
+  [^File file answer ^Throwable t]
+  (let [message (or (ex-message t) (.getName (class t)))]
+    (binding [*out* *err*]
+      (println (str "Could not refresh the main module " file ": " message)))
+    (assoc answer :refreshed false :error message)))
+
+(defn- refreshed!
+  "Move one main module to HOST and PORT, and say what became of it.
+
+  WRITTEN ONLY WHERE IT CHANGED. A file already naming this port is a file
+  whose modification time means something to somebody's build, and a refresh
+  that touched all of them every time would be a rebuild nobody asked for.
+
+  A FAILURE STILL ANSWERS `:main' WHERE IT GOT THAT FAR: a module that could
+  not be rewritten is still a module naming a namespace this project can be
+  started on, and the menu that is for has nothing to do with whether the port
+  moved."
+  [^File file ^String host ^String port]
+  (let [start {:file (str file)}
+        ;; Either the text, or the answer `trouble' already made for it
+        text  (try (slurp file) (catch Throwable t (trouble file start t)))]
+    (if-not (string? text)
+      text
+      (let [now    (-> text
+                       (string/replace host-line (Matcher/quoteReplacement host))
+                       (string/replace port-line (Matcher/quoteReplacement port)))
+            answer (assoc start :main (second (re-find main-ns-line now)))]
+        (if (= text now)
+          (assoc answer :refreshed false)
+          (try (spit file now)
+               (assoc answer :refreshed true)
+               (catch Throwable t (trouble file answer t))))))))
+
+(defn refresh-main-js!
+  "Point every main module under DIR at URL, and answer what was found there.
+
+  WHAT MAKES `main-js's OWN FIRST LINE TRUE. The two servers listen on
+  ephemeral ports, so a file written by yesterday's process names a port nobody
+  is listening on, and a page including it reaches nothing at all. Replique 1
+  refreshed them from the editor: `replique.el' walked the project directory,
+  matched each file by its first line, and rewrote the port and the host with a
+  regular expression. This is that, moved into the process - which knows its
+  own directory, cannot disagree with itself about the port, and will do it for
+  a client that has not been written yet as readily as for one that has.
+
+  THE HOST AND THE PORT AND NOTHING ELSE, which is what master rewrote as well.
+  `mainNs' and `mainPath' say what the PAGE loads, and that is the choice of
+  whoever wrote the page rather than of whichever repl happens to be running
+  now - a `:main' given to this repl is a different question and does not get
+  to answer this one.
+
+  One map per module found:
+
+    {:file      where it is
+     :main      the namespace its page loads, or nil where it names none
+     :refreshed whether this moved it, as against finding it already here
+     :error     what went wrong, where something did}
+
+  WHAT WAS FOUND IS ANSWERED RATHER THAN KEPT, `:main' most of all: an editor
+  that found these files learns from them which namespaces this project can be
+  started on, and that is where master's menu of them came from. Nothing asks
+  for it yet, and it costs a key to carry it out of a walk already done."
+  [dir ^String url]
+  (let [^URI u (URI. url)
+        host   (str "const host = \"" (.getHost u) "\";")
+        port   (str "const port = \"" (.getPort u) "\";")]
+    (mapv #(refreshed! % host port) (main-js-files (io/file dir)))))
+
+(defn- refresh-main-js-on-start!
+  "The refresh a browser runtime does when it starts, which is the only moment
+  it can be done at.
+
+  NOT WHEN THE PROCESS STARTS, which is when master's editor did it, because
+  there is no port until the two servers are listening and they are not started
+  until something asks. A refresh any earlier would write a port nobody serves.
+
+  NOTHING HERE FAILS A REPL. This is a convenience about files that are not
+  this process's own; a project directory that cannot be walked is a reason to
+  say so and carry on, and not a reason for the browser repl somebody has just
+  asked for to fail to start.
+
+  SAID ONLY WHERE SOMETHING CHANGED. A project with no main modules in it is
+  most projects, and a walk that announced itself every time would be noise on
+  every repl that ever starts."
+  [url]
+  (try
+    (when-let [dir (:directory (state/info))]
+      (let [done (count (filter :refreshed (refresh-main-js! dir url)))]
+        (when (pos? done)
+          (println (str done " main module" (when (> done 1) "s")
+                        " refreshed to " url)))))
+    (catch Throwable t
+      (binding [*out* *err*]
+        (println (str "Could not look for main modules to refresh: "
+                      (or (ex-message t) (.getName (class t)))))))))
 
 ;;; Letting go
 
