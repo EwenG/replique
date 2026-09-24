@@ -164,6 +164,44 @@
        :cause (when (and cause (not cut?)) (exception->data cause (inc depth)))
        :cause-dropped (when (and cause cut?) true)}))))
 
+(defn exception->text
+  "T and the chain under it as text, the way a JVM prints one.
+
+  THE SHAPE THE OTHER FRAME CARRIES. A ClojureScript `exception' frame has no
+  `exception' object in it - a form that failed failed in another process and
+  left no Throwable here - so what it carries instead is a stack as TEXT, which
+  for a failure in the runtime is the string V8 printed, read back into
+  ClojureScript files and lines. A failure on THIS side of the wire - a `:main'
+  the compiler would not compile - does have a Throwable, and it goes in the
+  same field: a client reading an exception frame knows one place to look for a
+  stack, and a second shape for the same question would be one more thing to
+  know rather than one more thing to show.
+
+  BOUNDED BY THE SAME TWO NUMBERS as `exception->data', and it says what it left
+  out for the same reason. Sixty four frames of a three hundred frame trace,
+  printed as though they were the whole of it, is a trace that lies about where
+  it ends - and the top is what a trace is read for, so the top is what is
+  kept."
+  ([t] (exception->text t 0))
+  ([^Throwable t depth]
+   (let [trace (.getStackTrace t)
+         dropped (- (count trace) max-trace)
+         cause (.getCause t)
+         cut? (>= depth max-cause-depth)]
+     (str (when (pos? depth) "Caused by: ")
+          (.getName (class t))
+          (when-let [m (.getMessage t)] (str ": " m))
+          "\n"
+          (apply str (for [e (take max-trace trace)] (str "\tat " e "\n")))
+          ;; NOT THE JVM'S "... 23 more", which counts the frames a cause
+          ;; has in COMMON with the trace above it. This counts the ones left
+          ;; out, and two conventions one word apart would be read as one.
+          (when (pos? dropped)
+            (str "\t... " dropped " more frames were left out\n"))
+          (cond
+            (and cause (not cut?)) (exception->text cause (inc depth))
+            (and cause cut?) "Caused by: ... the rest of the chain was left out\n")))))
+
 (defn reply
   "A reply frame for the request msg. m is merged into the frame - the framing
   keys win, an op cannot corrupt them."

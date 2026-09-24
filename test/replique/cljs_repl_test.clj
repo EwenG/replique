@@ -26,6 +26,7 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [replique.cljs :as cljs]
             [replique.core :as core]
+            [replique.protocol :as protocol]
             [replique.test-client :as client
              :refer [disconnect eval! frame-tagged frames-tagged printed recv
                      repl-client request! send!]]))
@@ -479,6 +480,78 @@
         (testing "and the repl is a repl anyway"
           (is (= "3" (:value (frame-tagged (eval! r "(+ 1 2)") "ret")))))
         (finally (disconnect r))))))
+
+(deftest test-a-main-that-failed-inside-a-macro-carries-the-trace
+  (when (compiling?)
+    ;; WHAT THE MESSAGE DOES NOT SAY. A compile that dies inside somebody's
+    ;; macro dies with the message that macro's bug produced, and a message can
+    ;; name nothing at all - rt.bad-macro is one of those kept as a fixture,
+    ;; because it is the shape of the one a project using sci met: a var
+    ;; holding nil, called two expansions and one library away from anything
+    ;; the person reading it wrote.
+    ;;
+    ;; SO THE FRAMES ARE THE REPORT. They are the only thing in this frame that
+    ;; says whose code the compiler was inside, and a repl that sent the
+    ;; sentence without them sent something nobody can act on. `:main' is where
+    ;; this matters most: there is no form to look at, because the failure
+    ;; happened before the first prompt and on a namespace nobody typed.
+    (let [r (cljs-repl! {:dialect :cljs :target :node :main "rt.uses-bad-macro"})]
+      (try
+        (let [f (:prompt r)]
+          (is (= "exception" (:tag f)) (pr-str f))
+          (is (= "compile" (:phase f))
+              "the compiler in this process is what noticed")
+          (testing "the message names nobody"
+            (is (string/includes? (:message f) "getRawRoot") (:message f))
+            (is (not (string/includes? (:message f) "bad-macro")))
+            (is (not (string/includes? (:message f) "bad_macro"))))
+          (testing "and the trace names the macro, its file and its line"
+            (is (string/includes? (:stacktrace f) "rt.bad_macro") (:stacktrace f))
+            (is (string/includes? (:stacktrace f) "bad_macro.clj:")))
+          (testing "under the compiler that was expanding it, which is what
+          says this was a macro rather than the program"
+            (is (string/includes? (:stacktrace f) "clojure.cljs.macroexpand")
+                (:stacktrace f))))
+        (is (= "prompt" (:tag (recv r))))
+        (testing "and the repl is a repl anyway"
+          (is (= "3" (:value (frame-tagged (eval! r "(+ 1 2)") "ret")))))
+        (finally (disconnect r))))))
+
+(deftest test-what-a-trace-in-a-frame-leaves-out-is-said
+  ;; The text half of `replique.repl-test/what-an-exception-frame-leaves-out-is-
+  ;; said', and bounded by the same two numbers: a ClojureScript frame carries a
+  ;; stack as TEXT, so what a client is handed here is not a vector it can
+  ;; count. It has to be told in the text itself, or sixty four frames of a
+  ;; three hundred frame trace read as the whole of one.
+  ;;
+  ;; No process and no compiler: this is the rendering, which is the same
+  ;; rendering whether or not this process can compile anything.
+  (let [deep (try ((fn f [n] (if (zero? n)
+                               (throw (Exception. "the bottom"))
+                               (inc (f (dec n)))))
+                   200)
+                  (catch Throwable t t))
+        text (protocol/exception->text deep)]
+    (testing "a trace longer than a frame carries"
+      (is (string/starts-with? text "java.lang.Exception: the bottom\n"))
+      (is (= 64 (count (re-seq #"(?m)^\tat " text))))
+      (is (re-find #"(?m)^\t\.\.\. \d+ more frames were left out$" text)
+          "how many frames were left out, so whoever reads it knows"))
+    (testing "a trace that fits says nothing"
+      (let [text (protocol/exception->text (doto (Exception. "shallow")
+                                             (.setStackTrace
+                                              (make-array StackTraceElement 0))))]
+        (is (= "java.lang.Exception: shallow\n" text)))))
+  (testing "a chain deeper than a frame carries"
+    (let [chain (reduce (fn [c i] (ex-info (str "level " i) {} c)) nil (range 20))
+          text (protocol/exception->text chain)]
+      (is (= 8 (count (re-seq #"(?m)^Caused by: clojure.lang.ExceptionInfo" text)))
+          "eight causes under the one reported, as the data shape carries")
+      (is (string/includes? text "the rest of the chain was left out"))))
+  (testing "a chain that fits says so by not saying anything"
+    (let [text (protocol/exception->text (ex-info "one" {} (Exception. "two")))]
+      (is (string/includes? text "Caused by: java.lang.Exception: two"))
+      (is (not (string/includes? text "left out"))))))
 
 (deftest test-a-main-that-is-not-a-name-is-refused-by-the-handshake
   (when (compiling?)

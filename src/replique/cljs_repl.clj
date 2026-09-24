@@ -87,7 +87,13 @@
   arrives as the string V8 printed - read back into ClojureScript file and line
   by `clojure.cljs.stacktrace' before it gets here. `js-stacktrace' is beside it
   and is not a fallback: it is the answer when the mapping is what you doubt,
-  which is the one question the mapped stack cannot be asked."
+  which is the one question the mapped stack cannot be asked.
+
+  A FAILURE THIS SIDE NOTICED PUTS ITS OWN STACK THERE, printed by
+  `replique.protocol/exception->text'. When the compiler is what threw, the
+  trace is the JVM's and there is nothing to symbolicate; it is still the
+  answer to where this went wrong, so it goes where a client already looks for
+  that answer. `phase' is what tells the two apart - see `failed-here'."
   [result]
   (protocol/frame {:tag "exception"
                    :ns (str (cljs/current-ns))
@@ -267,6 +273,31 @@
     (flush-output!)
     (protocol/write-frame! conn f)))
 
+(defn- failed-here
+  "A Throwable this side caught, in the shape a failed evaluation has.
+
+  WITH ITS TRACE, because a message on its own does not always say whose
+  failure it was. A compile that dies inside somebody's macro dies with the
+  message that macro's bug produced, and a message can name nothing at all:
+
+    Cannot invoke \"clojure.lang.IFn.invoke(Object, Object)\" because the
+    return value of \"clojure.lang.Var.getRawRoot()\" is null
+
+  names neither the macro, nor the library the macro is in, nor the namespace
+  being compiled - and a repl that reports that sentence and nothing else has
+  handed somebody a thing they cannot act on. The frames are where the names
+  are. That is an `exception' frame's `stacktrace', which is the field a
+  ClojureScript failure's stack travels in whichever side it happened on.
+
+  PHASE IS THE CALLER'S, because only the caller knows: the compiler refusing a
+  namespace is :compile, and this repl failing to get a form as far as a
+  runtime is :repl."
+  [phase ^Throwable t]
+  {:status :error
+   :phase phase
+   :value (or (ex-message t) (.getName (class t)))
+   :stacktrace (protocol/exception->text t)})
+
 (defn- load-main!
   "Compile `main' before the first prompt, and put it in the runtime if there is
   one to put it in.
@@ -296,7 +327,9 @@
   it. A FAILURE TO COMPILE has somewhere to go and has to go there, since a repl
   whose :main did not compile is a repl standing in a program that is not on
   disk - and that failure is still framed whether or not anything is connected,
-  which is the half a liveness test must not swallow."
+  which is the half a liveness test must not swallow. It is framed WITH ITS
+  TRACE, for the reason `failed-here' gives: nothing else here says which
+  macro, in whose library, the compiler was inside when it gave up."
   [conn flush-output! main]
   ;; The target lock and not `with-evaluation', which would claim this target's
   ;; output for CONN while the compile ran: a compile makes no runtime print, so
@@ -304,17 +337,13 @@
   ;; own - and that line would come out framed as this repl's.
   (if-let [failed (try (cljs/with-target-lock* #(cljs/compile-namespace! main))
                        nil
-                       (catch Throwable t
-                         {:status :error :phase :repl
-                          :value (or (ex-message t) (.getName (class t)))}))]
+                       (catch Throwable t (failed-here :compile t)))]
     (report! conn flush-output! failed)
     (when (cljs/runtime-connected?)
       (let [result (try
                      (cljs/with-evaluation conn
                        (cljs/eval-form (list 'require (list 'quote main))))
-                     (catch Throwable t
-                       {:status :error :phase :repl
-                        :value (or (ex-message t) (.getName (class t)))}))]
+                     (catch Throwable t (failed-here :repl t)))]
         (when (= :error (:status result))
           (report! conn flush-output! result))))))
 
