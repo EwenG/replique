@@ -359,6 +359,41 @@
             (client/delete-recursively elsewhere)
             (client/delete-recursively root)))))))
 
+(deftest a-file-linked-into-a-project-reached-through-a-link-is-named-all-the-same
+  (testing "the two links at once, which is neither of the two above and is
+  what a worktree opened under a name that outlives it looks like when it also
+  shares a file with its siblings. Written, the file is under no source root,
+  because the project is spelt by the link to it; resolved, it is under none
+  either, because the file resolves out of the tree altogether. So both
+  readings give up on a file the classpath holds perfectly well, and the load
+  records nothing - silently, and for everything that load required, which is
+  a whole system where the file is the one that starts it"
+    (with-process [info nil]
+      (let [root (source-root!)
+            elsewhere (client/temp-dir)
+            real (written-file! elsewhere "both.clj" (probe-clj "both"))
+            _ (linked! (java.io.File. (str root) "probe/both.clj") real)
+            link (linked! (java.io.File. (str elsewhere) "link") root)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (load! r (str (java.io.File. ^String link "probe/both.clj")))
+          (testing "loaded"
+            (is (= "8" (-> (eval! r "(probe.both/four 2)")
+                           (client/frame-tagged "ret")
+                           :value))))
+          (when (analysing? c)
+            (testing "and recorded, under the name the classpath gives it -
+            which is neither of the two names it was reached by"
+              (is (= [["both.clj" 3 17 "probe.both"]
+                      ["both.clj" 3 24 "probe.both"]]
+                     (at (usages! c "probe.both" "twice"))))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively elsewhere)
+            (client/delete-recursively root)))))))
+
 (deftest a-source-root-is-found-once-the-classpath-has-been-read-again
   (testing "which entries of the classpath are directories comes out of the
   same reading everything else does, so a directory put there under a running

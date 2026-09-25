@@ -168,6 +168,21 @@
   (when-let [a (canonical a)]
     (= a (canonical b))))
 
+(defn- above-resolved
+  "TARGET with the way up to it resolved and its own name left alone, or nil.
+
+  Which is the one file a link can stand in front of that neither of the
+  other two readings of a path names - see `source-path'. Resolving nothing
+  keeps a link INTO a tree and loses a tree reached THROUGH one; resolving
+  everything does the opposite; and a file that is both is under a source
+  root by neither name. It is under one by this one, which is the file as it
+  was opened with the directories above it made into the names the classpath
+  holds."
+  ^Path [^Path target]
+  (when-let [^Path parent (.getParent target)]
+    (when-let [^Path real (canonical-path parent)]
+      (.resolve real (.getFileName target)))))
+
 (defn- reachable-as?
   "Whether reading RESOURCE off the classpath reads the file at PATH.
 
@@ -204,9 +219,10 @@
   slashes - app/util.clj - which is the name the compiler records while it
   reads that file and the name every span out of it carries.
 
-  Asked twice where it has to be, because a path is a name for a file and not
-  the file, and a link puts two names on one file. First as the two were
-  written, then with both of them resolved.
+  Asked three times where it has to be, because a path is a name for a file
+  and not the file, and a link puts two names on one file. First as the two
+  were written, then with both of them resolved, then with the way up to the
+  file resolved and the file itself left alone.
 
   Written first, because resolving is not the safer answer: a file linked
   INTO a source tree - which is how one file is shared between several
@@ -224,6 +240,18 @@
   analysis, and it costs one resolution per source root of a load that was
   going to be given up on.
 
+  AND THE TWO OF THEM AT ONCE, third, which is neither of the first two and
+  is not rare: a project reached through a link, holding a file linked into
+  it from somewhere the classpath has never heard of. Written, the file is
+  under no root, because the project is spelt by the link. Resolved, it is
+  under no root either, because the file resolves out of the tree
+  altogether. It is under one by the reading in between - the directories
+  above it resolved, its own name left as it was - which is `above-resolved'.
+
+  Last because the first two answer on their own where only one link stands
+  between the name and the file, and because the roots it asks against are
+  the ones the second question has already resolved.
+
   Nothing for a file that is under no directory of the classpath, which is an
   ordinary thing for a file to be: a scratch buffer, a file in a directory a
   project has not added to its paths, a file being written before it is saved
@@ -233,9 +261,15 @@
   (let [target (try (.normalize (.toAbsolutePath (Paths/get path (make-array String 0))))
                     (catch Exception _ nil))]
     (when target
-      (or (named-under target (classpath/directories))
-          (when-let [real (canonical-path target)]
-            (named-under real (keep canonical-path (classpath/directories))))))))
+      (let [roots (classpath/directories)
+            ;; Resolved once for the two questions that ask against them, and
+            ;; not at all for the load that the first question answers
+            resolved (delay (keep canonical-path roots))]
+        (or (named-under target roots)
+            (when-let [real (canonical-path target)]
+              (named-under real @resolved))
+            (when-let [above (above-resolved target)]
+              (named-under above @resolved)))))))
 
 (defn entry-path
   "What the classpath calls ENTRY of the jar at FILE, or nil.

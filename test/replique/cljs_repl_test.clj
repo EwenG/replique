@@ -372,8 +372,23 @@
             (is (= "3" (:value (frame-tagged (eval! r "(+ 1 2)") "ret"))))
             (testing "and what a form prints comes back before its value here too"
               (let [frames (eval! r "(do (println \"from the page\") 9)")]
-                (is (= ["out" "ret" "prompt"] (mapv :tag frames)))
+                ;; TWO out frames for one println, where node makes one, and that
+                ;; is the browser's *print-fn* rather than a fault: cljs.core's
+                ;; println hands the print fn what it was given and then calls it
+                ;; again with the newline, and each call is a message on the
+                ;; socket. The console tee that used to carry this made one
+                ;; message of them by appending a newline to every console.log -
+                ;; which also gave one to (print "x"), which had not asked for one.
+                (is (= ["out" "out" "ret" "prompt"] (mapv :tag frames)))
                 (is (= "from the page\n" (printed frames "out")))))
+            (testing "and what the page logs to its console stays in its console"
+              ;; The page's own logging is not something a repl asked for, and on
+              ;; an application of any size it is most of what there is. It goes
+              ;; where it was going anyway - devtools, which shows it against the
+              ;; line that produced it and with the object rather than a printed
+              ;; copy of it - and no frame carries it here.
+              (let [frames (eval! r "(do (js* \"console.log('in devtools')\") 9)")]
+                (is (= ["ret" "prompt"] (mapv :tag frames)))))
             (testing "and the page can be named, which node has no version of"
               (is (string/includes?
                    (:value (frame-tagged (eval! r "(pages)") "ret")) "*")))
