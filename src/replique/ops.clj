@@ -7,6 +7,7 @@
             [replique.classpath :as classpath]
             [replique.cljs :as cljs]
             [replique.completion :as completion]
+            [replique.css :as css]
             [replique.names :as names]
             [replique.protocol :as protocol]
             [replique.server :as server]
@@ -571,6 +572,36 @@
   {:modules (if-let [dir (:directory (state/info))]
               (cljs/main-modules dir)
               [])})
+
+;; Reloading a stylesheet, in every page connected to this process. The client
+;; has just built one - or just saved one that something else builds - and what
+;; it wants is to see it without losing what the page is in the middle of.
+;;
+;; THE PAGE DOES THE MATCHING, which is what makes this one round trip where
+;; replique 1 needed two: it asked for the list of stylesheets, chose from it,
+;; and asked again for the one it chose. The list comes back here as
+;; `stylesheets' whether anything matched or not, so a reload that found
+;; nothing says what the page has instead of "Could not find a css file to
+;; reload".
+;;
+;; THE :file IS NEVER OPENED. It is matched against the page's URLs by the
+;; longest path suffix the two share, which is the only way the two halves can
+;; be brought together: what is on this side is a path on this machine, what is
+;; on that side is a URL, and where a project serves its assets from is the
+;; project's arrangement and not something replique has been told. So a
+;; relative :file is NOT resolved against the process's directory the way
+;; :main-js's is - nothing here reads the file, and rooting a path that is only
+;; ever compared from its end would read as though something did.
+;;
+;; NOTHING HERE BUILDS ANYTHING. sass, gulp, whatever writes the .css belongs to
+;; the project that has one, and the client runs it and then asks for this.
+(defmethod protocol/handle :reload-css [_ msg]
+  (let [file (:file msg)]
+    (when-not (string? file)
+      (throw (ex-info (str "The :reload-css op needs the :file that changed,"
+                           " got: " (pr-str file))
+                      {:replique/error :invalid-message})))
+    (css/reload! file)))
 
 (defmethod protocol/handle :interrupt [_ msg]
   (let [id (:connection msg)
