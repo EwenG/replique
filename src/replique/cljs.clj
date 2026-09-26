@@ -350,9 +350,18 @@
   OUT-DIR LAST, so that it is not among the things an init script can set. It
   is the environment's: the runtime fetches its modules from there and the ops
   read what was written there, so a compilation that went anywhere else would
-  be a compilation nothing is looking at."
+  be a compilation nothing is looking at.
+
+  :ANALYSIS IS NOT A PROJECT'S EITHER, and it is not optional. It is what the
+  compiler's repl reads to decide whether the files a `require' or a
+  `load-file' compiles keep the analysis model - and replique wants them kept
+  always, for the reason `replique.cljs-analysis/with-analysis*' gives: the
+  only moment to record a file is the moment it is compiled. It is written here
+  rather than in `option-keys' because an init script turning it off would be
+  turning off `#replique/reload' and the ClojureScript half of `:usages', with
+  nothing to say that is what it had done."
   [out-dir]
-  (assoc @options :out-dir out-dir))
+  (assoc @options :out-dir out-dir :analysis true))
 
 (defn- delete-tree!
   [^File f]

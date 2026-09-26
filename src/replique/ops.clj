@@ -203,8 +203,14 @@
 ;; Answered out of what the compiler resolved rather than out of a search, so
 ;; a usage written by a macro is a usage and a name that merely looks the same
 ;; is not - see `replique.analysis'.
+;;
+;; Of whichever compiler the `:dialect' names, out of a model of its own. A
+;; class is answered for Clojure only: a ClojureScript file has no classes, and
+;; what it does have instead is a question with a different answer - see
+;; `replique.analysis/usages-of'.
 (defmethod protocol/handle :usages [_ msg]
-  (analysis/usages (assoc msg :position (protocol/as-keyword (:position msg)))))
+  (names/with-dialect msg
+    (analysis/usages (assoc msg :position (protocol/as-keyword (:position msg))))))
 
 ;; What a #replique/reload would load, asked without loading anything.
 ;;
@@ -217,8 +223,14 @@
 ;; Two lists rather than one, because what changed and what that made stale
 ;; are two different facts about a file - and the second is the half nobody
 ;; can work out by looking at their buffers. See `replique.analysis/stale'.
-(defmethod protocol/handle :stale [_ _]
-  (analysis/stale))
+;;
+;; The `:dialect' says which program is being asked about, and they are two
+;; programs: a process can hold a Clojure application and a ClojureScript one
+;; at once, each with its own files behind the disk, and a .cljc edited once is
+;; stale in both.
+(defmethod protocol/handle :stale [_ msg]
+  (names/with-dialect msg
+    (analysis/stale)))
 
 ;; The vars a namespace has, for a client to offer a choice of.
 ;;

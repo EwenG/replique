@@ -20,6 +20,27 @@
   files the way it always did and says plainly that it has no usages to
   offer, rather than failing at the point somebody asks - see `available?'.
 
+  ## Two models, one question
+
+  A process running the ClojureScript compiler has a second model of its own -
+  `clojure.cljs.analysis', reached through `replique.cljs-analysis' - and the
+  two cannot be one. A .cljc file is a Clojure load AND a ClojureScript compile
+  under one path, and cljs.core/+ is a JVM macro AND a ClojureScript function
+  under one name, so a single model keyed by either would have each of them
+  retracting the other.
+
+  Which of the two a question is about is the `:dialect' the request carries,
+  the way it is for every other op that reads a name - `replique.names' - and
+  the switch is `replique.names/cljs?'. It is read in the two places where the
+  two models differ, `usages-of' and `stale'; everything around them is one
+  piece of code, because a span is a span and a client opens what it points at
+  the same way whichever compiler wrote it down.
+
+  The naming that the whole first half of this namespace is about is Clojure's
+  problem alone. The ClojureScript driver names a file after the namespace the
+  file declares, so `source-path' has no ClojureScript counterpart and needs
+  none - see `replique.cljs-analysis'.
+
   ## What a file is called
 
   The model names a file the way the classpath does: app/util.clj, which is
@@ -38,6 +59,8 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
             [replique.classpath :as classpath]
+            [replique.cljs-analysis :as cljs-analysis]
+            [replique.names :as names]
             [replique.symbol :as sym])
   (:import [java.io File]
            [java.net JarURLConnection URL]
@@ -119,6 +142,25 @@
                          "compiler does - see clojure.analysis.")
                     {:replique/error :no-analysis}))))
 
+(defn- refuse-unless-recording!
+  "Refuse the request where the compiler this thread's dialect is about records
+  nothing, and say why.
+
+  Two compilers and two answers, because the two are missing for unrelated
+  reasons and are fixed by unrelated things: a Clojure question goes unanswered
+  on a process running stock clojure, and a ClojureScript one on a process whose
+  compiler is a build from before the analysis was written. A refusal naming the
+  wrong one of those would send somebody to change the wrong half of their
+  classpath.
+
+  WHAT is the sentence-fragment both of them take, which is what lets one call
+  stand in for two: it says what the compiler does not do, and neither refusal
+  needs to know anything else about the request."
+  [what]
+  (if (names/cljs?)
+    (cljs-analysis/refuse-unless-available! what)
+    (refuse-unless-available! what)))
+
 (def ^:private told-of
   "Which reading of the classpath the analysis has been told about."
   (atom nil))
@@ -140,13 +182,18 @@
   file it forgot, and paying that on each asking would be paying for the
   saving.
 
-  Called where the refusal has already been made, so there is a subsystem to
-  tell."
+  Told on the ClojureScript path too, and that is not a mistake: what makes a
+  .cljs file stale is a macro of a .clj file, and which .clj files have changed
+  is the Clojure model's answer - see `replique.cljs-analysis/stale'. So the
+  refusal that was made there was the other model's, and this one may have
+  nothing to tell: the Clojure analysis is asked whether it is there rather than
+  assumed to be."
   []
-  (let [reading (classpath/reading)]
-    (when-not (= reading @told-of)
-      (reset! told-of reading)
-      ((of :classpath-changed!)))))
+  (when (available?)
+    (let [reading (classpath/reading)]
+      (when-not (= reading @told-of)
+        (reset! told-of reading)
+        ((of :classpath-changed!))))))
 
 ;;; Naming a file the way the classpath does
 
@@ -408,6 +455,15 @@
   (tell-of-the-classpath!)
   ((of :stale-reload!)))
 
+;; NO CLOJURESCRIPT COUNTERPART OF `reload!' HERE, and the asymmetry with
+;; `stale' below is deliberate. A Clojure reload ends when the files have been
+;; loaded on this JVM; a ClojureScript one has a second half - the bodies of the
+;; recompiled namespaces have to be run in the runtime this repl is talking to,
+;; in the order the recompile decided - and that half belongs to the repl rather
+;; than to the model. The compiler's own `stale-reload' special is where it is
+;; written, and `replique.cljs-repl/reload-input' is the `#replique/reload' that
+;; evaluates it.
+
 (defn- by-name
   "The sources SOURCES point at, as a client opens them, in name order.
 
@@ -453,11 +509,19 @@
   asking the filesystem about every analysed file twice, and would leave the
   two answers free to disagree about a file saved in between."
   []
-  (refuse-unless-available! "keep track of what it compiled")
+  (refuse-unless-recording! "keep track of what it compiled")
   (tell-of-the-classpath!)
-  (let [changed ((of :changed-files))]
-    {:changed (by-name changed)
-     :stale (by-name (remove changed ((of :stale-files) changed)))}))
+  (if (names/cljs?)
+    ;; The two lists come back already parted there, because what parts them is
+    ;; not one subtraction: a ClojureScript file can be stale for a reason that
+    ;; is not a file at all - a var whose metadata it was compiled against has
+    ;; changed - and the model is the only thing that can say so
+    (let [{:keys [changed stale]} (cljs-analysis/stale)]
+      {:changed (by-name changed)
+       :stale (by-name stale)})
+    (let [changed ((of :changed-files))]
+      {:changed (by-name changed)
+       :stale (by-name (remove changed ((of :stale-files) changed)))})))
 
 ;;; What was found
 
@@ -501,20 +565,38 @@
   with none, which is also what a codebase nothing has loaded yet answers.
   The two are not told apart here: what the model holds is what has been
   loaded, and saying so is the client's business - it is the half that knows
-  whether anything has been loaded at all."
+  whether anything has been loaded at all.
+
+  THE MODEL IS THE DIALECT'S, and the three kinds are not the same three. A var
+  and a keyword are asked of both, each of its own model. A CLASS IS ASKED OF
+  CLOJURE ONLY, and answering nothing for ClojureScript is the honest answer
+  rather than a gap: what a .cljs file refers to is a JavaScript global, a
+  Closure namespace or an npm export, and the ClojureScript model records those
+  as host references keyed by what they name and by the name the source wrote -
+  a different question, whose answer has more in it than a list of places, and
+  which wants an op of its own rather than to be squeezed through this one."
   [{:keys [type name ns package] :as found}]
   (when found
-    (case type
-      ("function" "macro" "var")
-      (when ns (mapv located ((of :find-usages) (symbol ns name))))
+    (let [cljs (names/cljs?)]
+      (case type
+        ("function" "macro" "var")
+        (when ns
+          (let [qualified (symbol ns name)]
+            (if cljs
+              (cljs-analysis/usages qualified)
+              ((of :find-usages) qualified))))
 
-      "keyword"
-      (mapv located ((of :find-keyword-usages) (if ns (keyword ns name) (keyword name))))
+        "keyword"
+        (let [kw (if ns (keyword ns name) (keyword name))]
+          (if cljs
+            (cljs-analysis/keyword-usages kw)
+            ((of :find-keyword-usages) kw)))
 
-      "class"
-      (mapv located ((of :find-class-usages) (if package (str package "." name) name)))
+        "class"
+        (when-not cljs
+          ((of :find-class-usages) (if package (str package "." name) name)))
 
-      nil)))
+        nil))))
 
 (defn usages
   "Where the name MSG carries is used, as the reply frame carries it.
@@ -526,7 +608,7 @@
   clojure.core/let\" rather than \"12 usages of let\", which would be a
   heading that does not say which let."
   [msg]
-  (refuse-unless-available! "record where names are used")
+  (refuse-unless-recording! "record where names are used")
   (let [found (:symbol (sym/named msg))]
     {:symbol found
-     :usages (in-reading-order (remove nil? (usages-of found)))}))
+     :usages (in-reading-order (keep located (usages-of found)))}))

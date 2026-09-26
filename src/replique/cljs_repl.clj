@@ -32,6 +32,7 @@
   have open, as two Clojure repls are two views of one JVM."
   (:require [clojure.main]
             [replique.cljs :as cljs]
+            [replique.cljs-analysis :as cljs-analysis]
             [replique.protocol :as protocol]
             [replique.server :as server]
             [replique.state :as state])
@@ -132,11 +133,34 @@
                   (:entry d) " by name."))
     (list 'load-file (:file d))))
 
-(def ^:private reload-refusal
-  (refused (str "This repl cannot reload ClojureScript yet: nothing here"
-                " watches which .cljs files changed. Reload what you know"
-                " changed with (require 'the.namespace :reload) or"
-                " :reload-all.")))
+(def ^:private reload-input
+  "What a #replique/reload becomes: the compiler's own `stale-reload' special.
+
+  A FORM, for the reason `load-input' is one - the reload's output has to be
+  framed in order, its failure has to be this repl's exception frame, and one
+  prompt has to follow it - and the Clojure repl answers the same directive the
+  same way, with a call it evaluates rather than with something done beside the
+  loop.
+
+  THE SPECIAL RATHER THAN `clojure.cljs.analysis/stale-reload!' DIRECTLY,
+  although that is the function it ends in. A reload here is two halves: the
+  files are recompiled on this JVM, and their bodies then have to be run in the
+  runtime - and the second half is the repl's to do, with the runtime this
+  connection is talking to, in the order the first half decided. The special is
+  where that is written; calling the function from here would be writing the
+  shipping a second time.
+
+  It prunes, which the Clojure side deliberately does not. A def deleted from a
+  file stops resolving in the compile environment, so a file still using it
+  warns the next time it compiles - see `clojure.cljs.analysis/prune-file!'.
+  The runtime keeps the property, and `:remove-var' is still what takes one
+  away there.
+
+  What it answers is the files it recompiled. The hooks of
+  `replique.cljs/env-hooks' do not fire: they are keyed to one namespace and a
+  reload loads many, and what the special answers is files rather than
+  namespaces."
+  (list 'stale-reload))
 
 ;;; Reading
 
@@ -239,8 +263,13 @@
                     [r {:load (cljs/declared-namespace (:file form))}]
                     r)))
 
+            ;; The pending #replique/src is dropped for `load-input's reason:
+            ;; it was about a form that never came, and leaving it would place
+            ;; the next form the client sends at a line of a file that has
+            ;; nothing to do with it.
             (instance? ReloadDirective form)
-            (do (vreset! pending nil) (vreset! moved false) reload-refusal)
+            (do (vreset! pending nil) (vreset! moved false)
+                [reload-input nil])
 
             ;; the way a socket repl is ended, as in any clojure socket repl
             (identical? :repl/quit form) ::eof
@@ -348,8 +377,18 @@
   ;; be missed by the one action a person takes when they want a clean build. It
   ;; costs what it has always cost, and it is paid once per repl rather than once
   ;; per form.
+  ;;
+  ;; UNDER THE ANALYSIS SINK, which is the one place that has to say so. Every
+  ;; other compilation replique asks for goes through the compiler's repl - a
+  ;; `require', a `load-file' - and that reads `:analysis' off the options
+  ;; (`replique.cljs/compiler-opts'); this one goes straight to the driver. The
+  ;; sink matters most here: this is the compile that reads the whole dependency
+  ;; graph off disk, so a repl started on a `:main' without it would have
+  ;; compiled the program and recorded none of it - and `#replique/reload' would
+  ;; then find nothing stale in a program it had just built.
   (if-let [failed (try (cljs/with-target-lock*
-                        #(cljs/compile-namespace! main {:reload-all true}))
+                        #(cljs-analysis/with-analysis*
+                          (fn [] (cljs/compile-namespace! main {:reload-all true}))))
                        nil
                        (catch Throwable t (failed-here :compile t)))]
     (report! conn flush-output! failed)

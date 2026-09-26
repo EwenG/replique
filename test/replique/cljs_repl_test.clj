@@ -273,14 +273,22 @@
         (let [v (binding [cljs/*target* :node] (cljs/resolve-var 'rt.placed 'unplaced))]
           (is (nil? (:file (meta v)))))))))
 
-(deftest test-a-reload-directive-is-refused-and-says-what-to-do-instead
+(deftest test-a-reload-directive-is-a-form-like-any-other
+  ;; The directive is handled beside the loop and answers with a form - the
+  ;; compiler's own `stale-reload' special - so what comes back is a value and a
+  ;; prompt, framed in that order, the way an evaluated form is. WHAT it reloads
+  ;; is `replique.cljs-analysis-test's; this is that it is evaluated at all.
   (when (compiling?)
     (with-repl [r]
-      (let [f (frame-tagged (eval! r "#replique/reload {}\n") "exception")]
-        (is (some? f))
-        (is (string/includes? (:message f) "reload"))
-        ;; named as what to do rather than as what is missing
-        (is (string/includes? (:message f) ":reload-all"))))))
+      (let [frames (eval! r "#replique/reload {}\n")]
+        (is (= ["ret" "prompt"] (mapv :tag frames)))
+        ;; the files it recompiled, which under a process nothing has edited
+        ;; is a list of none of them - read rather than compared against "[]",
+        ;; since what the other tests of this file left on disk is not this
+        ;; test's business
+        (is (vector? (read-string (:value (frame-tagged frames "ret")))))
+        (testing "and it does not move the repl, any more than a load does"
+          (is (= "cljs.user" (:ns (frame-tagged frames "prompt")))))))))
 
 (deftest test-a-jar-entry-cannot-be-loaded-and-says-why
   (when (compiling?)

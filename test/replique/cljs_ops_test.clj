@@ -122,7 +122,13 @@
                    {:op :symbol :position :code :ns "cljs.core" :text "first"}
                    {:op :completions :position :code :ns "cljs.core" :text "fir"}
                    {:op :spellings :ns "cljs.core" :vars ["cljs.core/map"]}
-                   {:op :remove-var :var "cljs.core/first"}]]
+                   {:op :remove-var :var "cljs.core/first"}
+                   ;; and the two that read the analysis rather than a symbol
+                   ;; table, whose refusal is still this one: a process with no
+                   ;; compiler has compiled nothing, so what is missing is the
+                   ;; compiler and not what it would have recorded
+                   {:op :usages :position :code :ns "cljs.core" :text "first"}
+                   {:op :stale}]]
         (is (= "no-cljs" (:error (about msg))) (pr-str (:op msg)))))
     (testing "including the positions that would have answered without reading
     a symbol table at all, which is why the refusal is at the top of the op and
