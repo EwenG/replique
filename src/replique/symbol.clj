@@ -467,7 +467,7 @@
 
   A method is written .name and a field .-name, and only the instance
   members are answered: a static one is written on the class. What the thing
-  is comes from the :tag and the :target the client sent, which is
+  is comes from the :tag and the :on the client sent, which is
   `names/target-class's to read."
   [ns msg ^String written]
   (when-let [class (names/target-class ns msg)]

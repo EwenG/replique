@@ -644,23 +644,23 @@
       (is (empty? (candidates (on ".-max" :tag "Integer")))))
 
     (testing "a var declares its class with a :tag of its own"
-      (is (contains? (typed (on ".getT" :target "probe-tagged")) ".getTime")))
+      (is (contains? (typed (on ".getT" :on "probe-tagged")) ".getTime")))
 
     (testing "and a literal is its own class"
-      (is (contains? (typed (on ".leng" :target "\"abc\"")) ".length")))
+      (is (contains? (typed (on ".leng" :on "\"abc\"")) ".length")))
 
     (testing "what nothing says the class of is answered with nothing: what an
     expression would return is not knowable without running it, and running
     somebody's code is what a keystroke must not do"
       (is (empty? (candidates (on ".leng"))))
-      (is (empty? (candidates (on ".leng" :target "(make-a-thing)"))))
-      (is (empty? (candidates (on ".coun" :target "probe-keywords")))
+      (is (empty? (candidates (on ".leng" :on "(make-a-thing)"))))
+      (is (empty? (candidates (on ".coun" :on "probe-keywords")))
           "a var that declares nothing among them: what it holds now is what
           it holds now, and reading a var to find out is reading it"))
 
     (testing "and the target is read rather than evaluated, so a form the
     reader would run is a form nothing runs"
-      (is (empty? (candidates (on ".leng" :target "#=(str \"abc\")")))))))
+      (is (empty? (candidates (on ".leng" :on "#=(str \"abc\")")))))))
 
 (deftest a-constructor-is-written-with-a-dot-on-the-class
   (testing "and every candidate carries one, since a candidate without it

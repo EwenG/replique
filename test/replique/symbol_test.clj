@@ -166,8 +166,8 @@
       (is (= ["^String [int]" "^String [int int]"] (:arglists behind-a-slash)))))
   (testing "what the thing is comes from the tag or from the target, and
   nothing is evaluated to find out"
-    (is (= "java.lang.String" (:class (written ".length" :target "\"a string\""))))
-    (is (nil? (written ".length" :target "(make-a-thing)")))
+    (is (= "java.lang.String" (:class (written ".length" :on "\"a string\""))))
+    (is (nil? (written ".length" :on "(make-a-thing)")))
     (is (nil? (written ".length")))))
 
 (deftest an-instance-field-is-only-written-on-the-thing

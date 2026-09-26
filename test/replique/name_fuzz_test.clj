@@ -248,7 +248,7 @@
                       (zero? (.nextInt random 4)) (named random (pool :classes))
                       (string/starts-with? text ".-") fielded
                       :else (pick random (pool :classes))))
-        (maybe :target (if (zero? (.nextInt random 2))
+        (maybe :on (if (zero? (.nextInt random 2))
                          (pick random targets)
                          (written random)))
         (maybe :locals (locals random)))))

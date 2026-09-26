@@ -438,16 +438,26 @@
   is.
 
   The tag first, which is a ^String the client read out of the text - off the
-  local the target names, or off the target where it was written at the call
-  site. Then the target as it is written: a var declares its class with a
-  :tag of its own, and a literal is its own class.
+  local the name is written on, or off the thing it is written on where that
+  was written at the call site. Then `:on', the thing as it is written: a var
+  declares its class with a :tag of its own, and a literal is its own class.
+
+  `:ON' AND NOT `:TARGET', WHICH IS WHAT IT WAS AND WHICH COLLIDED. A
+  ClojureScript question carries the runtime it is about under `:target' - a
+  browser build and a node build are two compilations of one source - and a
+  name written on something carried the thing it was written on under the same
+  key. Both go in one message, so a .cljs buffer asking about a member sent
+  `:target' twice and the whole line was refused as unreadable EDN, which is a
+  failure that names neither of them. One of the two had to move and this is
+  the one: the runtime's `:target' is in the handshake, in every prompt and in
+  every reading op, and this one is in three.
 
   Nothing is evaluated to find out. What an expression would return is not
   knowable without running it, and running somebody's code is what a
   keystroke must not do - so (.getT (make-thing)) is answered with nothing
-  rather than by making one. The target is read rather than evaluated for the
-  same reason, and read as edn: what a client sent is text out of somebody's
-  buffer, and #= in it is a form the reader would run.
+  rather than by making one. What it is written on is read rather than
+  evaluated for the same reason, and read as edn: what a client sent is text
+  out of somebody's buffer, and #= in it is a form the reader would run.
 
   Nothing where the question is about ClojureScript, for `class-named's
   reason - and here it takes saying, because a literal IS a class on this side
@@ -457,7 +467,7 @@
   (when-not (cljs?)
     (or (when-let [tag (named-argument msg :tag)]
           (class-named ns tag))
-        (when-let [target (named-argument msg :target)]
+        (when-let [target (named-argument msg :on)]
           (let [value (try (edn/read-string target) (catch Throwable _ nil))]
             (cond
               (symbol? value)

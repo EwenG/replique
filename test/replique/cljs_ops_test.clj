@@ -356,9 +356,10 @@
                                            :ns "clojure.core"
                                            :text "java.util.Date"}))))))
     (testing "and a string literal is not a java.lang.String to read members
-    off, which is what reading the target as this jvm would make of it"
+    off, which is what reading what it is written on as this jvm would make
+    of it"
       (is (nil? (:symbol (about {:op :symbol :position :code :ns "cljs.core"
-                                 :target "\"x\"" :text ".length"})))))
+                                 :on "\"x\"" :text ".length"})))))
     (testing "and none is offered either, although a name with a dot in it is
     exactly where the Clojure side starts offering them"
       (is (= [] (candidates (about {:op :completions :position :code
@@ -366,6 +367,31 @@
       (is (some #{"java.util.Date"}
                 (candidates (ask {:op :completions :position :code
                                   :ns "clojure.core" :text "java.util.Da"})))))))
+
+(deftest test-what-a-member-is-written-on-and-the-runtime-are-two-keys
+  ;; THEY WERE ONE, AND ONE MESSAGE CARRIES BOTH. A ClojureScript question says
+  ;; which runtime it is about, and a name written on something says what it is
+  ;; written on - and while both were `:target', a .cljs buffer asking about a
+  ;; member wrote the key twice and the process refused the whole line as
+  ;; unreadable EDN. Which named neither of them: the client had asked a
+  ;; perfectly good question and was told its message would not read.
+  ;;
+  ;; SENT AS THE TEXT OF A LINE rather than as a map, because that is where the
+  ;; failure was. A map with one key twice is a map with one key - `assoc' takes
+  ;; the second and nothing is ever wrong - so a test that built one would pass
+  ;; against the collision as happily as against the fix.
+  (when (compiling?)
+    (let [c (control-client @the-process)]
+      (try
+        (let [reply (request! c (str "{:op :symbol :id 1 :position :code"
+                                     " :ns \"cljs.core\" :text \".length\""
+                                     " :on \"\\\"x\\\"\""
+                                     " :dialect :cljs :target :node}"))]
+          (is (= "reply" (:tag reply)) (pr-str reply))
+          (is (nil? (:symbol reply))
+              "answered, and answered with nothing: a literal is not a class
+              there"))
+        (finally (disconnect c))))))
 
 (deftest test-a-macro-namespace-is-read-in-the-clojure-world
   ;; The one name in a .cljs buffer that is not a ClojureScript name. The
