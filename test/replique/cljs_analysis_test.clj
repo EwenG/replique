@@ -384,6 +384,44 @@
                    (mapv :message (filter #(= "exception" (:tag %)) frames)))
                 "the name no longer resolves in the compile environment")))))))
 
+(deftest a-macro-a-reload-removed-stops-expanding
+  (testing "the jvm half of it: the Clojure macro files a ClojureScript reload
+  loads on the way are pruned the way a Clojure reload prunes them, so a macro
+  deleted from a file this process analysed is gone from the namespace rather
+  than left there to expand a body nothing holds any more"
+    (when (compiling?)
+      (let [root (source-root!)
+            macros (written-file! root "expanded/macros.clj"
+                                  (str "(ns expanded.macros)\n"
+                                       "(defmacro kept [] 1)\n"
+                                       "(defmacro dropped [] 2)\n"))
+            said (fn [r code]
+                   (mapv :value (filter #(= "ret" (:tag %)) (eval! r code))))]
+        (written-file! root "expanded/core.cljs"
+                       (str "(ns expanded.core\n"
+                            "  (:require-macros [expanded.macros :refer [kept]]))\n"
+                            "(def a (kept))\n"))
+        (with-cljs-repl r
+          (let [clj-r (repl-client @the-process)]
+            (try
+              ;; analysed on the Clojure side as well, which is the session this
+              ;; is about - a macro file the Clojure model has never seen is
+              ;; loaded again and not pruned, having no record of what it defined
+              (eval! clj-r (str "#replique/load " (pr-str {:file macros})))
+              (eval! r "(require 'expanded.core)")
+              (is (= ["1"] (said r "expanded.core/a")))
+              (is (= ["#'expanded.macros/dropped"]
+                     (said clj-r "(resolve 'expanded.macros/dropped)")))
+              (edited-file! macros (str "(ns expanded.macros)\n"
+                                        "(defmacro kept [] 1)\n"))
+              (eval! r "#replique/reload {}")
+              (testing "the macro the file stopped defining is unmapped on the jvm"
+                (is (= ["nil"] (said clj-r "(resolve 'expanded.macros/dropped)"))))
+              (testing "and the one it still defines is where it was"
+                (is (= ["#'expanded.macros/kept"]
+                       (said clj-r "(resolve 'expanded.macros/kept)"))))
+              (finally (disconnect clj-r)))))))))
+
 ;;; A process that cannot be asked at all is `replique.cljs-ops-test's, with
 ;;; every other op it cannot answer: the refusal is `:usages' and `:stale'
 ;;; getting the same "no-cljs" as `:namespaces', and the point of it is the list

@@ -156,7 +156,10 @@
   pruned is the compile environment and not the runtime: the object keeps the
   property, and `:remove-var' is still what takes one away there. Which is
   where the two dialects differ now - unmapping a var on the jvm is the whole
-  of it, and here it is half.
+  of it, and here it is half. The Clojure macro files this loads on the way are
+  the jvm's, and they are pruned as a Clojure reload prunes them, as far as this
+  process analysed them: a macro deleted from a file it analysed stops
+  expanding rather than expanding the body nothing holds any more.
 
   What it answers is the files it recompiled. The hooks of
   `replique.cljs/env-hooks' do not fire: they are keyed to one namespace and a
