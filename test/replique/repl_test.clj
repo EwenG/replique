@@ -1083,7 +1083,7 @@
         (testing "and nothing in it yet.  A key is a client asking for
         something this does not do, and quietly doing the other thing is
         worse than saying that it does not"
-          (is (string/includes? (refused "#replique/reload {:prune true}")
+          (is (string/includes? (refused "#replique/reload {:only \"app/core.clj\"}")
                                 "takes nothing in its map yet")))
         (testing "a source directive above one is dropped, the way it is above
         a load: what this reads is files, each from where it is, so the

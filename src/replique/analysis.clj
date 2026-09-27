@@ -432,14 +432,31 @@
   definition it finds is the new one. It is the compile time dependency that
   goes stale, and that is the one this follows.
 
-  Nothing is unmapped. A definition deleted from a file leaves its var
-  behind, because loading a file defines what the file says and cannot
-  un-define what it no longer says - and replique already answers that with
-  `:remove-var', a definition taken away by name, by somebody who knows it is
-  gone. Unmapping it here instead would be a second answer to the same
-  question, given silently, in a process where what still uses that var may
-  be something nothing recorded: a call made by reflection, or a file this
-  process compiled before anything was watching.
+  A definition a file no longer has is unmapped. Loading a file defines what
+  the file says and cannot un-define what it no longer says, so a var whose
+  def form was deleted would stay interned and go on answering for a name the
+  codebase does not have - and the next thing to resolve it would find the
+  old function where it should have found the error that says the code is
+  behind. What a reloaded file stopped defining is therefore taken away as
+  the file is loaded, which is the answer the ClojureScript side gives too.
+
+  Taken away narrowly. A var goes where the model recorded this file defining
+  it, where no def of it is left anywhere - moved to another file is moved
+  rather than deleted - and where the var interned now is the same object that
+  was interned before the load, so a def deleted and written again under a
+  fresh var is left alone. A var nothing recorded as a def is never a
+  candidate at all, which is what keeps a `defprotocol's methods, interned
+  rather than def-ed; the cost of the same rule is that a deleted `defonce',
+  which a reload does not re-def either, lingers until the model is built
+  again from cold. The direction is chosen: something that should have gone
+  stays, rather than something live being taken away.
+
+  A var something still uses goes all the same, and says so on this repl's
+  error stream, naming where the usages were. What uses it may be something
+  nothing recorded - a call made by reflection, or a file this process
+  compiled before anything was watching - so a usage is a thing to be told
+  about rather than a veto, and `:remove-var' is still how a definition is
+  taken away by name, by somebody who knows it is gone.
 
   Answers the files it loaded, in the order it loaded them, named the way the
   classpath names them. Which is the one thing here that is news: this is
@@ -453,7 +470,7 @@
   []
   (refuse-unless-available! "keep track of what it compiled")
   (tell-of-the-classpath!)
-  ((of :stale-reload!)))
+  ((of :stale-reload!) :prune true))
 
 ;; NO CLOJURESCRIPT COUNTERPART OF `reload!' HERE, and the asymmetry with
 ;; `stale' below is deliberate. A Clojure reload ends when the files have been

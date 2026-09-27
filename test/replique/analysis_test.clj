@@ -560,6 +560,59 @@
             (disconnect c)
             (client/delete-recursively root)))))))
 
+(deftest a-definition-a-file-no-longer-has-is-unmapped-by-the-reload
+  (testing "loading a file defines what the file says and cannot un-define
+  what it no longer says, so a var whose def form was deleted would stay
+  interned and go on answering for a name the codebase does not have"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (written-file! root "probe/pruned.clj"
+                         (str "(ns probe.pruned)\n"
+                              "(defn kept [] 1)\n"
+                              "(defn dropped [] 2)\n"))
+          (load! r (written-file! root "probe/uses_pruned.clj"
+                                  (str "(ns probe.uses-pruned\n"
+                                       "  (:require [probe.pruned :as p]))\n"
+                                       "(defn both [] [(p/kept) (p/dropped)])\n")))
+          (is (= "[1 2]" (value! r "(probe.uses-pruned/both)")))
+          (edited-file! root "probe/pruned.clj"
+                        (str "(ns probe.pruned)\n"
+                             "(defn kept [] 1)\n"))
+          (if (analysing? c)
+            (let [frames (eval! r "#replique/reload {}")]
+              (testing "the file is loaded, and the name it stopped defining
+              resolves to nothing afterwards"
+                (is (= "[\"probe/pruned.clj\"]"
+                       (:value (client/frame-tagged frames "ret"))))
+                (is (= "nil" (value! r "(resolve 'probe.pruned/dropped)"))))
+              (testing "while what the file still defines is untouched: what
+              goes is what the model recorded this file defining and no longer
+              finds defined anywhere"
+                (is (= "1" (value! r "(probe.pruned/kept)"))))
+              (testing "a var something still used goes all the same, and says
+              so on this repl - what uses one may be something nothing
+              recorded, so a usage is a thing to be told about rather than a
+              veto"
+                (let [said (client/printed frames "err")]
+                  (is (string/includes? said "probe.pruned/dropped"))
+                  (is (string/includes? said "probe.uses-pruned"))))
+              (testing "and it is the name that goes rather than the code that
+              already compiled: a form that resolved the var before holds the
+              var itself, and goes on working until it is loaded again"
+                (is (= "[1 2]" (value! r "(probe.uses-pruned/both)")))))
+            (testing "a process that kept no track of what it compiled has
+            nothing to unmap, because it has no idea what the file used to
+            define"
+              (is (string/includes? (reloaded! r) "keep track of what it compiled"))
+              (is (= "[1 2]" (value! r "(probe.uses-pruned/both)")))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
 (defn- jar-on-classpath!
   "A jar holding ENTRIES, put on the classpath behind everything on it, and
   the directory it was written into.

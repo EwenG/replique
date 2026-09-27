@@ -150,11 +150,13 @@
   where that is written; calling the function from here would be writing the
   shipping a second time.
 
-  It prunes, which the Clojure side deliberately does not. A def deleted from a
-  file stops resolving in the compile environment, so a file still using it
-  warns the next time it compiles - see `clojure.cljs.analysis/prune-file!'.
-  The runtime keeps the property, and `:remove-var' is still what takes one
-  away there.
+  It prunes, as the Clojure side does. A def deleted from a file stops
+  resolving in the compile environment, so a file still using it warns the
+  next time it compiles - see `clojure.cljs.analysis/prune-file!'. What is
+  pruned is the compile environment and not the runtime: the object keeps the
+  property, and `:remove-var' is still what takes one away there. Which is
+  where the two dialects differ now - unmapping a var on the jvm is the whole
+  of it, and here it is half.
 
   What it answers is the files it recompiled. The hooks of
   `replique.cljs/env-hooks' do not fire: they are keyed to one namespace and a
