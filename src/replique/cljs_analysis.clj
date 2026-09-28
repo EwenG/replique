@@ -63,6 +63,7 @@
          :find-usages (named 'find-usages)
          :find-macro-usages (named 'find-macro-usages)
          :find-keyword-usages (named 'find-keyword-usages)
+         :analysed-files (named 'analysed-files)
          :changed-files (named 'changed-files)
          :stale-files (named 'stale-files)})
       (catch Throwable _ nil))))
@@ -164,7 +165,8 @@
 ;;; What has moved on
 
 (defn stale
-  "What a reload would compile: {:changed #{source} :stale #{source}}.
+  "What a reload would compile: {:changed #{source} :stale #{source}
+  :analysed n}.
 
   Sources as the model names them - my_lib/core.cljs - and disjoint, the way
   `replique.analysis/stale' answers the Clojure question:
@@ -198,4 +200,10 @@
   (let [{:keys [cenv]} (cljs/environment)
         changed ((of :changed-files))]
     {:changed (set changed)
-     :stale (into #{} (remove (set changed)) ((of :stale-files) cenv))}))
+     :stale (into #{} (remove (set changed)) ((of :stale-files) cenv))
+     ;; And whether anything has been compiled here at all - see
+     ;; `replique.analysis/stale', where the same key answers the same
+     ;; question about the JVM side and for the same reason. It is rarer to
+     ;; be false here, since a repl compiles its main on the way up, but a
+     ;; main that would not compile leaves exactly this state.
+     :analysed (count ((of :analysed-files)))}))

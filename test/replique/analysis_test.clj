@@ -1005,6 +1005,53 @@
             (disconnect c)
             (client/delete-recursively root)))))))
 
+(deftest how-many-files-have-been-read-is-answered-beside-what-changed
+  (testing "the two ways the lists can be empty are not the same fact and read
+  the same. \"Nothing has changed since this process read these files\" says the
+  program is up to date; \"this process has read no files\" says it knows of
+  nothing and will go on saying nothing whatever is edited. A client that
+  cannot tell them apart can only report the wrong one of the two - so the
+  count of what has been read is in the answer.
+
+  Counted from where this test starts rather than from zero, because a test
+  runs inside the process it is testing (see `with-process') and the model is
+  one per jvm: what another test read is in it, which is the one thing a
+  suite has that a fresh process does not."
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (when (analysing? c)
+            (let [before (:analysed (stale! c))]
+              (is (integer? before))
+              (written-file! root "probe/unread.clj"
+                             (str "(ns probe.unread)\n"
+                                  "(defn value [] 1)\n"))
+              (testing "`require' IS NOT LOADING IT THROUGH THIS PROCESS. The
+              model holds what the compiler read under the sink, which is what
+              a load and a reload push - so the namespace is loaded, is
+              running, and the model has not heard of it. Which is the state a
+              repl whose application was required from an init script is in,
+              and the whole reason the count is worth answering"
+                (is (= "1" (value! r (str "(do (require 'probe.unread)"
+                                          " (probe.unread/value))"))))
+                (let [found (stale! c)]
+                  (is (= before (:analysed found)))
+                  (is (= [] (named-files found :changed)))))
+              (testing "a load is, and from then on the empty lists mean what
+              they say about that file"
+                (load! r (written-file! root "probe/read.clj"
+                                        (str "(ns probe.read)\n"
+                                             "(defn value [] 2)\n")))
+                (let [found (stale! c)]
+                  (is (= (inc before) (:analysed found)))
+                  (is (= [] (named-files found :changed)))))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
 (deftest a-file-written-over-one-in-a-jar-is-seen-once-the-classpath-is-read-again
   (testing "a file inside a jar is not a file anybody edits, so whether it is
   one is asked once and remembered - which is most of the work of asking what

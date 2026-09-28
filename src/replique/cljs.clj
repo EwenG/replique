@@ -885,22 +885,46 @@
   is whoever wrote the application's page, and that was not replique - and
   these are what keeps it from also being the price of starting a repl. A dot
   directory is somebody's metadata and .git is enormous. node_modules is tens
-  of thousands of .js files and not one of them was written by this. A symbolic
-  link is how the walk of a project becomes the walk of a disk, or of itself.
+  of thousands of .js files and not one of them was written by this.
+
+  A SYMBOLIC LINK TO A DIRECTORY IS FOLLOWED, and this is the one rule that was
+  once here and is not. The danger it was guarding against is real - a link is
+  how the walk of a project becomes the walk of a disk, or of itself - but
+  refusing every link answers it by refusing a whole way of working. A project
+  laid out as a tree of links into another checkout, so that one directory can
+  be pointed at whichever worktree is wanted, is a project whose assets are all
+  behind links: the main module is found in neither the menu of what to start a
+  repl on nor the refresh that moves it to this process's port, and the second
+  one fails SILENTLY, because it only speaks when something moved.
+
+  So the loop is handled where it belongs, by remembering the real path of every
+  directory entered (see `main-js-files'), and the size of the walk is left to
+  the rules above and to .repliqueignore, which is what they are for.
 
   .REPLIQUEIGNORE IS REPLIQUE 1'S FILE, read here for its sake rather than on
   its merits: master walks for the same reason and a project that already has
   them has them for this. Master's own source says the mechanism is the wrong
   one - a build directory gets deleted and recreated without the file in it -
   so this is a compatibility, and a list said in the init script is where it
-  should end up."
+  should end up. It is also now the answer to a link into somewhere enormous."
   [^File dir]
   (let [name (.getName dir)]
     (and (.canRead dir)
          (not (.startsWith name "."))
          (not= "node_modules" name)
-         (not (Files/isSymbolicLink (.toPath dir)))
          (not (.exists (File. dir ".repliqueignore"))))))
+
+(defn- real-path
+  "The path of DIR with every link on the way to it resolved, or nil.
+
+  What two names for one directory have in common and nothing else does, which
+  is what makes it the thing to remember a directory by. Nil where the answer
+  cannot be had - a link to nowhere, a directory that went away between being
+  listed and being asked about - and a directory with no real path is one the
+  walk does not go into, since it could not be told apart from any other."
+  [^File dir]
+  (try (str (.toRealPath (.toPath dir) (make-array java.nio.file.LinkOption 0)))
+       (catch Throwable _ nil)))
 
 (defn main-js-files
   "Every main module under DIR, found the way a client would have to find it.
@@ -909,21 +933,39 @@
   the process that wrote it - that is the whole of what makes it go stale - and
   a process started tomorrow has never heard of it and still has to find it.
 
-  A SYMBOLIC LINK TO A FILE IS FOLLOWED, although a link to a directory is not:
-  a file somebody linked into their project is a file they meant to be there,
-  and master writes through it too."
+  SYMBOLIC LINKS ARE FOLLOWED, to a file and to a directory alike: what somebody
+  linked into their project is what they meant to be there, and a project laid
+  out as a tree of links into a checkout elsewhere is a project whose assets are
+  ALL behind them. See `searched?'.
+
+  ONCE EACH, BY REAL PATH. Following links is how a walk becomes a walk of
+  itself - a link to an ancestor is a walk with no end - and how one directory
+  gets walked twice under two names. Both are the same fact and have the same
+  answer: the real path of every directory entered is remembered, starting with
+  DIR itself, and one already entered is not entered again. So a loop stops at
+  the moment it closes, and a file reached by two routes is found once."
   [^File dir]
-  (reduce (fn [found ^File f]
-            (cond
-              (.isDirectory f)
-              (if (searched? f) (into found (main-js-files f)) found)
+  (let [seen (volatile! #{})
+        enter? (fn [^File d]
+                 (when-let [path (real-path d)]
+                   (when-not (contains? @seen path)
+                     (vswap! seen conj path)
+                     true)))
+        walk (fn walk [^File d]
+               (reduce (fn [found ^File f]
+                         (cond
+                           (.isDirectory f)
+                           (if (and (searched? f) (enter? f))
+                             (into found (walk f))
+                             found)
 
-              (and (.endsWith (.getName f) ".js") (begins-with-marker? f))
-              (conj found f)
+                           (and (.endsWith (.getName f) ".js") (begins-with-marker? f))
+                           (conj found f)
 
-              :else found))
-          []
-          (or (.listFiles dir) [])))
+                           :else found))
+                       []
+                       (or (.listFiles d) [])))]
+    (if (enter? dir) (walk dir) [])))
 
 ;; The two lines that go stale and the one an editor reads. Each constant is on
 ;; a line of its own for exactly this - see `main-js'.

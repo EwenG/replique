@@ -95,6 +95,7 @@
                         (throw (ex-info (str "No clojure.analysis/" sym) {}))))]
         {:load-file! (named 'load-file!)
          :stale-reload! (named 'stale-reload!)
+         :analysed-files (named 'analysed-files)
          :changed-files (named 'changed-files)
          :stale-files (named 'stale-files)
          :classpath-changed! (named 'classpath-changed!)
@@ -695,6 +696,10 @@
   Disjoint, and together they are what a reload would load. The second is
   the half nothing but the compiler can know.
 
+  And `:analysed', how many files this process has read. Two empty lists
+  have two meanings - up to date, or nothing here to be out of date - and a
+  client that cannot tell them apart has to guess which it is showing.
+
   A file a jar answered to is in neither list until the classpath has been
   read again, which is the one thing here that is not a fact about the disk -
   see `tell-of-the-classpath!'.
@@ -711,9 +716,12 @@
     ;; not one subtraction: a ClojureScript file can be stale for a reason that
     ;; is not a file at all - a var whose metadata it was compiled against has
     ;; changed - and the model is the only thing that can say so
-    (let [{:keys [changed stale]} (cljs-analysis/stale)]
+    (let [{:keys [changed stale analysed]} (cljs-analysis/stale)]
       {:changed (by-name changed)
        :stale (by-name stale)
+       ;; Whether anything has been compiled here at all, which the Clojure
+       ;; branch answers too and for the same reason - see it.
+       :analysed analysed
        ;; AND WHETHER THERE IS ANYWHERE TO PUT IT, which is half of what would
        ;; happen if a reload were asked for and is a half the Clojure question
        ;; does not have.  A Clojure reload ends when the files have been loaded
@@ -731,7 +739,23 @@
        :connected (cljs/runtime-connected?)})
     (let [changed ((of :changed-files))]
       {:changed (by-name changed)
-       :stale (by-name (remove changed ((of :stale-files) changed)))})))
+       :stale (by-name (remove changed ((of :stale-files) changed)))
+       ;; AND WHETHER THIS PROCESS HAS READ ANYTHING AT ALL, because the two
+       ;; ways the lists come back empty are not the same fact and read the
+       ;; same.  "Nothing has changed" says the program is up to date;
+       ;; "nothing has been loaded here" says this process knows of no files
+       ;; and would go on saying nothing whatever was edited.  Which is a
+       ;; state a Clojure repl is in more often than it looks: what the model
+       ;; holds is what the compiler read UNDER THE SINK, so a namespace that
+       ;; arrived by `require' - at a prompt, or from an init script - is
+       ;; loaded and is not in it.  A client with an empty answer and no way
+       ;; to tell them apart can only report the wrong one of the two.
+       ;;
+       ;; A COUNT AND NOT A FLAG, so that a client reading an answer with no
+       ;; such key in it - an older process than itself - can tell that from
+       ;; a process saying it has read nothing, and go on saying what it used
+       ;; to say rather than announcing an empty model that is not there.
+       :analysed (count ((of :analysed-files)))})))
 
 ;;; What was found
 

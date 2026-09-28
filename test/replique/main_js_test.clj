@@ -99,33 +99,86 @@
             (is (not-any? #(= "notjs.txt" (.getName ^File %)) found))))
         (finally (client/delete-recursively dir))))))
 
+(defn- linked!
+  "A symbolic link at PATH under DIR, pointing at TARGET."
+  [dir path ^File target]
+  (let [f (io/file dir path)]
+    (io/make-parents f)
+    (Files/createSymbolicLink (.toPath f) (.toPath target)
+                              (make-array FileAttribute 0))
+    f))
+
+(defn- names-of
+  "The names of the files FOUND holds, as a set."
+  [found]
+  (set (map #(.getName ^File %) found)))
+
 (deftest test-the-walk-does-not-go-where-a-project-keeps-what-is-not-its-own
   ;; A walk is the price of not being told where the files are, and these are
   ;; what keeps it from also being the price of starting a repl: .git is
-  ;; enormous, node_modules is tens of thousands of .js files that this did not
-  ;; write, and a symbolic link is how the walk of a project becomes the walk
-  ;; of a disk.
+  ;; enormous, and node_modules is tens of thousands of .js files that this did
+  ;; not write.
   (when (compiling?)
-    (let [dir       (client/temp-dir)
-          elsewhere (client/temp-dir)]
+    (let [dir (client/temp-dir)]
       (try
         (stale! dir "src/main.js")
         (stale! dir ".git/hooks/main.js")
         (stale! dir "node_modules/some-package/main.js")
         (stale! dir "build/main.js")
         (spit (io/file dir "build" ".repliqueignore") "")
-        (stale! elsewhere "linked/main.js")
-        (Files/createSymbolicLink (.toPath (io/file dir "linked"))
-                                  (.toPath (io/file elsewhere "linked"))
-                                  (make-array FileAttribute 0))
         (let [found (cljs/main-js-files (io/file dir))]
           (is (= 1 (count found)) (pr-str (mapv str found)))
           (is (= (.getCanonicalPath (io/file dir "src" "main.js"))
                  (.getCanonicalPath ^File (first found))))
           (testing "and the ignored ones are still there, merely not walked into"
             (is (.isFile (io/file dir "build" "main.js")))))
-        (finally (client/delete-recursively dir)
-                 (client/delete-recursively elsewhere))))))
+        (finally (client/delete-recursively dir))))))
+
+(deftest test-a-project-of-links-into-another-checkout-is-still-a-project
+  ;; The shape this is for: one directory laid out as a tree of symbolic links
+  ;; into whichever worktree is being worked on, so that a repl started in it is
+  ;; a repl on that one.  Its assets are ALL behind links, so a walk that
+  ;; refused them found no main module at all - no menu of what to start a repl
+  ;; on, and, worse and silently, no refresh of the port the page connects to.
+  (when (compiling?)
+    (let [checkout (client/temp-dir)
+          pointed  (client/temp-dir)]
+      (try
+        (stale! checkout "assets/public/main.js")
+        (stale! checkout "assets/node_modules/pkg/main.js")
+        (.mkdirs (io/file pointed "assets"))
+        (linked! pointed "assets/public" (io/file checkout "assets" "public"))
+        (testing "a link to a directory is walked, and the file behind it found"
+          (is (= #{"main.js"} (names-of (cljs/main-js-files (io/file pointed))))))
+        (testing "and what is refused is refused on the other side of one too"
+          (linked! pointed "assets/node_modules"
+                   (io/file checkout "assets" "node_modules"))
+          (is (= 1 (count (cljs/main-js-files (io/file pointed))))))
+        (finally (client/delete-recursively pointed)
+                 (client/delete-recursively checkout))))))
+
+(deftest test-a-directory-is-walked-once-however-many-names-it-has
+  ;; Which is the whole of what following links costs, and the whole of what is
+  ;; paid for it: a link to an ancestor is a walk with no end, and two links to
+  ;; one directory are one directory found twice.  Both are the same fact - a
+  ;; directory arrived at again - and the real path is what says so.
+  (when (compiling?)
+    (let [dir (client/temp-dir)]
+      (try
+        (stale! dir "assets/main.js")
+        (testing "a link to an ancestor closes a loop, and the walk ends there"
+          (linked! dir "assets/up" (io/file dir))
+          (is (= #{"main.js"} (names-of (cljs/main-js-files (io/file dir))))))
+        (testing "a link to itself is the same fact"
+          (linked! dir "assets/here" (io/file dir "assets"))
+          (is (= 1 (count (cljs/main-js-files (io/file dir))))))
+        (testing "and two names for one directory find its file once"
+          (linked! dir "also" (io/file dir "assets"))
+          (is (= 1 (count (cljs/main-js-files (io/file dir))))))
+        (testing "a link to nowhere is nowhere to go"
+          (linked! dir "broken" (io/file dir "was-never-there"))
+          (is (= 1 (count (cljs/main-js-files (io/file dir))))))
+        (finally (client/delete-recursively dir))))))
 
 ;;; What a refresh writes
 
