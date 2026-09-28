@@ -33,7 +33,15 @@
            ;; fact and is answered the same way: a .cljs buffer that gets no
            ;; completions is a process without the compiler on its classpath,
            ;; and this is where somebody looking for the reason finds it.
-           :cljs (cljs/available?))))
+           :cljs (cljs/available?)
+           ;; AND, WHERE IT DOES NOT, WHY - which is not always what the flag
+           ;; above reads as. A compiler that is on the classpath and will not
+           ;; load answers false here exactly as an absent one does, and the
+           ;; difference is the whole of what somebody looking at this wants:
+           ;; one of them is a classpath to fix and the other is a classpath
+           ;; that is already right. Absent where there is nothing to say, the
+           ;; way every optional key of this protocol is.
+           :cljs-error (cljs/unavailable-reason))))
 
 ;; Protocol smoke test. :value comes back both as JSON - which is lossy, EDN
 ;; keywords and symbols become strings - and as the EDN the process read, which

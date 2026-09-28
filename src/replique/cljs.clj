@@ -46,8 +46,47 @@
 
 ;;; Whether this process can answer at all
 
+(def ^:private compiler-resource
+  "A file every ClojureScript compiler this process could use answers to.
+
+  WHAT SAYS `ON THE CLASSPATH' WITHOUT LOADING ANYTHING, and the reason there
+  has to be such a thing is that loading is expensive in a way that is not only
+  time: `requiring-resolve' takes clojure's require lock, so a process busy
+  loading anything at all holds the compiler up and a process loading the
+  compiler holds everything else up. A handshake that has to refuse a process
+  with no ClojureScript on it must not pay that to find out - see
+  `replique.cljs-repl/accept!'.
+
+  `clojure.cljs.env' rather than any of the others because it is the one the
+  rest of them require: a classpath holding it holds a compiler, whether or not
+  that compiler will load."
+  "clojure/cljs/env.clj")
+
+(defn on-classpath?
+  "Whether a ClojureScript compiler looks like it is on this process's classpath.
+
+  WHICH IS NOT WHETHER IT WORKS - `available?' is that question and costs what
+  loading the compiler costs. This one is a lookup in a directory listing, and
+  what it is for is the answer that can be given before paying it: a process
+  that has no compiler at all can be told so at once, and a process that has
+  one is worth waiting for.
+
+  OPTIMISTIC ON PURPOSE, AND NEVER PESSIMISTIC. One file is not the compiler,
+  so half of one - an older build, a name that moved - answers true here and
+  false to `available?'. That is the right way round for the one thing this
+  decides: a handshake refused on it is refused only where there is certainly
+  nothing to wait for, and everything else goes on to find out properly and to
+  say what it found - see `unavailable-reason'."
+  []
+  (some? (io/resource compiler-resource)))
+
 (def ^:private subsystem
-  "The ClojureScript compiler of this process, or nil where there is none.
+  "The ClojureScript compiler of this process, or what went wrong loading it.
+
+  A MAP WHERE IT LOADED AND THE THROWABLE WHERE IT DID NOT, rather than nil for
+  both, because the two send whoever reads them to two different places - see
+  `unavailable-reason'. Nothing else tells them apart: by the time anything
+  asks, the loading happened once, long ago, on somebody else's thread.
 
   Resolved once and kept. Unlike the analysis subsystem the answer here is not
   quite a property of the jvm - a classpath can grow under a running process,
@@ -116,7 +155,27 @@
          ;; the file a definition records, which a repl knows only because its
          ;; client said so - see `eval-form'. A var rather than a value, again
          :source-file   (ana '*source-file*)})
-      (catch Throwable _ nil))))
+      (catch Throwable t t))))
+
+(defn- compiler
+  "The compiler functions, or nil where there are none.
+
+  A map is what loading one produced and a Throwable is what failing to
+  produced, so `map?' is the whole of the test - see `subsystem'."
+  []
+  (let [s @subsystem]
+    (when (map? s) s)))
+
+(defn- failure
+  "What went wrong loading the compiler, or nil where nothing did.
+
+  A classpath with no compiler on it goes wrong too, and says so as a
+  FileNotFoundException - which is how `unavailable-reason' tells the two
+  apart, that being the one thing `requiring-resolve' throws for a namespace
+  it could not FIND rather than could not load."
+  []
+  (let [s @subsystem]
+    (when (instance? Throwable s) s)))
 
 (defn available?
   "Whether this process can compile ClojureScript.
@@ -124,14 +183,79 @@
   Answered in a `:process-info', for somebody looking at a process and
   wondering why it will not complete a name in a .cljs buffer. Nothing needs it
   to ask: an op that cannot be answered says so, and says what to put on the
-  classpath instead."
+  classpath instead - which is `unavailable-reason', and is the half of this
+  worth reading when the answer is no."
   []
-  (some? @subsystem))
+  (some? (compiler)))
 
 (defn- of
   "The compiler function called NAMED, or nil where there is no compiler."
   [named]
-  (get @subsystem named))
+  (get (compiler) named))
+
+(defn- failure-text
+  "What T says, as the end of a sentence.
+
+  THE ROOT ALONGSIDE THE TOP and not instead of it, because the two carry
+  different halves of one fact: clojure wraps what a file failed on in a
+  CompilerException that names the file and the line, and the thing that
+  actually failed is underneath it. Either alone leaves out where or what.
+
+  Without the full stop some of these end with, since what this is is the
+  middle of somebody else's sentence."
+  [^Throwable t]
+  (let [say  (fn [^Throwable x] (or (.getMessage x) (.getName (class x))))
+        root (loop [x t] (if-let [c (.getCause x)] (recur c) x))
+        text (if (identical? root t)
+               (say t)
+               (str (say t) " (" (say root) ")"))]
+    (string/replace (string/trimr text) #"\.$" "")))
+
+(defn unavailable-reason
+  "Why this process cannot compile ClojureScript, as the end of a sentence
+  about it, or nil where it can.
+
+  TWO ANSWERS AND NOT ONE, because they send whoever reads them to two
+  different places. A classpath with no compiler on it is the ordinary case,
+  and the sentence names what to start the process with. A classpath that HAS
+  one and could not load it is the other, and answering that as the first sends
+  somebody off to check a classpath that is right: what is wrong is the
+  compiler itself, and until it is said nothing anywhere says it - the failure
+  happens once, inside a delay, on whichever thread asked first, and is seen by
+  nobody.
+
+  TOLD APART BY THE FAILURE AND NOT BY `on-classpath?', which is a fast path
+  and is allowed to be optimistic. What is exact is what was thrown: a
+  FileNotFoundException is `requiring-resolve' saying it could not FIND a
+  namespace, and anything else is a namespace it found and could not load. The
+  missing file is named either way, so a compiler whose own dependency is what
+  is absent - the one case this can read the wrong way round - still says which
+  file to go and look for.
+
+  Realises the compiler, so it costs what `available?' costs. Asked where the
+  answer is already known to be no, which is the only place it means anything."
+  []
+  (when-not (available?)
+    (let [t (failure)]
+      (if (and t (not (instance? java.io.FileNotFoundException t)))
+        (str "clojure.cljs is on its classpath and would not load: "
+             (failure-text t)
+             ". A compiler that is there and will not load is usually one built"
+             " against another clojure than the one this process is running.")
+        (str "there is no ClojureScript compiler on its classpath"
+             (when t (str ": " (failure-text t)))
+             ". Start it with clojure.cljs on the classpath, on a clojure whose"
+             " namespaces can live in a world of their own.")))))
+
+(defn cannot
+  "The sentence refusing WHAT, for a process that cannot compile ClojureScript.
+
+  WHAT is what the caller cannot do, written as the sentence it goes in. Said
+  in one place because it is said in three - the ops, the handshake of a
+  ClojureScript repl, and the runtime that handshake goes on to start - and a
+  reason written three times is a reason that will disagree with itself."
+  [what]
+  (str "This process cannot " what ": " (unavailable-reason)))
 
 (defn refuse-unless-available!
   "Refuse the request where this process has no ClojureScript compiler.
@@ -149,12 +273,7 @@
   it work: it is running without the compiler the request is about."
   [what]
   (when-not (available?)
-    (throw (ex-info (str "This process cannot " what
-                         ": there is no ClojureScript compiler on its classpath."
-                         " Start it with clojure.cljs on the classpath, on a"
-                         " clojure whose namespaces can live in a world of their"
-                         " own.")
-                    {:replique/error :no-cljs}))))
+    (throw (ex-info (cannot what) {:replique/error :no-cljs}))))
 
 ;;; The cursor
 

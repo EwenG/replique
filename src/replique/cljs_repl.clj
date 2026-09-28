@@ -522,15 +522,68 @@
 
 ;;; The handshake
 
+(defn- runtime-event!
+  "Start the runtime of TARGET and tell CONN where it is, or why there is none.
+  Answers whether the repl can go on.
+
+  AFTER THE HANDSHAKE HAS BEEN REPLIED TO, which is the whole of why this is an
+  event and not part of the reply - see `accept!'. So the two things it can say
+  are said the one way, and a client reads the second the way it reads the
+  first: `url' is where the page goes, and `error' with `message' is why there
+  will be no page and no prompt either.
+
+  THE FAILURES ARE FRAMED HERE AND NOT THROWN because the connection is a repl
+  by now. A throw would come out as this process's last word on a connection
+  that was told it had a repl, with no `error' key to read it by and nothing
+  said about which target it was about.
+
+  `url' is the browser's and absent on node, where the runtime is a process
+  this dialled and there is nothing for anybody to open. The event is written
+  all the same: what it says there is that the waiting is over, which is a
+  thing a client has been doing since the reply."
+  [conn target]
+  (let [about {:dialect "cljs" :target (name target)}
+        said! (fn [m] (protocol/write-frame! conn (protocol/event "runtime" (merge about m))))]
+    (if-not (cljs/available?)
+      (do (said! {:error "no-cljs"
+                  :message (cljs/cannot "run a ClojureScript repl")})
+          false)
+      (let [runtime (try (cljs/runtime!) (catch Throwable t t))]
+        (if (instance? Throwable runtime)
+          (do (said! {:error "exception"
+                      :message (or (ex-message runtime)
+                                   (.getName (class runtime)))
+                      :exception (protocol/exception->data runtime)})
+              false)
+          (do (said! {:url (:url runtime)})
+              true))))))
+
 (defn accept!
   "Take over conn as a ClojureScript repl, or say why it cannot be one.
 
-  The runtime is started HERE, before the reply, rather than by the first form:
-  starting it can fail - node may not be on PATH, a port may be taken - and a
-  handshake is where a client can be told that in one frame and have the
-  connection closed, instead of watching every form it sends come back with the
-  same message. It is also what the reply's `url' comes from, which is the whole
-  of what a browser repl needs a client to do: open that page.
+  THE REPLY GOES OUT BEFORE THE COMPILER IS LOADED AND BEFORE THE RUNTIME IS
+  STARTED, and the two of those are seconds: `requiring-resolve' of the
+  compiler takes clojure's require lock, so a Clojure repl on this process
+  loading anything at all - which is what a Clojure repl does the moment
+  somebody uses it - holds this handshake up for as long as it takes. A client
+  cannot tell that from a process that has stopped answering, and the one that
+  reads this protocol gives a handshake ten seconds before it decides the port
+  is lying and closes the connection. So nothing that can wait goes before the
+  reply.
+
+  WHAT CANNOT WAIT IS WHAT THE REPLY WOULD BE WRONG ABOUT. A target that names
+  no runtime, a `:main' that is not a name, and a classpath with no
+  ClojureScript on it are all answered before the reply, as `error' frames that
+  refuse the handshake - they are what this connection cannot be, and all three
+  are decided by looking rather than by loading. `on-classpath?' is the third
+  of those: a process with no compiler is the ordinary case and is still
+  refused at once.
+
+  WHAT DOES WAIT IS THE RUNTIME, AND IT ARRIVES AS AN EVENT - see
+  `runtime-event!'. The `url' a browser repl needs is the runtime's and there
+  is none until it has started, so it can no longer be in the reply. A
+  compiler that is on the classpath and will not load is answered there too,
+  for the same reason: finding out costs the loading.
 
   `:main' is a namespace to compile before the first prompt - see load-main!.
   Read here rather than there so that a client that wrote something that is not
@@ -540,14 +593,10 @@
   (let [target (cljs/as-target (or (:target hello) cljs/default-target))
         main   (protocol/as-name (:main hello))]
     (cond
-      (not (cljs/available?))
+      (not (cljs/on-classpath?))
       (protocol/write-frame!
        conn (protocol/error hello :no-cljs
-                            (str "This process cannot run a ClojureScript repl:"
-                                 " there is no ClojureScript compiler on its"
-                                 " classpath. Start it with clojure.cljs on the"
-                                 " classpath, on a clojure whose namespaces can"
-                                 " live in a world of their own.")))
+                            (cljs/cannot "run a ClojureScript repl")))
 
       (nil? target)
       (protocol/write-frame!
@@ -566,35 +615,28 @@
 
       :else
       (binding [cljs/*target* target]
-        (let [runtime (try (cljs/runtime!)
-                           (catch Throwable t t))]
-          (if (instance? Throwable runtime)
-            (protocol/write-frame! conn (protocol/exception-error hello runtime))
-            (do
-              (protocol/write-frame!
-               conn (protocol/reply hello (assoc (state/info)
-                                                 :role "repl"
-                                                 :dialect "cljs"
-                                                 :target (name target)
-                                                 :connection (:id conn)
-                                                 ;; nil on node, and dropped
-                                                 :url (:url runtime)
-                                                 ;; SAID BACK, because a client
-                                                 ;; that did not ask may be the
-                                                 ;; one reading this: a second
-                                                 ;; editor attaching to a repl
-                                                 ;; it did not start has the
-                                                 ;; reply and nothing else, and
-                                                 ;; which program the repl is
-                                                 ;; standing on is a thing to
-                                                 ;; show. Master said the same
-                                                 ;; in every repl-meta; here
-                                                 ;; the handshake is where a
-                                                 ;; connection's facts are, and
-                                                 ;; this one does not change.
-                                                 ;; Absent when none was named,
-                                                 ;; and dropped like `url'.
-                                                 :main main)))
-              ;; after the reply, as for every other connection
-              (server/set-role! conn :repl)
-              (repl conn (some-> main symbol)))))))))
+        (protocol/write-frame!
+         conn (protocol/reply hello (assoc (state/info)
+                                           :role "repl"
+                                           :dialect "cljs"
+                                           :target (name target)
+                                           :connection (:id conn)
+                                           ;; SAID BACK, because a client
+                                           ;; that did not ask may be the
+                                           ;; one reading this: a second
+                                           ;; editor attaching to a repl
+                                           ;; it did not start has the
+                                           ;; reply and nothing else, and
+                                           ;; which program the repl is
+                                           ;; standing on is a thing to
+                                           ;; show. Master said the same
+                                           ;; in every repl-meta; here
+                                           ;; the handshake is where a
+                                           ;; connection's facts are, and
+                                           ;; this one does not change.
+                                           ;; Absent when none was named.
+                                           :main main)))
+        ;; after the reply, as for every other connection
+        (server/set-role! conn :repl)
+        (when (runtime-event! conn target)
+          (repl conn (some-> main symbol)))))))

@@ -112,8 +112,18 @@
         (is (= "cljs" (:dialect (:hello r))))
         (is (= "node" (:target (:hello r))))
         (is (string? (:connection (:hello r)))))
-      (testing "and node has no url to open, unlike the browser"
+      (testing "and the reply says nothing about the runtime, which is not started yet"
+        ;; The whole of why it is answered at once: the compiler and the runtime
+        ;; are seconds and the require lock is shared, so a handshake that waited
+        ;; for them is a handshake a client gives up on
         (is (nil? (:url (:hello r)))))
+      (testing "where the runtime is arrives after the reply and before the prompt"
+        (is (= "event" (:tag (:runtime r))))
+        (is (= "runtime" (:event (:runtime r))))
+        (is (= "cljs" (:dialect (:runtime r))))
+        (is (= "node" (:target (:runtime r))))
+        (testing "and node has no url to open, unlike the browser"
+          (is (nil? (:url (:runtime r))))))
       (testing "the first prompt stands in cljs.user and says so the same way"
         (is (= "prompt" (:tag (:prompt r))))
         (is (= "cljs.user" (:ns (:prompt r))))
@@ -360,9 +370,12 @@
 (deftest test-a-browser-repl-says-what-to-open-and-evaluates-in-the-page
   (when (compiling?)
     (with-repl [r {:dialect :cljs :target :browser}]
-      (let [url (:url (:hello r))]
+      (let [url (:url (:runtime r))]
         (testing "the url is the whole of what a client has to do something with"
           (is (string/starts-with? (str url) "http://127.0.0.1:")))
+        (testing "and it is an event, the reply having gone out before there was one"
+          (is (nil? (:url (:hello r))))
+          (is (= "runtime" (:event (:runtime r)))))
         (testing "and evaluating before a page connects says so rather than waiting"
           ;; which is what lets you start the repl first and open the page when
           ;; you get to it
@@ -492,14 +505,16 @@
     ;; silently did nothing is a repl standing in a program that is not loaded.
     (let [r (cljs-repl! {:dialect :cljs :target :node :main "rt.no-such-program"})]
       (try
-        ;; `repl-client' reads the one frame after the reply and calls it the
-        ;; prompt. Here that frame is the exception and the prompt is behind it,
-        ;; which is the ordering under test.
-        (is (= "exception" (:tag (:prompt r))))
-        ;; named as the file it looked for, which is what the compile knows
-        (is (string/includes? (:message (:prompt r)) "rt/no_such_program.cljs")
-            (:message (:prompt r)))
-        (is (= "prompt" (:tag (recv r))))
+        ;; `repl-client' reads up to the prompt and keeps what came before it,
+        ;; which here is the runtime event and then the exception - and what is
+        ;; under test is that the exception is among them rather than after the
+        ;; prompt.
+        (let [f (last (:before r))]
+          (is (= "exception" (:tag f)) (pr-str (:before r)))
+          ;; named as the file it looked for, which is what the compile knows
+          (is (string/includes? (:message f) "rt/no_such_program.cljs")
+              (:message f)))
+        (is (= "prompt" (:tag (:prompt r))))
         (testing "and the repl is a repl anyway"
           (is (= "3" (:value (frame-tagged (eval! r "(+ 1 2)") "ret")))))
         (finally (disconnect r))))))
@@ -520,8 +535,8 @@
     ;; happened before the first prompt and on a namespace nobody typed.
     (let [r (cljs-repl! {:dialect :cljs :target :node :main "rt.uses-bad-macro"})]
       (try
-        (let [f (:prompt r)]
-          (is (= "exception" (:tag f)) (pr-str f))
+        (let [f (last (:before r))]
+          (is (= "exception" (:tag f)) (pr-str (:before r)))
           (is (= "compile" (:phase f))
               "the compiler in this process is what noticed")
           (testing "the message names nobody"
@@ -535,7 +550,7 @@
           says this was a macro rather than the program"
             (is (string/includes? (:stacktrace f) "clojure.cljs.macroexpand")
                 (:stacktrace f))))
-        (is (= "prompt" (:tag (recv r))))
+        (is (= "prompt" (:tag (:prompt r))))
         (testing "and the repl is a repl anyway"
           (is (= "3" (:value (frame-tagged (eval! r "(+ 1 2)") "ret")))))
         (finally (disconnect r))))))
@@ -633,10 +648,11 @@
     (let [r (cljs-repl! {:dialect :cljs :target :browser
                          :main "rt.no-such-program"})]
       (try
-        (is (= "exception" (:tag (:prompt r))) (pr-str (:prompt r)))
-        (is (string/includes? (:message (:prompt r)) "rt/no_such_program.cljs")
-            (:message (:prompt r)))
-        (is (= "prompt" (:tag (recv r))))
+        (let [f (last (:before r))]
+          (is (= "exception" (:tag f)) (pr-str (:before r)))
+          (is (string/includes? (:message f) "rt/no_such_program.cljs")
+              (:message f)))
+        (is (= "prompt" (:tag (:prompt r))))
         (finally (disconnect r))))))
 
 ;;; What happens after a load

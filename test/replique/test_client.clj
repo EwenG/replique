@@ -79,21 +79,6 @@
 ;;; reads the frames it produces, until the prompt says the repl is ready
 ;;; again.
 
-(defn repl-client
-  "A repl connection, handshaken and standing at its first prompt.
-
-  `extra' is merged into the :hello - :dialect and :target for a ClojureScript
-  one. A ClojureScript handshake compiles cljs.core and starts a runtime before
-  it answers, which is seconds rather than milliseconds, so the timeout is the
-  caller's to raise."
-  ([info] (repl-client info nil))
-  ([info extra] (repl-client info extra 10000))
-  ([info extra timeout]
-   (let [client (connect info timeout)
-         hello (request! client (merge {:op :hello :role :repl :id 0} extra))
-         prompt (when (= "reply" (:tag hello)) (recv client))]
-     (assoc client :hello hello :prompt prompt))))
-
 (defn recv-until
   "Read frames until one of them has that tag, and return them all."
   [client tag]
@@ -103,6 +88,33 @@
         (= :eof f) (conj frames f)
         (= tag (:tag f)) (conj frames f)
         :else (recur (conj frames f))))))
+
+(defn repl-client
+  "A repl connection, handshaken and standing at its first prompt.
+
+  `extra' is merged into the :hello - :dialect and :target for a ClojureScript
+  one. A ClojureScript handshake answers at once and starts its compiler and
+  its runtime afterwards, which is seconds rather than milliseconds, so the
+  timeout is the caller's to raise: what it bounds here is the wait for the
+  first prompt.
+
+  READ UP TO THE PROMPT AND NOT ONE FRAME, because more than one thing can come
+  between the reply and it: a ClojureScript repl says where its runtime is - see
+  `replique.cljs-repl/runtime-event!' - and a `:main' that would not compile is
+  framed there too. What arrived before the prompt is kept as :before, the
+  runtime event of it as :runtime, and :prompt is the last frame - which is :eof
+  where the runtime could not be started and the connection closed instead."
+  ([info] (repl-client info nil))
+  ([info extra] (repl-client info extra 10000))
+  ([info extra timeout]
+   (let [client (connect info timeout)
+         hello (request! client (merge {:op :hello :role :repl :id 0} extra))
+         framed (when (= "reply" (:tag hello)) (recv-until client "prompt"))]
+     (assoc client
+            :hello hello
+            :prompt (last framed)
+            :before (vec (butlast framed))
+            :runtime (first (filter #(= "runtime" (:event %)) framed))))))
 
 (defn eval!
   "Send code and read everything it produces, up to the next prompt."
