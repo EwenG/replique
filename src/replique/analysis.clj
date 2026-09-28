@@ -427,10 +427,24 @@
   of one of them, and they are loaded macro first - a file before the files
   that expand what it defines.
 
+  And not only what a macro reaches. A `defprotocol' generates an interface,
+  and a `deftype' or a `defrecord' generates a class; what names one of them
+  was compiled against the one that existed then, and loading the file that
+  generates it again generates another. A type then stops satisfying the
+  protocol it was written to implement - the call fails with no implementation
+  of a method of a protocol, which reads like a missing `extend-type' and is
+  nothing of the sort - and two classes of one name disagree about what
+  `instance?' means. So a file that names a class another file generates is
+  loaded after that file, the same way a file that expands a macro is. Nothing
+  in the macro edges says so: `deftype' is clojure.core's macro, and the file
+  whose protocol is being implemented is not in that graph at all.
+
   A file that merely calls a function of a changed file is not loaded, and
   needs not to be: a call goes through the var every time it runs, so the
-  definition it finds is the new one. It is the compile time dependency that
-  goes stale, and that is the one this follows.
+  definition it finds is the new one. A protocol's METHODS are calls like any
+  other - it is the interface, and not the method, that a file holds. It is
+  the compile time dependency that goes stale, and that is the one this
+  follows.
 
   A definition a file no longer has is unmapped. Loading a file defines what
   the file says and cannot un-define what it no longer says, so a var whose
@@ -444,19 +458,61 @@
   it, where no def of it is left anywhere - moved to another file is moved
   rather than deleted - and where the var interned now is the same object that
   was interned before the load, so a def deleted and written again under a
-  fresh var is left alone. A var nothing recorded as a def is never a
-  candidate at all, which is what keeps a `defprotocol's methods, interned
-  rather than def-ed; the cost of the same rule is that a deleted `defonce',
-  which a reload does not re-def either, lingers until the model is built
-  again from cold. The direction is chosen: something that should have gone
-  stays, rather than something live being taken away.
+  fresh var is left alone. Everything a def form makes is a candidate, the
+  ones written by an expansion included: a `defonce', a `defmulti', a
+  `declare', a `deftype's `->Name' and `map->Name', a protocol's own var.
+
+  And taken away everywhere it was put. A `:refer' is a mapping of its own,
+  in the namespace that took it and under whatever name it took it as, so a
+  var unmapped only where it was defined would go on resolving in every file
+  that referred it - one name half gone. Every namespace that maps the var
+  loses it, matched by the var itself and never by the name, so a namespace
+  with a var of its own under that name keeps it. Which is what `:remove-var'
+  does to a var named by hand; the two now mean the same thing by removing a
+  definition.
+
+  A protocol's METHODS are the exception, and they are taken away by their
+  protocol rather than by the model: they are interned and never def-ed, so
+  nothing recorded them to be missed, and what says one has gone is the
+  protocol itself - a method dropped from a `defprotocol' is a method the
+  protocol has stopped naming, and a `defprotocol' deleted takes all of them.
+  Which is worth having because of what the alternative looks like: a method
+  nothing names any more still resolves, and the call fails at run time with
+  no implementation of a method of a protocol, which reads like a missing
+  `extend-type' rather than like code that is behind.
+
+  A var an `intern' made is the one thing left where it was. Nothing recorded
+  it and no protocol speaks for it, so the direction is the chosen one there:
+  something that should have gone stays, rather than something live being
+  taken away - and `:remove-var' is how it goes, by name.
+
+  A file the disk no longer has is dropped. Nothing can load a file that is
+  gone, so it is not a file to load again - and not one to leave alone
+  either, since what it defined is still defined here and nothing else will
+  ever notice that the file behind it went away. What it defined is unmapped,
+  the way a deleted def is, with the whole file playing the part of the def;
+  the model stops answering for it, so nothing points at a file no editor can
+  open; and its namespaces stop being loaded libs, so requiring one says what
+  the disk says rather than finding the entry the `ns' form left behind and
+  doing nothing. A namespace another file still defines keeps its entry, and
+  the namespace object is left standing either way - with its aliases, its
+  imports and whatever an `intern' made in it, none of which this speaks for.
+
+  Dropped before the changed files are loaded, so that one of them still
+  using a definition of a file that is gone fails where it uses it rather
+  than compiling clean against a file nobody can open. Not answered, though:
+  the answer is the files that were loaded, and a file that is gone is not
+  one of them. Nor is a file between two writes told from one that is gone -
+  which is why this is asked for by hand and nothing here watches the disk.
 
   A var something still uses goes all the same, and says so on this repl's
   error stream, naming where the usages were. What uses it may be something
   nothing recorded - a call made by reflection, or a file this process
   compiled before anything was watching - so a usage is a thing to be told
-  about rather than a veto, and `:remove-var' is still how a definition is
-  taken away by name, by somebody who knows it is gone.
+  about rather than a veto. A protocol method's usages are its call sites and
+  not the types that implement it, so a method whose implementations are all
+  `deftype's goes without a word here; those files say so the next time they
+  compile, which is later and elsewhere.
 
   Answers the files it loaded, in the order it loaded them, named the way the
   classpath names them. Which is the one thing here that is news: this is
@@ -591,7 +647,17 @@
   Closure namespace or an npm export, and the ClojureScript model records those
   as host references keyed by what they name and by the name the source wrote -
   a different question, whose answer has more in it than a list of places, and
-  which wants an op of its own rather than to be squeezed through this one."
+  which wants an op of its own rather than to be squeezed through this one.
+
+  A PROTOCOL ANSWERS WHAT IMPLEMENTS IT as well, and nothing here does that: it
+  is the Clojure model that puts the two together, because a `deftype', a
+  `defrecord' or a `reify' naming a protocol names the interface the protocol
+  generated by the time the compiler sees it, and the place is recorded against
+  that interface. Which makes who implements a protocol the same question as
+  where it is used, asked with the same op - and leaves a protocol method the
+  question it looks like, its call sites, since a type need not implement every
+  method it could. ClojureScript records a type's protocols another way and has
+  no such answer yet."
   [{:keys [type name ns package] :as found}]
   (when found
     (let [cljs (names/cljs?)]
