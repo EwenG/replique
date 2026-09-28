@@ -627,6 +627,44 @@
             (disconnect c)
             (client/delete-recursively root)))))))
 
+(deftest a-reload-says-what-it-is-loading-while-it-loads-it
+  (testing "the value is the list and the value arrives when it stops being
+  useful: a reload of forty files is half a minute of a repl that looks
+  stopped, and the file it is inside is the one thing worth knowing about it -
+  both while it is working and when it is not coming back"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (written-file! root "probe/said.clj" "(ns probe.said)\n(def x 1)\n")
+          (load! r (written-file! root "probe/says.clj"
+                                  (str "(ns probe.says\n"
+                                       "  (:require [probe.said :as s]))\n"
+                                       "(def y s/x)\n")))
+          (edited-file! root "probe/said.clj" "(ns probe.said)\n(def x 2)\n")
+          (when (analysing? c)
+            (let [frames (eval! r "#replique/reload {}")
+                  said (client/printed frames "out")]
+              (testing "one line per file, named before it is loaded rather
+              than after: the file that never finishes compiling is then the
+              last line the client received"
+                (is (= ["  1/1 probe/said.clj"]
+                       (filterv #(re-matches #"\s+\d+/\d+ .*" %)
+                                (string/split-lines said)))))
+              (testing "and the value is still the value"
+                (is (= "[\"probe/said.clj\"]"
+                       (:value (client/frame-tagged frames "ret")))))
+              (testing "a reload with nothing to load names no file"
+                (is (empty? (filterv #(re-matches #"\s+\d+/\d+ .*" %)
+                                     (string/split-lines
+                                      (client/printed (eval! r "#replique/reload {}")
+                                                      "out"))))))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
 (deftest a-file-that-expands-a-macro-of-an-edited-file-is-loaded-too
   (testing "a macro is expanded where it is used, so a file that uses one
   holds the old expansion until it is compiled again - editing a macro leaves

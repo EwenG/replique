@@ -1080,11 +1080,21 @@
           (let [f (frame-tagged (eval! r "#replique/reload 1") "exception")]
             (is (= "read-source" (:phase f)))
             (is (string/includes? (:message f) "#replique/reload takes a map"))))
-        (testing "and nothing in it yet.  A key is a client asking for
+        (testing "and one key in it.  Another is a client asking for
         something this does not do, and quietly doing the other thing is
         worse than saying that it does not"
           (is (string/includes? (refused "#replique/reload {:only \"app/core.clj\"}")
-                                "takes nothing in its map yet")))
+                                "takes :timeout in its map and nothing else")))
+        (testing ":timeout is a positive number of milliseconds.  It is read
+        here and does nothing here - what it bounds is the second act a
+        ClojureScript reload has and this one does not - but a client that got
+        it wrong is told so wherever it sent it"
+          (is (string/includes? (refused "#replique/reload {:timeout \"soon\"}")
+                                "positive number of milliseconds"))
+          (is (string/includes? (refused "#replique/reload {:timeout -1}")
+                                "positive number of milliseconds"))
+          (is (some? (frame-tagged (eval! r "#replique/reload {:timeout 30000}")
+                                   "ret"))))
         (testing "a source directive above one is dropped, the way it is above
         a load: what this reads is files, each from where it is, so the
         directive was about a form that never came - and left pending it would

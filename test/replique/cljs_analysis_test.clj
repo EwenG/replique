@@ -363,6 +363,25 @@
             (let [found (about {:op :stale})]
               (is (= [] (under root found :stale))))))))))
 
+(deftest the-cljs-staleness-answer-says-whether-there-is-anywhere-to-put-it
+  (testing "a Clojure reload ends when the files have been loaded on this jvm;
+  a ClojureScript one has a second act - the bodies have to be RUN in the
+  runtime - so whether a runtime is there is part of what would happen if a
+  reload were asked for, and belongs in the answer to what one would do"
+    (when (compiling?)
+      (testing "answered without starting anything, so a client asking what is
+      stale does not open a port or start a node process by asking - which is
+      also why it is false where no repl has ever been opened on the target"
+        (is (contains? (about {:op :stale}) :connected)))
+      (with-cljs-repl r
+        (eval! r "(+ 1 1)")
+        (testing "and true of a node runtime that exists, which is a node
+        runtime that has dialled back"
+          (is (true? (:connected (about {:op :stale}))))))
+      (testing "the Clojure answer has no such key: the question does not
+      exist there"
+        (is (not (contains? (ask {:op :stale}) :connected)))))))
+
 (deftest a-definition-a-reload-removed-stops-resolving
   (testing "a def deleted from a file is pruned from the compile environment,
   which is what makes a file still using it warn rather than compile"

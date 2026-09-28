@@ -148,10 +148,20 @@
 
   What changed, what that makes stale, and what order to load it in is
   `replique.analysis/reload!'.  The answer is the files it loaded, which a
-  repl prints: what this did is not knowable in advance, so it is the result."
+  repl prints: what this did is not knowable in advance, so it is the result.
+
+  AND IT SAYS WHAT IT IS LOADING WHILE IT LOADS IT - `replique.analysis/telling*'
+  - because the answer arrives when it stops being useful.  A reload of forty
+  files is half a minute of a repl that looks stopped, and the file it is inside
+  is the one thing worth knowing about it, both while it is working and when it
+  is not coming back.
+
+  Here rather than in `replique.analysis/reload!' because it is this repl that
+  has somewhere to print: `*out*' is the connection that asked, and what it is
+  bound to is what makes these lines this client's rather than the process's."
   []
   (locking clojure.lang.RT/REQUIRE_LOCK
-    (analysis/reload!)))
+    (analysis/telling* analysis/reload!)))
 
 ;; Written from the read step, which is above the frames it writes
 (declare prompt-frame)

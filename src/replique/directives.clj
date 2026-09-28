@@ -167,6 +167,7 @@
 ;; name: everything that changed since the process read it.
 ;;
 ;;   #replique/reload {}
+;;   #replique/reload {:timeout 30000}
 ;;
 ;; Which is a question about the whole codebase and is still asked here
 ;; rather than as an op, for everything a load is asked here for.  It
@@ -176,21 +177,42 @@
 ;; a trace into the file; and it can take a while, so it has to be
 ;; interruptible, which a form evaluated by the repl is and an op is not.
 ;;
-;; A map with nothing in it, rather than nothing at all, because a tagged
-;; literal reads the form after it whatever that form is - and what is asked
-;; for here has somewhere to be written down the day there is something to
-;; write.  What goes in it today is nothing, and a client that put something
-;; there is a client asking for something this does not do, so it is told.
-(defrecord ReloadDirective [])
+;; A map, because a tagged literal reads the form after it whatever that form
+;; is - and because there is one thing worth writing in it.
+;;
+;; :timeout IS HOW LONG A RUNTIME IS GIVEN TO RUN WHAT WAS COMPILED, in
+;; milliseconds, and it is about the ClojureScript half of a reload.  A
+;; ClojureScript reload compiles on this jvm and then has to run the bodies in
+;; the runtime the repl is talking to, and a page that has stopped answering -
+;; a tab asleep on a laptop, a page whose modules 404 - would otherwise be
+;; waited for forever, with the editor that asked inside the wait.  The Clojure
+;; half has no such second act: a file is loaded on this jvm and that is the
+;; whole of it, so the key is read there and does nothing.
+;;
+;; THE CLIENT SAYS IT BECAUSE THE CLIENT IS THE ONE WHO KNOWS.  A reload typed
+;; at a prompt is a form like any other and should wait for as long as it
+;; takes; a reload an editor sent on its own, because a branch was switched,
+;; must not be able to hold that editor still.  Those are the same directive
+;; and they are not the same want, and nothing on this side can tell them
+;; apart.
+;;
+;; Absent means no bound, which is what a repl has always meant.  A key that is
+;; not this one is refused rather than ignored.
+(defrecord ReloadDirective [timeout])
 
 (defn reload-directive [m]
   (let [bad (fn [message]
               (throw (ex-info message {:replique/error :invalid-reload-directive})))]
     (when-not (map? m)
       (bad (str "#replique/reload takes a map, got: " (pr-str m))))
-    (when (seq m)
-      (bad (str "#replique/reload takes nothing in its map yet, got: " (pr-str m))))
-    (->ReloadDirective)))
+    (when-let [unknown (seq (dissoc m :timeout))]
+      (bad (str "#replique/reload takes :timeout in its map and nothing else, got: "
+                (pr-str (vec (map key unknown))))))
+    (when-let [timeout (:timeout m)]
+      (when-not (and (integer? timeout) (pos? timeout))
+        (bad (str "#replique/reload takes :timeout as a positive number of"
+                  " milliseconds, got: " (pr-str timeout)))))
+    (->ReloadDirective (:timeout m))))
 
 (def data-readers
   "The tags a repl reads on top of whatever the code it is reading uses.

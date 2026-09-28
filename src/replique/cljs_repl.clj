@@ -31,6 +31,7 @@
   target. Two repl buffers on the browser are two views of the one page you
   have open, as two Clojure repls are two views of one JVM."
   (:require [clojure.main]
+            [replique.analysis :as analysis]
             [replique.cljs :as cljs]
             [replique.cljs-analysis :as cljs-analysis]
             [replique.protocol :as protocol]
@@ -133,7 +134,7 @@
                   (:entry d) " by name."))
     (list 'load-file (:file d))))
 
-(def ^:private reload-input
+(defn- reload-input
   "What a #replique/reload becomes: the compiler's own `stale-reload' special.
 
   A FORM, for the reason `load-input' is one - the reload's output has to be
@@ -164,8 +165,20 @@
   What it answers is the files it recompiled. The hooks of
   `replique.cljs/env-hooks' do not fire: they are keyed to one namespace and a
   reload loads many, and what the special answers is files rather than
-  namespaces."
-  (list 'stale-reload))
+  namespaces.
+
+  THE DIRECTIVE'S `:timeout' IS CARRIED INTO IT, and this is the one repl where
+  it means anything. A ClojureScript reload compiles on this jvm and then has to
+  run the bodies in the runtime, and a page that has stopped answering - asleep,
+  or holding modules it cannot fetch - is a wait with no end to it, with the
+  editor that asked inside the wait. The special takes the bound as its argument
+  and gives each shipped script that long; absent, it waits as a repl has always
+  waited. See `replique.directives/reload-directive' for why the client is the
+  one who says."
+  [^ReloadDirective d]
+  (if-let [timeout (:timeout d)]
+    (list 'stale-reload timeout)
+    (list 'stale-reload)))
 
 ;;; Reading
 
@@ -274,7 +287,12 @@
             ;; nothing to do with it.
             (instance? ReloadDirective form)
             (do (vreset! pending nil) (vreset! moved false)
-                [reload-input nil])
+                ;; `:reload' rather than `:load', which is what tells the
+                ;; evaluation below to report what it is doing. The two are not
+                ;; the same thing: a load names one file and the person who
+                ;; asked knows which, and a reload is asked for because nobody
+                ;; does.
+                [(reload-input form) {:reload true}])
 
             ;; the way a socket repl is ended, as in any clojure socket repl
             (identical? :repl/quit form) ::eof
@@ -453,7 +471,21 @@
                                     ;; JavaScript already running it cannot.
                                     (interruptible conn
                                       #(cljs/with-evaluation conn
-                                         (let [r (cljs/eval-form form opts)]
+                                         ;; A RELOAD SAYS WHAT IT IS LOADING
+                                         ;; WHILE IT LOADS IT, and nothing else
+                                         ;; here does: every other form names
+                                         ;; what it is about, and this one is
+                                         ;; asked for because nobody can. The
+                                         ;; binding covers the compile of the
+                                         ;; ClojureScript AND the Clojure macro
+                                         ;; files it loads on the way, which
+                                         ;; report through the same var - see
+                                         ;; `replique.analysis/telling*'.
+                                         (let [evaluate (fn []
+                                                          (cljs/eval-form form opts))
+                                               r (if (:reload opts)
+                                                   (analysis/telling* evaluate)
+                                                   (evaluate))]
                                            ;; INSIDE the evaluation, because a
                                            ;; hook may evaluate and what it
                                            ;; prints belongs beside what the

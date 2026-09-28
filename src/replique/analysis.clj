@@ -59,6 +59,7 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
             [replique.classpath :as classpath]
+            [replique.cljs :as cljs]
             [replique.cljs-analysis :as cljs-analysis]
             [replique.names :as names]
             [replique.symbol :as sym])
@@ -97,6 +98,12 @@
          :changed-files (named 'changed-files)
          :stale-files (named 'stale-files)
          :classpath-changed! (named 'classpath-changed!)
+         ;; A VAR RATHER THAN A FUNCTION, and the only one here: what is wanted
+         ;; of it is to be bound, not to be called.  `named' answers vars
+         ;; throughout - `of' hands back what `requiring-resolve' found and
+         ;; every other entry is then called as a function - so this costs a
+         ;; line and nothing else.
+         :reload-progress (named '*reload-progress*)
          :find-usages (named 'find-usages)
          :find-keyword-usages (named 'find-keyword-usages)
          :find-class-usages (named 'find-class-usages)})
@@ -438,6 +445,92 @@
       (analyse source)
       source)))
 
+;;; Saying what a reload is doing while it does it
+
+;; A RELOAD IS THE ONE THING HERE THAT IS WORTH WATCHING.  Every other load is
+;; asked for by naming a file, so the person who asked knows what it is going to
+;; do and the only news is whether it worked; a reload is asked for precisely
+;; because nobody knows which files it will load, and it can be forty of them
+;; and take half a minute.  The value it ends with is the list, and the value
+;; arrives at the moment it stops being useful.
+;;
+;; SO THE MODEL SAYS WHAT IT IS DOING AS IT DOES IT, through
+;; `clojure.analysis/*reload-progress*', and the wording is here because the
+;; wording is replique's.  The model emits maps; what a line looks like in a
+;; repl is not a question a compiler should have an opinion about.
+;;
+;; ONE CHANNEL FOR BOTH DIALECTS.  A ClojureScript reload loads Clojure macro
+;; files on the jvm before it compiles anything, through the same
+;; `reload-files!' a Clojure reload goes through, so the two halves report
+;; through one var and arrive in the order they happen - see
+;; `clojure.cljs.analysis/told!'.  `:dialect' says which half an event is from,
+;; and the file name says it again.
+
+(defn- progress-text
+  "What EVENT prints, or nil where it is worth no line.
+
+  ONE LINE PER FILE AND NOTHING ELSE, which is what makes this readable in a
+  transcript that also has forms and values in it.  The count is on every line -
+  `3/12' - so the first line already says how big this is going to be, and no
+  separate announcement of the plan is owed.  What the whole list is, before any
+  of it has happened, is a question with a command of its own: the `:stale' op
+  answers it and compiles nothing.
+
+  NAMED BEFORE IT IS LOADED, which is the property the whole thing is for: the
+  file that never finishes compiling is the last line on the screen.  A line
+  printed after a load would name every file except that one.
+
+  A PLAN IS SILENT except where the loading lines would misrepresent it.  The
+  second pass and a further ClojureScript round both restart the count, and
+  somebody watching 1/3 appear under 12/12 is owed the reason rather than left
+  to wonder whether it began again."
+  ;; `:nth' and `:of' are bound to names of their own rather than destructured
+  ;; under theirs: one is `clojure.core/nth' and the other is this namespace's
+  ;; own `of', and a local that shadows either is a trap for whatever is written
+  ;; here next.
+  [{:keys [event file pass round files] n :nth total :of}]
+  (case event
+    :loading (format "  %d/%d %s" n total file)
+    :plan    (cond
+               (and (= 2 pass) (seq files))
+               "  and again, in the order the first pass revealed:"
+
+               (and round (seq files))
+               (format "  and %d more, compiled against metadata that just changed:"
+                       (count files)))
+    :deleted (when (seq files)
+               (str "  gone: " (string/join ", " files)))
+    nil))
+
+(defn- print-progress!
+  "Write what EVENT is worth on `*out*'.
+
+  Flushed, because what this is for is being read while it is happening: a line
+  sitting in a buffer until the reload ends is the line the reload ended
+  without."
+  [event]
+  (when-let [line (progress-text event)]
+    (println line)
+    (flush)))
+
+(defn telling*
+  "Call F with every reload under it saying on `*out*' what it is loading.
+
+  WHAT A REPL WRAPS ITS RELOAD IN, and a repl rather than this namespace because
+  the binding is a decision about who is watching: the same reload asked for by
+  a tool that only wants the answer should print nothing, and the thread doing
+  it is the only thing that knows which it is.  Dynamic for the same reason -
+  two repls reloading at once are two threads, each printing into its own
+  connection.
+
+  Nothing at all where this process has no analysis subsystem: there is then no
+  var to bind, and no reload to report either.  F is called all the same, and
+  fails the way it was always going to."
+  [f]
+  (if-let [v (of :reload-progress)]
+    (with-bindings {v print-progress!} (f))
+    (f)))
+
 (defn reload!
   "Load every file that changed on disk since this process read it.
 
@@ -620,7 +713,22 @@
     ;; changed - and the model is the only thing that can say so
     (let [{:keys [changed stale]} (cljs-analysis/stale)]
       {:changed (by-name changed)
-       :stale (by-name stale)})
+       :stale (by-name stale)
+       ;; AND WHETHER THERE IS ANYWHERE TO PUT IT, which is half of what would
+       ;; happen if a reload were asked for and is a half the Clojure question
+       ;; does not have.  A Clojure reload ends when the files have been loaded
+       ;; on this jvm; a ClojureScript one has a second act - the bodies have to
+       ;; be run in the runtime - and a browser runtime with no page connected
+       ;; is a reload that would compile everything and land nowhere.  So it
+       ;; belongs in the answer to "what would a reload do", which is what this
+       ;; op is.
+       ;;
+       ;; Asked without starting anything - see `replique.cljs/runtime-connected?'
+       ;; - so a client asking what is stale does not open a port or start a
+       ;; node process by asking.  Which also means false where no repl has ever
+       ;; been opened on this target, and that is the honest answer: there is
+       ;; nowhere to run anything.
+       :connected (cljs/runtime-connected?)})
     (let [changed ((of :changed-files))]
       {:changed (by-name changed)
        :stale (by-name (remove changed ((of :stale-files) changed)))})))
