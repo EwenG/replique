@@ -10,7 +10,7 @@
              :refer [control-client disconnect eval! frame-tagged repl-client request!
                      temp-dir delete-recursively with-process]])
   (:import [clojure.lang DynamicClassLoader]
-           [java.nio.file Files Path Paths]
+           [java.nio.file Files LinkOption Path Paths]
            [java.nio.file.attribute FileAttribute]))
 
 (defn- path ^Path [& names] (Paths/get (first names) (into-array String (rest names))))
@@ -22,6 +22,30 @@
     file))
 
 (defn- entry-url ^java.net.URL [dir] (.toURL (.toUri (path dir))))
+
+(defn- linked!
+  "Make LINK a symbolic link to TARGET, and answer LINK."
+  ^Path [^Path link ^Path target]
+  (Files/createDirectories (.getParent link) (make-array FileAttribute 0))
+  (Files/createSymbolicLink link target (make-array FileAttribute 0)))
+
+(defn- real ^String [^Path p] (str (.toRealPath p (make-array LinkOption 0))))
+
+(defn- offers?
+  "Whether the process offers NAMESPACE as a namespace to require."
+  [c namespace]
+  (contains? (set (map :candidate
+                       (:completions (request! c {:op :completions :position :namespace
+                                                  :text namespace :id 99}))))
+             namespace))
+
+(defn- anchors-under
+  "The anchors of the reading that name something under DIR, as pairs of what
+  being under them contributes and where they are."
+  [dir]
+  (vec (for [[^Path p prefix] (classpath/naming-anchors)
+             :when (string/starts-with? (str p) (real (path dir)))]
+         [prefix (str p)])))
 
 (defn- returned [frames] (:value (frame-tagged frames "ret")))
 
@@ -75,6 +99,73 @@
         (is (= "true" (returned (eval! a highest)))
             "which is the loader clojure.repl.deps walks up to and adds to")
         (finally (disconnect a))))))
+
+;;; Links under an entry
+
+(deftest a-package-linked-under-an-entry-is-read-through-the-link
+  (testing "an entry of the classpath is resolved once, when the process
+  starts, and a link BELOW one is resolved on every lookup - which is how one
+  process reads a source tree that is somewhere else, and can be made to read
+  another one without being restarted. So the walk has to follow it: a
+  linked directory not followed arrives as a leaf, and a source root whose
+  packages are links reads as a source root holding no namespaces at all"
+    (with-process [info nil]
+      (let [entry (temp-dir)
+            tree (temp-dir)
+            c (control-client info)]
+        (try
+          (write-file! tree "probe" "linked.clj")
+          (linked! (path entry "probe") (path tree "probe"))
+          (add-entry! entry)
+          (request! c {:op :update-classpath :id 1})
+          (is (offers? c "probe.linked"))
+          (testing "and what it crossed on the way is written down - the way
+          the classpath spells that directory, and where it really is, which
+          is the pair `replique.analysis/source-path' names a file with"
+            (is (= [["probe/" (real (path tree "probe"))]] (anchors-under tree))))
+          (finally
+            (disconnect c)
+            (delete-recursively entry)
+            (delete-recursively tree)
+            (classpath/rescan!)))))))
+
+(deftest a-link-re-pointed-under-a-running-process-is-a-reading-due
+  (testing "the one way this reading goes stale that the entries do not: an
+  entry cannot move under a running process, and a link below one is moved by
+  re-pointing it. So a worktree swapped for another is a reading due - and
+  until it happens the anchors name where the files were, which is answering
+  nothing rather than answering something else"
+    (with-process [info nil]
+      (let [entry (temp-dir)
+            one (temp-dir)
+            two (temp-dir)
+            c (control-client info)]
+        (try
+          (write-file! one "probe" "first.clj")
+          (write-file! two "probe" "second.clj")
+          (linked! (path entry "probe") (path one "probe"))
+          (add-entry! entry)
+          (request! c {:op :update-classpath :id 1})
+          (is (offers? c "probe.first"))
+          (Files/delete (path entry "probe"))
+          (linked! (path entry "probe") (path two "probe"))
+          (testing "re-pointed and not read again is the reading it was"
+            (is (offers? c "probe.first"))
+            (is (not (offers? c "probe.second")))
+            (is (= [["probe/" (real (path one "probe"))]] (anchors-under one))))
+          (testing "and reading it again is what says otherwise, for the names
+          and for the anchors both"
+            (request! c {:op :update-classpath :id 2})
+            (is (offers? c "probe.second"))
+            (is (not (offers? c "probe.first")))
+            (is (= [] (anchors-under one)))
+            (is (= [["probe/" (real (path two "probe"))]] (anchors-under two))))
+          (finally
+            (disconnect c)
+            (delete-recursively entry)
+            (delete-recursively one)
+            (delete-recursively two)
+            (classpath/rescan!)))))))
 
 ;;; The ops
 

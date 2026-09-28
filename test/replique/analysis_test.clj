@@ -43,8 +43,8 @@
   loader `add-libs' adds to, so a source root appearing under a running
   process is a thing that happens for real and not only here.
 
-  And read again afterwards, because what says which entries of the classpath
-  are directories is that reading - see `replique.classpath/directories'. A
+  And read again afterwards, because what says which places a path can be
+  named under is that reading - see `replique.classpath/naming-anchors'. A
   client that put a directory there does the same thing: `:add-libs' and
   `:sync-deps' both end in a reading, and `:update-classpath' is one asked
   for by itself."
@@ -315,10 +315,12 @@
 (defn- linked!
   "Make LINK a symbolic link to TARGET, and answer LINK.
 
-  The two shapes a link takes around a project are both here: a link to a
+  The three shapes a link takes around a project are all here: a link to a
   source tree, which is how one is worked on under a name that outlives the
-  worktree behind it, and a link to one file inside a source tree, which is
-  how a file is shared between several of them."
+  worktree behind it; a link to one file inside a source tree, which is how a
+  file is shared between several of them; and a link to a package under a
+  source root, which is how one process reads a tree that can be swapped for
+  another without restarting it."
   [link target]
   (let [^java.io.File f (java.io.File. ^String (str link))]
     (.mkdirs (.getParentFile f))
@@ -431,6 +433,63 @@
           (finally
             (disconnect r)
             (disconnect c)
+            (client/delete-recursively elsewhere)
+            (client/delete-recursively root)))))))
+
+(deftest a-file-under-a-package-linked-below-a-source-root-is-named-through-it
+  (testing "the shape no resolution can find, and the one a process reads a
+  swappable tree through: the source root is a real directory that stays where
+  it is - an entry of the classpath is resolved once and never again - and the
+  package under it is a link into a tree somewhere else, which is resolved on
+  every lookup and can therefore be made to point somewhere else. A file
+  opened where it really is, which is where it is edited and where its git is,
+  is under the root by neither of its names: the root does not resolve to the
+  tree, and the file resolves out of the root. What names it is the pair the
+  classpath walk wrote down as it crossed the link"
+    (with-process [info nil]
+      (let [root (source-root!)
+            elsewhere (client/temp-dir)
+            far (client/temp-dir)
+            staged (written-file! elsewhere "probe/staged.clj" (probe-clj "staged"))
+            shared (linked! (java.io.File. (str elsewhere) "probe/inboth.clj")
+                            (written-file! far "inboth.clj" (probe-clj "inboth")))
+            _ (linked! (java.io.File. (str root) "probe")
+                       (java.io.File. (str elsewhere) "probe"))
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          ;; The link was made after this root was read, and a link under an
+          ;; entry moves without the classpath moving - see
+          ;; `replique.classpath/naming-anchors'
+          (classpath/rescan!)
+          (load! r staged)
+          (testing "loaded"
+            (is (= "8" (-> (eval! r "(probe.staged/four 2)")
+                           (client/frame-tagged "ret")
+                           :value))))
+          (when (analysing? c)
+            (testing "and recorded under the name the classpath gives it,
+            which is the way down to the link with the rest of the path after
+            it - neither end of that name is a piece of the path it was loaded
+            under"
+              (is (= [["staged.clj" 3 17 "probe.staged"]
+                      ["staged.clj" 3 24 "probe.staged"]]
+                     (at (usages! c "probe.staged" "twice"))))))
+          (testing "and a file shared between the trees, which is a link
+          inside the one the link leads to: two links deep, and under the root
+          by no reading that resolves the file itself"
+            (load! r shared)
+            (is (= "8" (-> (eval! r "(probe.inboth/four 2)")
+                           (client/frame-tagged "ret")
+                           :value)))
+            (when (analysing? c)
+              (is (= [["inboth.clj" 3 17 "probe.inboth"]
+                      ["inboth.clj" 3 24 "probe.inboth"]]
+                     (at (usages! c "probe.inboth" "twice"))))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively far)
             (client/delete-recursively elsewhere)
             (client/delete-recursively root)))))))
 
@@ -939,7 +998,7 @@
               (testing "and writing a file over it changes nothing yet - the
               same rule the rest of the classpath is read by, which is that a
               classpath this process has not read is one it says nothing new
-              about.  See `replique.classpath/directories'"
+              about.  See `replique.classpath/naming-anchors'"
                 (is (= [] (named-files (stale! c) :changed))))
               (request! c {:op :update-classpath :id 1})
               (testing "reading it again is what says otherwise: the name that

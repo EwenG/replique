@@ -23,7 +23,7 @@
            [java.lang.module ModuleDescriptor$Exports ModuleFinder ModuleReader
             ModuleReference]
            [java.net URL URLClassLoader]
-           [java.nio.file FileVisitResult FileVisitor Files LinkOption Path Paths]
+           [java.nio.file FileVisitOption FileVisitResult FileVisitor Files LinkOption Path Paths]
            [java.util.jar JarEntry JarFile]))
 
 ;;; Reading a name out of a resource
@@ -274,15 +274,58 @@
   (when-let [name (.getFileName directory)]
     (.startsWith (str name) ".")))
 
-(defn- directory-resources [^Path root]
-  (let [found (java.util.ArrayList.)]
+(defn- real-path
+  "PATH with every link resolved away, or nil where it cannot be read.
+
+  Which is the other half of the pair an anchor is made of: a directory the
+  classpath reaches through a link has a second name, and it is the second
+  name that an editor - which resolves nothing, and is naming a file where
+  the file really is - hands to a load."
+  ^Path [^Path path]
+  (try (.toRealPath path (make-array LinkOption 0)) (catch Exception _ nil)))
+
+(defn- directory-resources
+  "The resources under ROOT, and the anchors the walk crossed to reach them.
+
+  LINKS ARE FOLLOWED, which is what puts a tree reached through one into the
+  reading at all. Without that a linked directory arrives as a leaf - one
+  resource named after the link, and nothing under it - so a source root whose
+  packages are links reads as a source root holding no namespaces.
+
+  AND WHAT IS CROSSED IS WRITTEN DOWN, because this is the only place that
+  knows. A directory that is a link is handed to `preVisitDirectory' as the
+  link and not as what it points at, so the walk holds both of that
+  directory's names at the moment it steps across: the way the classpath
+  spells it, and where it really is. That pair is an anchor, and it is what
+  `replique.analysis/source-path' needs to name a file somebody opened by the
+  second name. Nothing can work it out afterwards from the entries alone - an
+  entry is a directory rather than a tree, and which of the directories under
+  it are links is known only to whoever walked it.
+
+  One question per directory, and none per file."
+  [^Path root]
+  (let [found (java.util.ArrayList.)
+        anchors (java.util.ArrayList.)]
     (Files/walkFileTree
      root
+     (java.util.EnumSet/of FileVisitOption/FOLLOW_LINKS)
+     Integer/MAX_VALUE
      (reify FileVisitor
        (preVisitDirectory [_ directory _]
          (if (and (not= root directory) (unnameable? directory))
            FileVisitResult/SKIP_SUBTREE
-           FileVisitResult/CONTINUE))
+           (do
+             ;; The root itself is left out on purpose even when it is a link:
+             ;; an entry that is one is already answered by resolving the two
+             ;; sides of the question, which is what `source-path' asks second.
+             ;; What is here is the link no resolution can find - one BELOW an
+             ;; entry, where the entry is spelt one way and the file another.
+             (when (and (not= root directory) (Files/isSymbolicLink directory))
+               (when-let [real (real-path directory)]
+                 (.add anchors
+                       [real (str (string/join "/" (map str (.relativize root directory)))
+                                  "/")])))
+             FileVisitResult/CONTINUE)))
        (visitFile [_ path _]
          ;; Joined rather than printed: a path prints with the separator of
          ;; the machine, and a resource is named with a slash wherever it is
@@ -295,10 +338,12 @@
        ;; cannot be read loses what is under it, where letting it out would
        ;; lose the whole entry - a source tree answered as if it were empty.
        ;; A tree is walked while something else is writing to it, so a file
-       ;; that was listed and then removed is an ordinary thing to meet.
+       ;; that was listed and then removed is an ordinary thing to meet. With
+       ;; links followed it is also where a tree that links back into itself
+       ;; arrives: skipping ends that walk rather than losing the entry.
        (visitFileFailed [_ _ _] FileVisitResult/SKIP_SUBTREE)
        (postVisitDirectory [_ _ _] FileVisitResult/CONTINUE)))
-    (vec found)))
+    {:resources (vec found) :anchors (vec anchors)}))
 
 (defn- entry-scan
   "What the classpath entry at PATH provides, or nil when it provides nothing.
@@ -311,13 +356,16 @@
   A directory says so, and says where it is. It is asked here anyway, to know
   which way to read the entry, so carrying the answer out costs nothing - and
   it is the half of the classpath a path on disk can be named against, which
-  is a question asked of a whole classpath at a time. See `directories'."
+  is a question asked of a whole classpath at a time. See `naming-anchors'."
   [^Path path]
   (try
     (let [options (make-array LinkOption 0)]
       (cond
-        (Files/isDirectory path options) (assoc (collect (directory-resources path))
-                                                :directory path)
+        (Files/isDirectory path options) (let [{:keys [resources anchors]}
+                                               (directory-resources path)]
+                                           (assoc (collect resources)
+                                                  :directory path
+                                                  :anchors anchors))
         (Files/isRegularFile path options) (collect (jar-resources path))))
     (catch Exception _ nil)))
 
@@ -340,7 +388,10 @@
      :resources (vec (mapcat :resources scans))
      ;; The classes the runtime brings are no entry of the classpath and
      ;; carry none of these
-     :directories (vec (keep :directory scans))}))
+     :naming-anchors (into (vec (for [{:keys [directory]} scans :when directory]
+                                  [directory ""]))
+                           (mapcat :anchors)
+                           scans)}))
 
 ;; Read here, which is process startup: replique.control loads the ops and the
 ;; ops load this. A first completion would otherwise wait a fifth of a second
@@ -374,29 +425,46 @@
   []
   (:reading @scanned))
 
-(defn directories
-  "The entries of the classpath that are directories, as absolute paths.
+(defn naming-anchors
+  "The places a path on disk can be given a name under, each with what being
+  under it contributes to that name.
 
-  Which is the half of it a project's own sources are under, and the half a
-  path on disk can be turned into a name on the classpath against - see
-  `replique.analysis/source-path'. A jar is left out because nothing under
-  one has a path: what is in there is an entry, and an entry is already
-  written the way the classpath names it.
+  A pair, and the two kinds of pair are the two kinds of place. An entry of
+  the classpath that is a directory contributes NOTHING, because a name under
+  an entry is the whole name; a directory the walk reached by crossing a link
+  contributes the way down to it, because the classpath spells that directory
+  under an entry and whoever opened the file spelt it where it really is. See
+  `replique.analysis/source-path', which is what asks.
+
+  A jar is in neither kind because nothing under one has a path: what is in
+  there is an entry, and an entry is already written the way the classpath
+  names it.
+
+  Entries first, so that a file under one is named by the entry rather than
+  by a link that happens to reach the same tree - the shorter answer, and the
+  one that does not depend on a link staying where it is.
 
   Out of the same reading everything else here comes out of, and stale in the
   same way until `rescan!'. Which is the point of it being here rather than
   read afresh per call: an entry is asked whether it is a directory to know
-  which way to read it, so the answer is already paid for, and a classpath
-  this one has not read is a classpath it says nothing else about either. The
-  two agreeing is worth more than one of them being fresher - what a load
-  does with an unrecognised directory is load the file without analysing it,
-  which is the same thing it does for a file that is on no classpath at all.
+  which way to read it, and the links under it are crossed on the way through
+  it, so both answers are already paid for. A classpath this one has not read
+  is a classpath it says nothing else about either, and the two agreeing is
+  worth more than one of them being fresher - what a load does with an
+  unrecognised directory is load the file without analysing it, which is the
+  same thing it does for a file that is on no classpath at all.
 
   Nothing puts a directory on the classpath without a reading: `:add-libs'
   and `:sync-deps' both end in one, and `:update-classpath' is a client
-  asking for one by itself."
+  asking for one by itself. A LINK UNDER ONE IS MOVED WITHOUT A READING,
+  which is the one way this goes stale that the entries do not - a worktree
+  swapped under a running process is a reading due, and until it happens the
+  anchors name where the files were. Never the wrong file, though: a name is
+  held up against the classpath before it is given out, so an anchor that has
+  moved answers nothing rather than answering something else. See
+  `replique.analysis/reachable-as?'."
   []
-  (:directories (scan)))
+  (:naming-anchors (scan)))
 
 (defn rescan!
   "Read the classpath again, and return what is on it now.

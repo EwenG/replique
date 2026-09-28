@@ -247,17 +247,30 @@
          (same-file? (File. (.toURI url)) (.toFile path)))))
 
 (defn- named-under
-  "What the directories ROOTS call the file at TARGET, or nil.
+  "What ANCHORS call the file at TARGET, or nil.
 
-  The first root holding it wins, and the name it gives is then held up
-  against the classpath - a root can hold a file and still not be where that
-  name is read from, see `reachable-as?'."
-  [^Path target roots]
-  (some (fn [^Path root]
+  An anchor is a directory and what being under THAT directory contributes to
+  a name - nothing for an entry of the classpath, and the way down to it for a
+  directory the classpath reaches by crossing a link. Which is why the name is
+  built rather than relativized: a file under a linked package is named
+  `pkg/x.clj' and reached as `<root>/pkg/x.clj', and the piece in front of it
+  is the piece no path arithmetic on the two ends can recover. See
+  `replique.classpath/naming-anchors'.
+
+  The first anchor holding it wins, and the name it gives is then held up
+  against the classpath - an anchor can hold a file and still not be where
+  that name is read from, see `reachable-as?'. Which is also what makes an
+  anchor that has moved harmless: a link re-pointed under a running process
+  leaves anchors naming a tree the classpath no longer reads, and a name that
+  does not reach the file it was made from is thrown away rather than given
+  out."
+  [^Path target anchors]
+  (some (fn [[^Path root ^String prefix]]
           (when (and (.startsWith target root) (not= target root))
-            (let [resource (string/join "/" (map str (.relativize root target)))]
+            (let [resource (str prefix
+                                (string/join "/" (map str (.relativize root target))))]
               (when (reachable-as? resource target) resource))))
-        roots))
+        anchors))
 
 (defn source-path
   "What the classpath calls the file at PATH, or nil when it calls it nothing.
@@ -265,6 +278,17 @@
   The path of the file under the classpath directory it is in, written with
   slashes - app/util.clj - which is the name the compiler records while it
   reads that file and the name every span out of it carries.
+
+  ASKED OF ANCHORS RATHER THAN OF ENTRIES, which is what lets the first of
+  the three questions below answer for a link BELOW a source root - a
+  package directory that is a link into somewhere else, which is how one
+  process reads a source tree that is somewhere else and can be made to be
+  somewhere else again without being restarted. Neither end of such a path
+  can be resolved into the other: the entry is a real directory and stays
+  where it is, and the file resolves out of the tree altogether. What joins
+  them is the pair the classpath walk wrote down as it crossed the link, and
+  a name built out of that pair is a name the first question answers with.
+  See `replique.classpath/naming-anchors'.
 
   Asked three times where it has to be, because a path is a name for a file
   and not the file, and a link puts two names on one file. First as the two
@@ -308,11 +332,16 @@
   (let [target (try (.normalize (.toAbsolutePath (Paths/get path (make-array String 0))))
                     (catch Exception _ nil))]
     (when target
-      (let [roots (classpath/directories)
+      (let [anchors (classpath/naming-anchors)
             ;; Resolved once for the two questions that ask against them, and
-            ;; not at all for the load that the first question answers
-            resolved (delay (keep canonical-path roots))]
-        (or (named-under target roots)
+            ;; not at all for the load that the first question answers. The
+            ;; prefix is carried through untouched: what is being resolved is
+            ;; where the directory is, not what it is called.
+            resolved (delay (into [] (keep (fn [[^Path root prefix]]
+                                             (when-let [real (canonical-path root)]
+                                               [real prefix])))
+                                  anchors))]
+        (or (named-under target anchors)
             (when-let [real (canonical-path target)]
               (named-under real @resolved))
             (when-let [above (above-resolved target)]
