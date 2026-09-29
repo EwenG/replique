@@ -1069,8 +1069,15 @@
   that interface. Which makes who implements a protocol the same question as
   where it is used, asked with the same op - and leaves a protocol method the
   question it looks like, its call sites, since a type need not implement every
-  method it could. ClojureScript records a type's protocols another way and has
-  no such answer yet."
+  method it could.
+
+  AND ClojureScript ANSWERS IT TOO, having had to be made to. There is no
+  interface there to carry the place: a protocol compiles to a munged property
+  name, so the symbol the source wrote is gone before the analyzer sees a thing.
+  Its compiler is told at the one moment both are in hand - the macro resolving
+  the name - and files the place with the protocol's other uses, so the question
+  is the same question in both dialects and comes back in one list. See
+  clojure.cljs.macroexpand/*on-protocol-impl'."
   [{:keys [type name ns package] :as found}]
   (when found
     (let [cljs (names/cljs?)]

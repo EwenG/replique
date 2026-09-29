@@ -330,6 +330,51 @@
               (is (= [["boot/program.cljs" 3 14 "boot.program"]] (at root found))))
             (finally (disconnect r))))))))
 
+(deftest implementing-a-protocol-is-a-use-of-the-protocol
+  (testing "who implements this is the same question as where is this used,
+  asked with the same op - which on the jvm falls out of how a protocol is
+  compiled, and here had to be arranged: a ClojureScript protocol becomes a
+  munged property name, so the symbol the source wrote is gone before the
+  analyzer sees anything, and its compiler says so while it still has both"
+    (when (compiling?)
+      (let [root (source-root!)]
+        (written-file! root "prot/defs.cljs"
+                       (str "(ns prot.defs)\n"
+                            "(defprotocol Shape\n"
+                            "  (area [s]))\n"))
+        (written-file! root "prot/uses.cljs"
+                       (str "(ns prot.uses\n"
+                            "  (:require [prot.defs :as p :refer [Shape area]]))\n"
+                            "(defrecord Square [n]\n"
+                            "  Shape\n"
+                            "  (area [_] (* n n)))\n"
+                            "(deftype Dot []\n"
+                            "  p/Shape\n"
+                            "  (area [_] 0))\n"
+                            "(defn measure [s] (area s))\n"))
+        (with-cljs-repl r
+          (eval! r "(require 'prot.uses)")
+          (let [found (about {:op :usages :position :code
+                              :ns "prot.uses" :text "Shape"})]
+            (is (nil? (refused found)))
+            (is (= [["prot/uses.cljs" 2 38 "prot.uses"]
+                    ["prot/uses.cljs" 4 3 "prot.uses"]
+                    ["prot/uses.cljs" 7 3 "prot.uses"]]
+                   (at root found))
+                "the defrecord and the deftype, however each names it, beside
+                what the ns form wrote")
+            (is (= [2] (mapv :line (filter :declaration (:usages found))))
+                "and only the ns form's is a declaration - the other two are
+                places the protocol is put to use"))
+          (let [found (about {:op :usages :position :code
+                              :ns "prot.uses" :text "area"})]
+            (is (= [["prot/uses.cljs" 2 44 "prot.uses"]
+                    ["prot/uses.cljs" 9 20 "prot.uses"]]
+                   (at root found))
+                "a method answers its call sites and not the bodies that
+                implement it: a type need not implement every method it
+                could, which is where the two questions part company")))))))
+
 (deftest a-macro-call-is-recorded-although-no-name-reaches-it-yet
   (testing "the model holds the calls the source WROTE to a macro, keyed by the
   JVM var that expanded it, beside the uses of the ClojureScript var of the same
@@ -354,7 +399,13 @@
           (eval! r "(require 'mac.uses)")
           (let [found (cljs-analysis/usages 'mac.defs/shout)]
             (is (= #{["mac/uses.cljs" 3 16 'mac.uses]}
-                   (into #{} (map (juxt :source :line :column :from-ns)) found)))))))))
+                   (into #{} (map (juxt :source :line :column :from-ns)) found)))
+            ;; AND EACH SAYS IT IS A MACRO CALL. In this model what makes a
+            ;; place one is which index it was filed under, and the union
+            ;; `usages' answers with is exactly where that would stop being
+            ;; visible - so it is written onto each place as it is merged,
+            ;; which is where Clojure carries it too.
+            (is (every? :macro found))))))))
 
 ;;; What has moved on
 

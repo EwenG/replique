@@ -147,10 +147,19 @@
 
   Refused where there is nothing to read, rather than answered with none: a
   name used nowhere and a process that cannot say are not the same answer, and
-  which one it is has to come back as which one it is."
+  which one it is has to come back as which one it is.
+
+  AND THE MACRO HALF IS MARKED ON THE WAY IN. In this model a place is a macro
+  call by virtue of which index it is filed under, and the union is where that
+  stops being visible - so what the index says is written onto each place as it
+  is merged, which is where Clojure keeps it anyway: there the flag is the var's
+  own :macro, so every place a macro is named carries it, a :refer in an `ns'
+  form included. A client showing a list of call sites can then say which are
+  expansions in either dialect, rather than in one."
   [qsym]
   (refuse-unless-available! "record where names are used")
   (into (or ((of :find-usages) qsym) #{})
+        (map #(assoc % :macro true))
         (or ((of :find-macro-usages) qsym) #{})))
 
 (defn keyword-usages
