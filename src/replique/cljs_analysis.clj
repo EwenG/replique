@@ -67,7 +67,8 @@
          :changed-files (named 'changed-files)
          :changed-macro-files (named 'changed-macro-files)
          :stale-macro-files (named 'stale-macro-files)
-         :stale-files (named 'stale-files)})
+         :stale-files (named 'stale-files)
+         :deleted-files (named 'deleted-files)})
       (catch Throwable _ nil))))
 
 (defn available?
@@ -168,14 +169,15 @@
 
 (defn stale
   "What a reload would compile: {:changed #{source} :stale #{source}
-  :analysed n}.
+  :deleted [source] :analysed n}.
 
-  Sources as the model names them - my_lib/core.cljs - and disjoint, the way
-  `replique.analysis/stale' answers the Clojure question:
+  Sources as the model names them - my_lib/core.cljs - and the first two
+  disjoint, the way `replique.analysis/stale' answers the Clojure question:
 
     :changed  the file on disk is newer than the version this process compiled
     :stale    the file has not changed, and what this process holds of it is
               out of date all the same
+    :deleted  this process compiled the file and the disk no longer has it
 
   THE SECOND HALF IS A DIFFERENT SHAPE OF FACT HERE. A Clojure file goes stale
   because it expands a macro of a file that changed, and the macros live in the
@@ -215,10 +217,26 @@
   []
   (refuse-unless-available! "record what it compiled")
   (let [{:keys [cenv]} (cljs/environment)
+        ;; ONE READING OF THE DISK FOR ALL THREE ANSWERS. What is gone is what a
+        ;; reload would drop and what the other two must not name, so
+        ;; `stale-files' is handed it rather than asking again: asking costs a
+        ;; classpath lookup per compiled file, and two askings are two moments
+        ;; of a disk free to have moved in between.
+        gone ((of :deleted-files))
         changed (into (set ((of :changed-files))) ((of :changed-macro-files)))]
     {:changed changed
      :stale (into #{} (remove changed)
-                  (concat ((of :stale-files) cenv) ((of :stale-macro-files))))
+                  (concat ((of :stale-files) cenv gone) ((of :stale-macro-files))))
+     ;; And the files this process compiled that the disk no longer has, which is
+     ;; neither of the two above and is what a branch switch mostly does. They are
+     ;; not stale - there is nothing to compile them from - and a reload does not
+     ;; leave them alone either: it retracts them and takes their definitions out
+     ;; of the compile environment. So the one question this op asks - what would a
+     ;; reload do - has no answer without them.
+     ;;
+     ;; As the model names them, which every list here is, and here it is the
+     ;; only way there is: what is gone is what nothing answers for.
+     :deleted (vec (sort gone))
      ;; And whether anything has been compiled here at all - see
      ;; `replique.analysis/stale', where the same key answers the same
      ;; question about the JVM side and for the same reason. It is rarer to

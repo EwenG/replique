@@ -236,9 +236,17 @@
 ;; programs: a process can hold a Clojure application and a ClojureScript one
 ;; at once, each with its own files behind the disk, and a .cljc edited once is
 ;; stale in both.
+;;
+;; The `:unread' says whether the answer should carry the count of this
+;; project's files running here that no model holds, and it is asked for
+;; because it is dear: it walks every var of every namespace in this process,
+;; which grows with the process rather than with the project. A client showing
+;; the answer to somebody wants it. A client asking before a question of its
+;; own - whether anything is stale, so that it can offer to load it first -
+;; waits for it and reads none of it. See `replique.analysis/stale'.
 (defmethod protocol/handle :stale [_ msg]
   (names/with-dialect msg
-    (analysis/stale)))
+    (analysis/stale :unread (true? (:unread msg)))))
 
 ;; The vars a namespace has, for a client to offer a choice of.
 ;;

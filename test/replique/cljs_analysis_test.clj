@@ -418,6 +418,48 @@
             (let [found (about {:op :stale})]
               (is (= [] (under root found :stale))))))))))
 
+(defn- gone
+  "The file this test is about, where FOUND lists it as one the disk no longer
+  has."
+  [found]
+  (filterv #{"vanished/lib.cljs"} (:deleted found)))
+
+(deftest a-cljs-file-the-disk-no-longer-has-is-a-list-of-its-own
+  (testing "a reload does not only compile: it drops the files this process
+  compiled that are gone, and takes what they defined out of the compile
+  environment.  Which is what switching a branch mostly does, and it is in
+  neither list beside it - a file nothing answers to is not a file that
+  changed, and there is nothing to compile it from"
+    (when (compiling?)
+      (let [root (source-root!)
+            lib (written-file! root "vanished/lib.cljs"
+                               (str "(ns vanished.lib)\n"
+                                    "(def y 1)\n"))
+            core (written-file! root "vanished/core.cljs"
+                                (str "(ns vanished.core\n"
+                                     "  (:require [vanished.lib :as l]))\n"
+                                     "(def a l/y)\n"))]
+        (with-cljs-repl r
+          (eval! r "(require 'vanished.core)")
+          ;; Its own file and not the whole list, for the reason `under' gives
+          ;; about the others: the model is one per process.
+          (is (= [] (gone (about {:op :stale}))))
+          (.delete (java.io.File. ^String lib))
+          ;; and the file that required it says what the branch says, which is
+          ;; what a checkout does to both of them at once
+          (edited-file! core (str "(ns vanished.core)\n"
+                                  "(def a 1)\n"))
+          (let [found (about {:op :stale})]
+            (is (= ["vanished/core.cljs"] (under root found :changed)))
+            (is (= [] (under root found :stale)))
+            (testing "named as the model names it, which is the only way there
+            is: what is gone is what nothing answers for"
+              (is (= ["vanished/lib.cljs"] (gone found)))))
+          (testing "and the reload drops it, so the list empties the way the
+          others do"
+            (eval! r "#replique/reload {}")
+            (is (= [] (gone (about {:op :stale}))))))))))
+
 (deftest the-cljs-staleness-answer-says-whether-there-is-anywhere-to-put-it
   (testing "a Clojure reload ends when the files have been loaded on this jvm;
   a ClojureScript one has a second act - the bodies have to be RUN in the

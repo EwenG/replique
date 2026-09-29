@@ -1025,9 +1025,21 @@
     dir))
 
 (defn- stale!
-  "Ask what would be loaded, without anything being loaded."
+  "Ask what would be loaded, without anything being loaded.
+
+  Without the unread count, which is the asking most clients do: it is what
+  the client asks before a question of its own, to know whether to offer a
+  reload first."
   [c]
   (request! c {:op :stale :id 1}))
+
+(defn- stale-unread!
+  "Ask what would be loaded AND how much of this project is unread.
+
+  The other asking, which is the one the client showing the answer does - see
+  `replique.analysis/stale'."
+  [c]
+  (request! c {:op :stale :unread true :id 1}))
 
 (defn- named-files
   "The files FOUND lists under K, as their own names."
@@ -1084,6 +1096,56 @@
             there is nothing to do"
               (is (string/includes? (or (refused (stale! c)) "")
                                     "keep track of what it compiled"))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
+(defn- gone
+  "The file this test is about, where FOUND lists it as one the disk no longer
+  has."
+  [found]
+  (filterv #{"probe/vanished.clj"} (:deleted found)))
+
+(deftest a-file-the-disk-no-longer-has-is-a-list-of-its-own
+  (testing "a reload does not only load. It drops the files this process read
+  that the disk no longer has, and unmaps what they defined - which is the one
+  thing a reload does that nobody asked for by editing anything, and it is
+  what switching a branch mostly does. In neither list above, so an answer
+  without this one is two empty lists and an application reported as up to
+  date"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (let [path (written-file! root "probe/vanished.clj"
+                                    (str "(ns probe.vanished)\n"
+                                         "(defn value [] 1)\n"))]
+            (load! r path)
+            (when (analysing? c)
+              (is (= "1" (value! r "(probe.vanished/value)")))
+              ;; Its own file and not the whole list, for the reason `under'
+              ;; gives about the others: the model is one per process, and
+              ;; every other test here deletes the root it wrote under when it
+              ;; is done - so what this process has read and cannot open is
+              ;; mostly other tests' files.
+              (is (= [] (gone (stale! c))))
+              (.delete (java.io.File. ^String path))
+              (let [found (stale! c)]
+                (testing "not a changed file, and not a stale one: there is
+                nothing to load it from"
+                  (is (= [] (named-files found :changed)))
+                  (is (= [] (named-files found :stale))))
+                (testing "and named as the model names it, which is the only
+                way there is - asking the classpath where it is is asking
+                about the one thing that is not so any more"
+                  (is (= ["probe/vanished.clj"] (gone found)))))
+              (testing "and a reload is what drops it, so the list empties the
+              way the other two do"
+                (reloaded! r)
+                (is (= [] (gone (stale! c))))
+                (is (nil? (ns-resolve 'probe.vanished 'value))))))
           (finally
             (disconnect r)
             (disconnect c)
@@ -1156,10 +1218,10 @@
             ;; process it is testing. `:unread' needs no such allowance - it is
             ;; scoped to this process's directory, and every test that came
             ;; before it was a process with a directory of its own.
-            (let [before (:analysed (stale! c))]
+            (let [before (:analysed (stale-unread! c))]
               (testing "nothing of this project is loaded, so there is nothing
               it has not read"
-                (is (= 0 (:unread (stale! c)))))
+                (is (= 0 (:unread (stale-unread! c)))))
               (written-file! root "probe/required.clj"
                              (str "(ns probe.required)\n"
                                   "(defn value [] 1)\n"))
@@ -1170,7 +1232,7 @@
               here and is in no model, which is the whole of what this counts"
                 (is (= "1" (value! r (str "(do (require 'probe.required)"
                                           " (probe.required/value))"))))
-                (let [found (stale! c)]
+                (let [found (stale-unread! c)]
                   (is (= 1 (:unread found)))
                   (is (= before (:analysed found)))))
               (testing "loading another file does not answer for it. Which is
@@ -1178,16 +1240,56 @@
               what has been read is not nothing - and the empty lists beside
               it are about that file and about nothing else"
                 (load! r (str root "/probe/loaded.clj"))
-                (let [found (stale! c)]
+                (let [found (stale-unread! c)]
                   (is (= (inc before) (:analysed found)))
                   (is (= 1 (:unread found)))
                   (is (= [] (named-files found :changed)))))
               (testing "and loading it does: a file the model holds is a file
               this answers for, so it is counted in one place and not in both"
                 (load! r (str root "/probe/required.clj"))
-                (let [found (stale! c)]
+                (let [found (stale-unread! c)]
                   (is (= (+ 2 before) (:analysed found)))
                   (is (= 0 (:unread found)))))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
+(deftest what-is-unread-is-counted-only-where-it-was-asked-for
+  (testing "the count of what is running here unread is the dear half of this
+  answer - it walks every var of every namespace in the process, on every
+  asking, and remembers none of it - and most of what asks is not going to
+  read it. A client asking before a question of its own, only to know whether
+  to offer a reload, waits for it and throws it away. So it is asked for, and
+  an answer nobody asked it of does not carry it at all"
+    (with-process [info nil]
+      (let [root (source-root! (:directory info))
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (when (analysing? c)
+            (written-file! root "probe/uncounted.clj"
+                           (str "(ns probe.uncounted)\n"
+                                "(defn value [] 1)\n"))
+            (is (= "1" (value! r (str "(do (require 'probe.uncounted)"
+                                      " (probe.uncounted/value))"))))
+            (testing "there is something to count, and asking says so"
+              (is (= 1 (:unread (stale-unread! c)))))
+            (testing "and the same question asked without it comes back with
+            no such key - which is not the same as a count of nothing"
+              (let [found (stale! c)]
+                (is (not (contains? found :unread)))
+                ;; Not the lists themselves, which are the process's and not
+                ;; this test's: the model is one per jvm and every test that
+                ;; ran before this one is in it - see
+                ;; `how-many-files-have-been-read-is-answered-beside-what-changed'.
+                ;; What is being told apart here is a key that is there from a
+                ;; key that is not.
+                (testing "and the rest of the answer is the answer"
+                  (is (integer? (:analysed found)))
+                  (is (contains? found :changed))
+                  (is (contains? found :stale))
+                  (is (contains? found :deleted))))))
           (finally
             (disconnect r)
             (disconnect c)
@@ -1213,7 +1315,7 @@
                                       " (probe.beside/value))"))))
             (testing "loaded, running, in no model, and none of this
             process's business"
-              (is (= 0 (:unread (stale! c))))))
+              (is (= 0 (:unread (stale-unread! c))))))
           (finally
             (disconnect r)
             (disconnect c)
@@ -1244,7 +1346,7 @@
                                       " (probe.linked/value))"))))
             (testing "named under this project, so it is one of this
             project's, whatever the file it opens turns out to be"
-              (is (= 1 (:unread (stale! c))))))
+              (is (= 1 (:unread (stale-unread! c))))))
           (finally
             (disconnect r)
             (disconnect c)

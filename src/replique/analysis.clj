@@ -99,6 +99,7 @@
          :analysed-files (named 'analysed-files)
          :changed-files (named 'changed-files)
          :stale-files (named 'stale-files)
+         :deleted-files (named 'deleted-files)
          :classpath-changed! (named 'classpath-changed!)
          ;; A VAR RATHER THAN A FUNCTION, and the only one here: what is wanted
          ;; of it is to be bound, not to be called.  `named' answers vars
@@ -779,28 +780,47 @@
     :stale    the file has not changed, and what this process holds of it is
               out of date all the same - it expands a macro of a file that
               did change, and holds the expansion the old one made
+    :deleted  this process read the file and the disk no longer has it, so a
+              reload drops it and unmaps what it defined rather than loading
+              anything
 
-  Disjoint, and together they are what a reload would load. The second is
-  the half nothing but the compiler can know.
+  The first two are disjoint and together are what a reload would load; the
+  second of them is the half nothing but the compiler can know. The third is
+  not something that would be loaded at all, which is why it is its own list
+  rather than part of either: a reload drops those files, and a branch switch
+  is a thing that mostly does this and nothing else.
 
   And `:analysed', how many files this process has read. Two empty lists
   have two meanings - up to date, or nothing here to be out of date - and a
   client that cannot tell them apart has to guess which it is showing.
 
-  And, on the Clojure side, `:unread': how many files of this project are
-  behind namespaces loaded here that no model holds. Which is what makes the
-  count above answerable, since the interesting case is not a model with
-  nothing in it but a model with almost nothing - see `unread'.
+  And, on the Clojure side and ONLY WHERE IT WAS ASKED FOR, `:unread': how
+  many files of this project are behind namespaces loaded here that no model
+  holds. Which is what makes the count above answerable, since the
+  interesting case is not a model with nothing in it but a model with almost
+  nothing - see `unread'.
+
+  Asked for, because it is the expensive half of this answer and most of what
+  asks is not going to read it. It costs a walk of every var of every
+  namespace in this jvm, which is a cost that grows with the process rather
+  than with the project, and nothing of it is remembered - while the two
+  lists cost a walk of the files this process read. The client that displays
+  the answer wants it; the one that asks before a find-usages, only to know
+  whether to offer a reload, waits for it and throws it away. So it is a
+  question of its own inside this one, and a caller that does not ask gets an
+  answer with no `:unread' in it at all.
 
   A file a jar answered to is in neither list until the classpath has been
   read again, which is the one thing here that is not a fact about the disk -
   see `tell-of-the-classpath!'.
 
-  Both are read off one reading of the disk: the files that changed are what
-  the stale ones are worked out from, so asking for them separately would be
-  asking the filesystem about every analysed file twice, and would leave the
-  two answers free to disagree about a file saved in between."
-  []
+  All three are read off one reading of the disk. The files that changed are
+  what the stale ones are worked out from, and what is gone is what a reload
+  would drop and what the other two must not name, so asking for them
+  separately would be asking the filesystem about every analysed file twice
+  over - and would leave the answers free to disagree about a file saved in
+  between."
+  [& {unread? :unread}]
   (refuse-unless-recording! "keep track of what it compiled")
   (tell-of-the-classpath!)
   (if (names/cljs?)
@@ -808,9 +828,13 @@
     ;; not one subtraction: a ClojureScript file can be stale for a reason that
     ;; is not a file at all - a var whose metadata it was compiled against has
     ;; changed - and the model is the only thing that can say so
-    (let [{:keys [changed stale analysed]} (cljs-analysis/stale)]
+    (let [{:keys [changed stale deleted analysed]} (cljs-analysis/stale)]
       {:changed (by-name changed)
        :stale (by-name stale)
+       ;; And what a reload would DROP, which is the third thing it does and the
+       ;; one nothing else here says - see the Clojure branch below, where the
+       ;; same key is the same fact about the jvm side and is named the same way.
+       :deleted deleted
        ;; Whether anything has been compiled here at all, which the Clojure
        ;; branch answers too and for the same reason - see it.
        :analysed analysed
@@ -829,41 +853,68 @@
        ;; been opened on this target, and that is the honest answer: there is
        ;; nowhere to run anything.
        :connected (cljs/runtime-connected?)})
-    (let [changed ((of :changed-files))]
-      {:changed (by-name changed)
-       :stale (by-name (remove changed ((of :stale-files) changed)))
-       ;; AND WHETHER THIS PROCESS HAS READ ANYTHING AT ALL, because the two
-       ;; ways the lists come back empty are not the same fact and read the
-       ;; same.  "Nothing has changed" says the program is up to date;
-       ;; "nothing has been loaded here" says this process knows of no files
-       ;; and would go on saying nothing whatever was edited.  Which is a
-       ;; state a Clojure repl is in more often than it looks: what the model
-       ;; holds is what the compiler read UNDER THE SINK, so a namespace that
-       ;; arrived by `require' - at a prompt, or from an init script - is
-       ;; loaded and is not in it.  A client with an empty answer and no way
-       ;; to tell them apart can only report the wrong one of the two.
-       ;;
-       ;; A COUNT AND NOT A FLAG, so that a client reading an answer with no
-       ;; such key in it - an older process than itself - can tell that from
-       ;; a process saying it has read nothing, and go on saying what it used
-       ;; to say rather than announcing an empty model that is not there.
-       :analysed (count ((of :analysed-files)))
-       ;; AND HOW MUCH OF THIS PROJECT IS RUNNING HERE THAT IT HAS NOT READ,
-       ;; because a count of what has been read is not enough to tell the two
-       ;; empty answers apart and reading it as though it were is how a
-       ;; process reports an application it has never heard of as up to date.
-       ;; One file read and three hundred namespaces required in is a model
-       ;; that answers nothing whatever is edited, and it is not zero, so a
-       ;; client testing for zero is a client that says "nothing has changed"
-       ;; to somebody who has just changed branch. See `unread'.
-       ;;
-       ;; NO CLOJURESCRIPT COUNTERPART, and the asymmetry is the compilers'
-       ;; rather than this answer's. A ClojureScript namespace of this
-       ;; process exists BECAUSE this process compiled it - compiling is what
-       ;; the model is written from, there is no second way in - so there is
-       ;; no such thing there as a namespace loaded past the model. On the jvm
-       ;; there is, `require' is it, and it is how most applications arrive.
-       :unread (unread)})))
+    (let [;; ONE READING OF THE DISK FOR ALL THREE ANSWERS. What is gone is what a
+          ;; reload would drop, and it is also what must not be in what it would
+          ;; load, so `stale-files' is handed it rather than asking again: asking
+          ;; costs a classpath lookup per analysed file, and two askings are two
+          ;; moments of a disk free to have moved in between.
+          gone ((of :deleted-files))
+          changed ((of :changed-files))]
+      (cond->
+        {:changed (by-name changed)
+         :stale (by-name (remove changed ((of :stale-files) changed gone)))
+         ;; AND WHAT A RELOAD WOULD DROP.  A file this process read and the disk no
+         ;; longer has is in neither list above and is not nothing happening: a
+         ;; reload retracts it and unmaps what it defined, which is the one thing a
+         ;; reload does that no edit asked for.  It is also what a branch switch
+         ;; mostly does, and the case where the two lists above are a fair picture
+         ;; of a reload and still not the whole of it.
+         ;;
+         ;; NAMED AS THE MODEL NAMES THEM and not as files, which is the one list
+         ;; here that cannot be resolved: `by-name' asks the classpath where a
+         ;; source is, and nothing answers for these - that is what being one of
+         ;; them means - so putting them through it would drop every one of them
+         ;; and answer that nothing is gone.  It is also how a reload names them
+         ;; while it drops them, so the two read alike.
+         :deleted (vec (sort gone))
+         ;; AND WHETHER THIS PROCESS HAS READ ANYTHING AT ALL, because the two
+         ;; ways the lists come back empty are not the same fact and read the
+         ;; same.  "Nothing has changed" says the program is up to date;
+         ;; "nothing has been loaded here" says this process knows of no files
+         ;; and would go on saying nothing whatever was edited.  Which is a
+         ;; state a Clojure repl is in more often than it looks: what the model
+         ;; holds is what the compiler read UNDER THE SINK, so a namespace that
+         ;; arrived by `require' - at a prompt, or from an init script - is
+         ;; loaded and is not in it.  A client with an empty answer and no way
+         ;; to tell them apart can only report the wrong one of the two.
+         ;;
+         ;; A COUNT AND NOT A FLAG, so that a client reading an answer with no
+         ;; such key in it - an older process than itself - can tell that from
+         ;; a process saying it has read nothing, and go on saying what it used
+         ;; to say rather than announcing an empty model that is not there.
+         :analysed (count ((of :analysed-files)))}
+        ;; AND HOW MUCH OF THIS PROJECT IS RUNNING HERE THAT IT HAS NOT READ,
+        ;; because a count of what has been read is not enough to tell the two
+        ;; empty answers apart and reading it as though it were is how a
+        ;; process reports an application it has never heard of as up to date.
+        ;; One file read and three hundred namespaces required in is a model
+        ;; that answers nothing whatever is edited, and it is not zero, so a
+        ;; client testing for zero is a client that says "nothing has changed"
+        ;; to somebody who has just changed branch. See `unread'.
+        ;;
+        ;; ONLY WHERE THE CLIENT SAID IT WOULD READ IT, because it is the one
+        ;; half of this answer whose cost is the process's rather than the
+        ;; project's - a walk of every var in the jvm, on every asking, and
+        ;; nothing of it remembered. What asks before a find-usages wants the
+        ;; two lists and waits for this; what shows the answer wants this.
+        ;;
+        ;; NO CLOJURESCRIPT COUNTERPART, and the asymmetry is the compilers'
+        ;; rather than this answer's. A ClojureScript namespace of this
+        ;; process exists BECAUSE this process compiled it - compiling is what
+        ;; the model is written from, there is no second way in - so there is
+        ;; no such thing there as a namespace loaded past the model. On the jvm
+        ;; there is, `require' is it, and it is how most applications arrive.
+        unread? (assoc :unread (unread))))))
 
 ;;; What was found
 
