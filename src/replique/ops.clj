@@ -144,6 +144,34 @@
                 acc)))
           {} vars))
 
+(defn- scopes
+  "What NS can write before a slash, by that name, each with the namespaces
+  what is written under it is found in.
+
+  For Clojure, its aliases: one each, and what the alias stands for is where.
+
+  For ClojureScript, a name before a slash reaches two worlds, and the
+  compiler has a rule for each - so each is asked, rather than the aliases
+  read off one table. A var is looked for where `names/resolve-scope' says,
+  and a macro where `names/macro-scope' does, which is not always the
+  namespace an alias of the first kind stands for: (:require [cljs.core :as
+  c]) makes c/let the macro, reached through an alias of the other world's
+  namespace. And a name that is no alias at all, clojure.core, which both
+  rules read as cljs.core - so clojure.core/let is let written in full in a
+  .cljs file, as it is in a .clj one."
+  [ns]
+  (if-not (names/cljs?)
+    (for [[alias aliased] (ns-aliases ns)]
+      [(str alias) #{aliased}])
+    (for [scope (distinct (concat (map str (keys (ns-aliases ns)))
+                                  (map str (keys (names/macro-aliases ns)))
+                                  ["clojure.core"]))
+          :let [reaches (disj (set [(names/resolve-scope ns scope)
+                                    (names/macro-scope ns scope)])
+                              nil)]
+          :when (seq reaches)]
+      [scope reaches])))
+
 (defn- written-as
   "Every symbol the namespace NS can write each of VARS as, by var.
 
@@ -169,14 +197,14 @@
       ;; of its own, that is what the name means and the macro is not written
       ;; that way at all.
       (reduce spell found (remove (comp (ns-map ns) key) (names/macro-refers ns)))
-      (reduce (fn [found [alias aliased]]
+      (reduce (fn [found [scope reaches]]
                 (reduce (fn [found ^clojure.lang.Var var]
-                          (if (= aliased (.ns var))
+                          (if (contains? reaches (.ns var))
                             (update found var (fnil conj #{})
-                                    (str alias "/" (.sym var)))
+                                    (str scope "/" (.sym var)))
                             found))
                         found wanted))
-              found (concat (ns-aliases ns) (names/macro-aliases ns))))))
+              found (scopes ns)))))
 
 (defn- qualified-name [^clojure.lang.Var var]
   (str (ns-name (.ns var)) "/" (.sym var)))

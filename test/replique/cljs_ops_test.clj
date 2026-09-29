@@ -447,16 +447,18 @@
       (eval! r "#replique/ns ops.spelt\n(def unrelated 1)")
       (let [spellings (:spellings (about {:op :spellings :ns "ops.spelt"
                                           :vars ["cljs.core/map"]}))]
-        (is (= ["cljs.core/map" "map"] (:cljs.core/map spellings))))
+        ;; clojure.core/map among them, which the compiler reads as cljs.core/map
+        ;; in a .cljs file - the one namespace name it rewrites
+        (is (= ["cljs.core/map" "clojure.core/map" "map"] (:cljs.core/map spellings))))
       (testing "and a name the namespace excluded is written only in full,
       which is the one way left to write it there"
         (eval! r "(ns ops.spelt-not (:refer-clojure :exclude [map]))")
-        (is (= ["cljs.core/map"]
+        (is (= ["cljs.core/map" "clojure.core/map"]
                (:cljs.core/map (:spellings (about {:op :spellings :ns "ops.spelt-not"
                                                    :vars ["cljs.core/map"]}))))))
       (testing "an alias is another way to write it, as it is in Clojure"
         (eval! r "(ns ops.spelt-aliased (:require [cljs.core :as c]))")
-        (is (= ["c/map" "cljs.core/map" "map"]
+        (is (= ["c/map" "cljs.core/map" "clojure.core/map" "map"]
                (:cljs.core/map (:spellings (about {:op :spellings :ns "ops.spelt-aliased"
                                                    :vars ["cljs.core/map"]})))))))))
 
@@ -467,7 +469,9 @@
     (let [spellings (:spellings (about {:op :spellings :ns "cljs.user"
                                         :vars ["clojure.core/map" "cljs.core/map"]}))]
       (is (nil? (:clojure.core/map spellings)))
-      (is (= ["cljs.core/map" "map"] (:cljs.core/map spellings))))
+      ;; although clojure.core/map is a way to WRITE cljs.core/map there, which
+      ;; is a different fact: what the compiler reads the name as
+      (is (= ["cljs.core/map" "clojure.core/map" "map"] (:cljs.core/map spellings))))
     (testing "and the other way round, on the Clojure side"
       (let [spellings (:spellings (ask {:op :spellings :ns "clojure.core"
                                         :vars ["clojure.core/map" "cljs.core/map"]}))]
@@ -710,13 +714,30 @@
         (is (some #{"t"} (candidates (about {:op :completions :position :code
                                              :ns "ops.macros" :text "t"})))))
       (testing "and spelled, which is how a client finds the forms that bind"
-        (is (= {:clojure.core/let ["cljs.core/let" "let"]}
+        (is (= {:clojure.core/let ["cljs.core/let" "clojure.core/let" "let"]}
                (:spellings (about {:op :spellings :ns "cljs.user"
                                    :vars ["clojure.core/let"]}))))
-        (is (= {:clojure.core/when ["cljs.core/when"]
-                :cljs.test/is ["cljs.test/is" "t/is"]}
-               (:spellings (about {:op :spellings :ns "ops.macros"
-                                   :vars ["clojure.core/when" "cljs.test/is"]}))))))))
+        (testing "- an :exclude and a var of the namespace's own take the bare
+        name, and leave the ones written in full"
+          (is (= {:clojure.core/when ["cljs.core/when" "clojure.core/when"]
+                  :cljs.test/is ["cljs.test/is" "t/is"]}
+                 (:spellings (about {:op :spellings :ns "ops.macros"
+                                     :vars ["clojure.core/when" "cljs.test/is"]})))))
+        (testing "- and an alias of the namespace reaches its macros, which live in
+        the other world: c/let is the macro let, although c stands for the
+        ClojureScript cljs.core"
+          (eval! c "#replique/ns ops.aliased\n(ns ops.aliased (:require [cljs.core :as c]))")
+          (is (= {:clojure.core/let ["c/let" "cljs.core/let" "clojure.core/let" "let"]
+                  :cljs.core/map ["c/map" "cljs.core/map" "clojure.core/map" "map"]}
+                 (:spellings (about {:op :spellings :ns "ops.aliased"
+                                     :vars ["clojure.core/let" "cljs.core/map"]})))))
+        (testing "- which is the compiler's reading of them, and not a rule of
+        this op's own"
+          (is (= "let" (:name (:symbol (about {:op :symbol :position :code
+                                               :ns "ops.aliased" :text "c/let"})))))
+          (is (= "let" (:name (:symbol (about {:op :symbol :position :code
+                                               :ns "ops.aliased"
+                                               :text "clojure.core/let"}))))))))))
 
 (deftest test-a-name-of-the-host-is-asked-of-the-runtime
   ;; What a JavaScript object holds is whatever the runtime made it, so a name
