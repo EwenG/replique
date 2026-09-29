@@ -34,9 +34,11 @@
   shadow: a let that binds map is answered as that local and not as the var,
   and working that out where the two lists meet is the only place it can be
   worked out at all."
-  (:require [clojure.java.io :as io]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as string]
             [replique.classpath :as classpath]
+            [replique.cljs :as cljs]
             [replique.names :as names]))
 
 (def max-completions
@@ -717,6 +719,105 @@
           :names (map (fn [^String found] (str found "."))
                       (cons named (importable text (:classes (classpath/scan)))))}]))))
 
+;;; What the host has
+
+;; A name written on a JavaScript object - js/console.lo, gstr/tri, Long.fromN,
+;; (.toUpp "x") - is a question nothing on this side can answer: what an object
+;; holds is whatever the runtime made it, and no file declares it. So it is
+;; asked of the runtime, and only where there is one already - see
+;; `replique.cljs/host-names'. Where there is none, the answer is no names
+;; rather than a started node or a page nobody opened.
+;;
+;; The object is worked out here out of what was written and never evaluated
+;; out of it: the runtime is handed where to start and the property names to
+;; walk from there, which is `replique.cljs/host-object' and a path.
+
+(defn- dotted
+  "TEXT cut at its last dot, as [what the names are written after, the
+  property path to walk] - nil for the path where there is no dot."
+  [^String text]
+  (let [index (.lastIndexOf text (int \.))]
+    (if (neg? index)
+      ["" []]
+      [(subs text 0 (inc index))
+       (mapv cljs/host-name (string/split (subs text 0 index) #"\."))])))
+
+(defn- host-groups
+  "The names OBJECT has at the end of PATH, each written after WRITTEN.
+
+  A function apart from the rest, which is the one thing the runtime can say
+  about a name without calling anything."
+  [object path ^String written function-type other-type]
+  (when object
+    (when-let [{:keys [functions fields]}
+               (cljs/host-names (update object :path into path))]
+      [{:type function-type :names (map #(str written %) functions)}
+       {:type other-type :names (map #(str written %) fields)}])))
+
+(defn- host-scoped-groups
+  "The names of what TEXT is written under, where SCOPE names an object of the
+  host's: js/console.lo, gstr/tri, React/useSt."
+  [ns ^String scope ^String text]
+  (when (names/cljs?)
+    (let [[after path] (dotted (subs text (inc (count scope))))]
+      (host-groups (cljs/host-object (ns-name ns) scope) path
+                   (str scope "/" after) "function" "field"))))
+
+(defn- host-dotted-groups
+  "The names written after the first dot of TEXT, where what stands before it
+  is an object of the host's: Long.fromN, where Long is what an :import named.
+  js/Long.fromN is the same name written under js, and is answered there."
+  [ns ^String text]
+  (when (names/cljs?)
+    (let [index (.indexOf text (int \.))]
+      (when (pos? index)
+        (let [[after path] (dotted (subs text (inc index)))]
+          (host-groups (cljs/host-object (ns-name ns) (subs text 0 index)) path
+                       (str (subs text 0 (inc index)) after) "function" "field"))))))
+
+(defn- host-target
+  "What a member is written on, as the object and path to ask about - or nil
+  where it is nothing the runtime can be asked about by name.
+
+  A string or a number, which is its own object. And a name that reaches the
+  host: js/document, gstr, Long, React/Component, Long.MAX_VALUE. Not a local,
+  which is a binding of code that is not running, and not a call, whose value
+  nobody knows without making the call - the rule `names/target-class' keeps
+  on the Clojure side."
+  [ns msg]
+  (when-let [on (names/named-argument msg :on)]
+    (let [value (try (edn/read-string on) (catch Throwable _ nil))]
+      (cond
+        (or (string? value) (number? value))
+        [{:root "value" :value value :path []} []]
+
+        (and (symbol? value)
+             (not (some #{(str value)} (names/locals-named msg))))
+        (let [;; js/document.body is document.body under js, and Long.MAX_VALUE
+              ;; is MAX_VALUE under Long - what stands before the first dot of a
+              ;; name with no slash is where it starts
+              [scope named] (if (namespace value)
+                              [(namespace value) (name value)]
+                              (let [[head & more] (string/split (name value) #"\.")]
+                                [head (string/join "." more)]))]
+          (when-let [object (cljs/host-object (ns-name ns) scope)]
+            [object (if (string/blank? named)
+                      []
+                      (mapv cljs/host-name (string/split named #"\.")))]))))))
+
+(defn- host-member-groups
+  "The members of what TEXT is being written on, where that is the host's.
+
+  .name for a function and .-name for anything else, which is how each of
+  them is read: (.log js/console) calls, (.-length \"x\") reads."
+  [ns msg ^String text]
+  (when (names/cljs?)
+    (when-let [[object path] (host-target ns msg)]
+      (let [[functions fields] (host-groups object path "" "method" "field")]
+        (if (string/starts-with? text ".-")
+          [(update fields :names #(map (fn [n] (str ".-" n)) %))]
+          [(update functions :names #(map (fn [n] (str "." n)) %))])))))
+
 (defmethod groups :code [msg]
   (let [ns (names/namespace-named msg)
         written (names/text msg)]
@@ -728,14 +829,15 @@
       ;; A member before anything else, since a name written on a thing is
       ;; read against that thing rather than against the namespace
       (if (string/starts-with? written ".")
-        (member-groups ns msg written)
+        (concat (member-groups ns msg written) (host-member-groups ns msg written))
         (if-let [constructed (constructor-groups ns written)]
           constructed
           (if-let [scope (names/scope-of written)]
             ;; A namespace and a class are written the same way and answered
             ;; together, since a scope that is both - which nothing forbids - is
             ;; a question about both.
-            (concat (scoped-groups ns scope) (class-groups ns scope))
+            (concat (scoped-groups ns scope) (class-groups ns scope)
+                    (host-scoped-groups ns scope written))
             (concat
              ;; First, which is what makes a local shadow. A name in two groups is
              ;; answered once, as what the first of them says it is - and a local
@@ -760,7 +862,8 @@
              ;; thousand class names, and the vars they were meant to reach would
              ;; be underneath them.
              (when (and (not (names/cljs?)) (string/includes? written "."))
-               [{:type "class" :names (importable written (:classes (classpath/scan)))}]))))))))
+               [{:type "class" :names (importable written (:classes (classpath/scan)))}])
+             (host-dotted-groups ns written))))))))
 
 ;;; A path written in a string
 

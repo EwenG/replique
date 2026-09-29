@@ -31,9 +31,11 @@
   it. Everything is looked up rather than required, one answer says whether the
   process can be asked at all - `available?' - and an op that cannot be
   answered says so and says what to start the process on instead."
-  (:require [clojure.java.io :as io]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as string]
             [replique.directives :as directives]
+            [replique.json :as json]
             [replique.output :as output]
             [replique.protocol :as protocol]
             [replique.state :as state])
@@ -113,7 +115,9 @@
             out   (partial named 'clojure.cljs.output)
             rpl   (partial named 'clojure.cljs.repl)
             rdr   (partial named 'clojure.cljs.reader)
-            mx    (partial named 'clojure.cljs.macroexpand)]
+            mx    (partial named 'clojure.cljs.macroexpand)
+            nms   (partial named 'clojure.cljs.names)
+            goog  (partial named 'clojure.cljs.goog)]
         {;; the cursor, as the VAR rather than its value: moving it is a
          ;; thread binding and a binding needs the var
          :current-ns    (env '*current-ns*)
@@ -136,6 +140,12 @@
          :macro-view    (env 'macro-view)
          :macro-var     (mx 'macro-var)
          :macro-namespace (mx 'macro-namespace)
+         ;; and the host's names: what an alias of a JavaScript module stands
+         ;; for, whether a namespace is a Closure provide, and how a name of the
+         ;; host's is spelled in JavaScript - see `host-object'
+         :js-aliases    (env 'js-aliases)
+         :goog-ns?      (goog 'goog-ns?)
+         :host-name     (nms 'host-name)
          :compile-namespace! (drv 'compile-namespace!)
          :default-source-paths (drv 'default-source-paths)
          :find-source   (drv 'find-source)
@@ -1447,3 +1457,69 @@
   ;; `of' answers nil where there is none, and nil is not a thing to call
   (let [runtime (runtime!)]
     ((of :evaluate-all-within) runtime js ms)))
+
+;;; The host's names
+
+;; What a JavaScript object has is not written down anywhere the compiler can
+;; read: js/console is whatever the runtime's console is, and a Closure provide
+;; or an npm module is a file nobody declared the exports of. So completing a
+;; name written on one of them asks the runtime - see host_names.js - and what
+;; is worked out here is which object to ask about. That half is the compiler's,
+;; because what an alias stands for is.
+
+(defn host-object
+  "Where the object SCOPE names from inside NS is, as host_names.js takes it,
+  or nil where SCOPE names nothing of the host's.
+
+  js, a :require of a JavaScript module under an alias - the $ sugar's path
+  included - and a Closure provide, whether it is written in full, under the
+  alias of a :require or as the name an :import gave it. A ClojureScript
+  namespace is none of these: its vars are known without asking anything,
+  and asking the runtime would answer them munged."
+  [ns ^String scope]
+  (let [{:keys [cenv]} (environment)
+        here (symbol ns)
+        sym (symbol scope)]
+    (if-let [[specifier path] (get ((of :js-aliases) cenv here) sym)]
+      {:root "module" :name specifier
+       :path (if path (string/split path #"\.") [])}
+      (if (= "js" scope)
+        {:root "global" :path []}
+        (when-let [found (or (some-> (find-namespace here) ns-aliases (get sym))
+                             (find-namespace sym))]
+          (let [named (ns-name found)]
+            (when ((of :goog-ns?) named)
+              {:root "ns" :name (str named) :path []})))))))
+
+(defn host-name
+  "The JavaScript spelling of a name the host owns: js/foo-bar is foo_bar."
+  ^String [^String written]
+  ((of :host-name) written))
+
+(def ^:private host-names-resource "replique/host_names.js")
+
+(def ^:private host-names-within
+  "How long a runtime is given to say what an object has.
+
+  SHORT, because this is asked on a keystroke. A runtime that is busy is one
+  in the middle of something somebody sent it, and no names is the right
+  answer then rather than an editor that waits for the something to finish."
+  300)
+
+(defn host-names
+  "The names the object OBJECT (a `host-object') has in the runtime of
+  `*target*', as {:functions [...] :fields [...]} - or nil where there is no
+  runtime to ask, or it could not answer in time.
+
+  NEVER STARTS A RUNTIME. A completion is not a reason to open a port or start
+  node, and a runtime nobody has started has no page and no module loaded, so
+  it has nothing to say about them either - see `runtime-connected?'."
+  [object]
+  (when (runtime-connected?)
+    (let [js (str (slurp (io/resource host-names-resource))
+                  "(" (json/write-str object) ")")
+          {:keys [status value]} (eval-js js host-names-within)]
+      (when (= :success status)
+        (let [[functions fields] (try (edn/read-string (edn/read-string value))
+                                      (catch Exception _ nil))]
+          {:functions (vec functions) :fields (vec fields)})))))

@@ -717,3 +717,45 @@
                 :cljs.test/is ["cljs.test/is" "t/is"]}
                (:spellings (about {:op :spellings :ns "ops.macros"
                                    :vars ["clojure.core/when" "cljs.test/is"]}))))))))
+
+(deftest test-a-name-of-the-host-is-asked-of-the-runtime
+  ;; What a JavaScript object holds is whatever the runtime made it, so a name
+  ;; written on one is completed by asking the runtime - see
+  ;; `replique.cljs/host-names'. Only one that is already there: a completion
+  ;; is not a reason to start node or wait for a page.
+  (when (compiling?)
+    (with-cljs-repl c
+      (eval! c (str "#replique/ns ops.host\n"
+                    "(ns ops.host (:require [goog.string :as gstr]) (:import [goog.math Long]))"))
+      (let [offered (fn [msg]
+                      (candidates (about (merge {:op :completions :position :code :ns "ops.host"}
+                                                msg))))]
+        (testing "under js, and down a path of it"
+          (is (some #{"js/console"} (offered {:text "js/con"})))
+          (is (some #{"js/console.log"} (offered {:text "js/console.lo"})))
+          (is (some #{"js/Math.max"} (offered {:text "js/Math.ma"}))))
+        (testing "and not what every object has, which would bury what this one has"
+          (is (not-any? #{"js/constructor" "js/hasOwnProperty"} (offered {:text "js/con"}))))
+        (testing "a Closure provide, under the alias of a :require, in full, and as an :import"
+          (is (some #{"gstr/trim"} (offered {:text "gstr/tri"})))
+          (is (some #{"goog.string/trim"} (offered {:text "goog.string/tri"})))
+          (is (some #{"Long/fromNumber"} (offered {:text "Long/fromN"})))
+          (is (some #{"Long.fromNumber"} (offered {:text "Long.fromN"}))))
+        (testing "what a member is written on, where that is the host's or a literal"
+          (is (some #{".toUpperCase"} (offered {:text ".toUpp" :on "\"x\""})))
+          (is (some #{".-length"} (offered {:text ".-leng" :on "\"x\""})))
+          (is (not-any? #{".-length"} (offered {:text ".leng" :on "\"x\""})))
+          (is (some #{".log"} (offered {:text ".lo" :on "js/console"})))
+          (is (some #{".toFixed"} (offered {:text ".toFix" :on "1.5"}))))
+        (testing "and nothing on a local, which is no object the runtime has"
+          (is (= [] (offered {:text ".lo" :on "console"
+                              :locals [{:name "console"}]}))))
+        (testing "nor on a ClojureScript namespace, whose vars are known without asking"
+          (is (not-any? #(string/includes? % "$") (offered {:text "cljs.core/ma"}))))))
+    (testing "and nothing where no page is there to ask, which is not waited for
+    and no server is started for"
+      ;; whatever another test here left running, which this must not change
+      (let [before (cljs/browser-runtime-url)]
+        (is (= [] (candidates (ask {:op :completions :position :code :ns "cljs.user"
+                                    :text "js/con" :dialect :cljs :target :browser}))))
+        (is (= before (cljs/browser-runtime-url)))))))
