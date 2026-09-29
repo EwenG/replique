@@ -112,7 +112,8 @@
             ana   (partial named 'clojure.cljs.analyzer)
             out   (partial named 'clojure.cljs.output)
             rpl   (partial named 'clojure.cljs.repl)
-            rdr   (partial named 'clojure.cljs.reader)]
+            rdr   (partial named 'clojure.cljs.reader)
+            mx    (partial named 'clojure.cljs.macroexpand)]
         {;; the cursor, as the VAR rather than its value: moving it is a
          ;; thread binding and a binding needs the var
          :current-ns    (env '*current-ns*)
@@ -125,6 +126,16 @@
          :requires      (env 'requires)
          :imports       (env 'imports)
          :remove-var!   (env 'remove-var!)
+         ;; the other world: what a namespace can see of the jvm's macros. The
+         ;; compiler's own lookups rather than a second spelling of them, since
+         ;; a name eldoc answers as a macro has to be the macro the compiler
+         ;; expands - see `macro-var'. `macro-namespace' is private there, and
+         ;; is taken all the same: it is the rule a qualified macro is read by,
+         ;; alias rewrites and all, and the rule written twice would be the rule
+         ;; disagreeing with itself the first time either of them changed
+         :macro-view    (env 'macro-view)
+         :macro-var     (mx 'macro-var)
+         :macro-namespace (mx 'macro-namespace)
          :compile-namespace! (drv 'compile-namespace!)
          :default-source-paths (drv 'default-source-paths)
          :find-source   (drv 'find-source)
@@ -1233,6 +1244,77 @@
   [ns sym]
   (let [{:keys [cenv]} (environment)]
     ((of :excluded?) cenv (symbol ns) (symbol sym))))
+
+;;; The macros
+
+;; A ClojureScript namespace can write two kinds of names and only one of them
+;; is in it. Its vars are; its macros are Clojure vars of this jvm, reached
+;; through a view the compiler keeps beside the namespace - what
+;; :require-macros aliased and :refer-macros referred - and, for every name
+;; nothing else claims, through cljs.core's macros by the same rule that
+;; reaches cljs.core's functions. `defn', `when' and `let' are all three of
+;; them macros and nothing else, so a reader of the namespace alone says they
+;; mean nothing.
+
+(defn macro-var
+  "The macro SYM names from inside NS, or nil where it names none.
+
+  The compiler's rule, which is the one the file was expanded with: a
+  :refer-macros first, then cljs.core's macros unless a :refer-clojure
+  :exclude said otherwise; and for a qualified name an alias of the view, then
+  one of the namespace, then the name in full - clojure.core rewritten to
+  cljs.core on the way, which is what makes clojure.core/let the macro a .cljs
+  file calls."
+  ^clojure.lang.Var [ns sym]
+  (let [{:keys [cenv]} (environment)]
+    (with-ns (symbol ns) ((of :macro-var) cenv {} (symbol sym)))))
+
+(defn macro-namespace
+  "The jvm namespace SCOPE names as a namespace of macros from inside NS, or
+  nil where it names none. What stands before the slash of `m/a-macro'."
+  ^clojure.lang.Namespace [ns scope]
+  (let [{:keys [cenv]} (environment)]
+    (with-ns (symbol ns) ((of :macro-namespace) cenv (symbol scope)))))
+
+(defn- view-of
+  "The macro view of the namespace NS, or nil where the compiler made none.
+
+  Found rather than made: `clojure.cljs.env/macro-view' makes one it does not
+  find, and a question asked about a namespace is not a reason to add
+  anything to the compiler's world.
+
+  Reflective, since the class is the forked clojure's: named here, this file
+  would not compile on the stock clojure a process without the compiler runs."
+  ^clojure.lang.Namespace [ns]
+  (let [{:keys [cenv]} (environment)]
+    (.find (:macro-world cenv) (symbol ns))))
+
+(defn- macro? [v]
+  (and (var? v) (.isMacro ^clojure.lang.Var v)))
+
+(defn macro-refers
+  "The macros NS can write as a bare name, by that name.
+
+  What its view maps - a :refer-macros, under the name a :rename-macros gave
+  it - and cljs.core's macros where the namespace neither maps the name nor
+  excluded it - cljs.core itself included, whose own code writes `when' like
+  anybody's. Publics only for the second half, for `replique.names/core-refers's
+  reason: a name core did not publish is not one to offer."
+  [ns]
+  (let [{:keys [cenv]} (environment)
+        here (symbol ns)
+        mapped (into {} (filter (comp macro? val)) (some-> (view-of here) ns-map))
+        macros (some-> (:core-macros cenv) find-ns)]
+    (merge (when macros
+             (into {}
+                   (filter (fn [[sym v]] (and (macro? v) (not (excluded? here sym)))))
+                   (ns-publics macros)))
+           mapped)))
+
+(defn macro-aliases
+  "The aliases the :require-macros of NS made, by alias."
+  [ns]
+  (some-> (view-of (symbol ns)) ns-aliases))
 
 (defn compile-namespace!
   "Compile NS and everything it requires into this process's output directory.

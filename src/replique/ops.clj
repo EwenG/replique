@@ -136,7 +136,10 @@
                 (throw (ex-info (str "A var must be named by a qualified name, got: "
                                      (pr-str asked))
                                 {:replique/error :invalid-message})))
-              (if-let [found (names/interned named)]
+              (if-let [found (or (names/interned named)
+                                 ;; a ClojureScript macro, which is how every
+                                 ;; form that binds is written there
+                                 (names/interned-macro named))]
                 (assoc acc written found)
                 acc)))
           {} vars))
@@ -161,6 +164,11 @@
       ;; in a namespace that maps nothing of the name. Empty for Clojure, where
       ;; the reduce above has already been over every one of them.
       (reduce spell found (names/core-refers ns))
+      ;; And its macros, which for ClojureScript are in another table again -
+      ;; see `names/macro-refers'. Where the namespace maps the name to a var
+      ;; of its own, that is what the name means and the macro is not written
+      ;; that way at all.
+      (reduce spell found (remove (comp (ns-map ns) key) (names/macro-refers ns)))
       (reduce (fn [found [alias aliased]]
                 (reduce (fn [found ^clojure.lang.Var var]
                           (if (= aliased (.ns var))
@@ -168,7 +176,7 @@
                                     (str alias "/" (.sym var)))
                             found))
                         found wanted))
-              found (ns-aliases ns)))))
+              found (concat (ns-aliases ns) (names/macro-aliases ns))))))
 
 (defn- qualified-name [^clojure.lang.Var var]
   (str (ns-name (.ns var)) "/" (.sym var)))

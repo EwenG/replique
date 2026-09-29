@@ -668,3 +668,52 @@
               (is (contains? again (str b))))))
         (finally (doseq [^java.io.File d [(.getParentFile a) (.getParentFile b)]]
                    (when (.exists d) (client/delete-recursively d))))))))
+
+(deftest test-a-macro-is-read-in-the-other-world
+  ;; A ClojureScript namespace maps its vars and none of its macros: those are
+  ;; Clojure vars of this jvm, reached through the compiler's macro view and
+  ;; through cljs.core's macros by the rule that reaches its functions. So
+  ;; `defn' and `when', which are macros there and nothing else, were names
+  ;; that meant nothing - no eldoc, no completion, no binding forms.
+  (when (compiling?)
+    (with-cljs-repl c
+      (eval! c (str "#replique/ns ops.macros\n"
+                    "(ns ops.macros (:refer-clojure :exclude [when])"
+                    " (:require-macros [cljs.test :as t :refer [deftest]]))"))
+      (eval! c "#replique/ns ops.macros\n(defn when [x] x)")
+      (let [symbol-of (fn [ns text]
+                        (:symbol (about {:op :symbol :position :code :ns ns :text text})))]
+        (testing "a core macro, bare and written in full either way"
+          (is (= ["macro" "cljs.core" "defn"]
+                 ((juxt :type :ns :name) (symbol-of "cljs.user" "defn"))))
+          (is (seq (:arglists (symbol-of "cljs.user" "when"))))
+          (is (= "macro" (:type (symbol-of "cljs.user" "cljs.core/when"))))
+          (is (= "cljs.core" (:ns (symbol-of "cljs.user" "clojure.core/when")))))
+        (testing "after the var, which wins a name that is both"
+          (is (= "function" (:type (symbol-of "cljs.user" "str")))))
+        (testing "a :refer-clojure :exclude, and a var of the namespace's own"
+          (is (= ["function" "ops.macros"]
+                 ((juxt :type :ns) (symbol-of "ops.macros" "when")))))
+        (testing "a :refer-macros and an alias of a :require-macros"
+          (is (= ["macro" "cljs.test"] ((juxt :type :ns) (symbol-of "ops.macros" "deftest"))))
+          (is (= ["macro" "cljs.test"] ((juxt :type :ns) (symbol-of "ops.macros" "t/is"))))))
+      (testing "offered where a name is written"
+        (is (some #{"when-let"} (candidates (about {:op :completions :position :code
+                                                    :ns "cljs.user" :text "whe"}))))
+        (is (some #{"cljs.core/when-let"}
+                  (candidates (about {:op :completions :position :code
+                                      :ns "cljs.user" :text "cljs.core/whe"}))))
+        (is (some #{"deftest"} (candidates (about {:op :completions :position :code
+                                                   :ns "ops.macros" :text "deft"}))))
+        (is (some #{"t/is"} (candidates (about {:op :completions :position :code
+                                                :ns "ops.macros" :text "t/"}))))
+        (is (some #{"t"} (candidates (about {:op :completions :position :code
+                                             :ns "ops.macros" :text "t"})))))
+      (testing "and spelled, which is how a client finds the forms that bind"
+        (is (= {:clojure.core/let ["cljs.core/let" "let"]}
+               (:spellings (about {:op :spellings :ns "cljs.user"
+                                   :vars ["clojure.core/let"]}))))
+        (is (= {:clojure.core/when ["cljs.core/when"]
+                :cljs.test/is ["cljs.test/is" "t/is"]}
+               (:spellings (about {:op :spellings :ns "ops.macros"
+                                   :vars ["clojure.core/when" "cljs.test/is"]}))))))))

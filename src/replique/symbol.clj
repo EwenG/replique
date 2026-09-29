@@ -514,6 +514,10 @@
   (or (when-let [found (names/resolve-scope ns scope)]
         (when-let [var (get (ns-publics found) (symbol named))]
           (of-var var)))
+      ;; a ClojureScript macro, which the namespace of that name does not hold
+      ;; - see `names/resolve-macro'
+      (when-let [var (names/resolve-macro ns scope named)]
+        (of-var var))
       (when-let [class (names/class-named ns scope)]
         (of-member class named))))
 

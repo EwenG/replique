@@ -447,7 +447,9 @@
   namespace's own wins over it, which it would anyway: what the namespace maps
   is what a name written there means."
   [ns]
-  (let [mapped (merge (names/core-refers ns) (ns-map ns))
+  (let [;; the macros under the vars, for `names/resolve-plain's reason: a name
+        ;; that is both is answered as the var
+        mapped (merge (names/macro-refers ns) (names/core-refers ns) (ns-map ns))
         vars (for [[written found] mapped :when (var? found)] [(str written) found])
         classes (for [[written found] mapped :when (class? found)] [(str written) found])]
     (concat
@@ -470,7 +472,8 @@
   PREFIX is what stands in front of one where it is being written - nothing
   where a var is, and the two colons of an ::alias/name."
   [ns ^String prefix]
-  (for [[aliased found] (group-by val (ns-aliases ns))]
+  (for [aliases [(ns-aliases ns) (names/macro-aliases ns)]
+        [aliased found] (group-by val aliases)]
     {:type "namespace"
      :ns (str (ns-name aliased))
      :names (map (fn [[alias _]] (str prefix alias)) found)}))
@@ -489,11 +492,21 @@
   No locals are offered beside these, and no classes: a name with a slash in
   it is neither."
   [ns ^String scope]
-  (when-let [found (names/resolve-scope ns scope)]
-    (for [[kind vars] (group-by (comp names/var-kind val) (ns-publics found))]
-      {:type kind
-       :ns (str (ns-name found))
-       :names (map (fn [[named _]] (str scope "/" (name named))) vars)})))
+  (let [found (names/resolve-scope ns scope)
+        ;; and the macros, which for ClojureScript are in another namespace
+        ;; than the vars - see `names/macro-scope'. Its functions win a name
+        ;; both have, as they do where no scope is written
+        macros (some-> (names/macro-scope ns scope) ns-publics
+                       (->> (filter (comp #(.isMacro ^clojure.lang.Var %) val))
+                            (remove (comp (set (keys (some-> found ns-publics))) key))))
+        groups (fn [from vars]
+                 (for [[kind vars] (group-by (comp names/var-kind val) vars)]
+                   {:type kind
+                    :ns (str (ns-name from))
+                    :names (map (fn [[named _]] (str scope "/" (name named))) vars)}))]
+    (concat (when found (groups found (ns-publics found)))
+            (when (seq macros)
+              (groups (.ns ^clojure.lang.Var (val (first macros))) macros)))))
 
 (def ^:private keyword-table
   "The map clojure interns keywords in, or nil where this jvm will not show

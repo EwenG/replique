@@ -162,7 +162,13 @@
 
   Clojure needs no rule of its own here: clojure.core is referred into a
   namespace as a thousand ordinary mappings, so what the namespace maps is
-  already the whole answer."
+  already the whole answer.
+
+  AND THEN A MACRO, for ClojureScript, where the macros are in another world
+  - see `macro-refers'. After the var and never instead of one, which is
+  `clojure.cljs.analyzer-api/resolve's order: `str' is a macro and a function
+  there, and what somebody reading it wants is the function, whose arglists
+  are the ones the macro takes as well."
   [ns ^String named]
   (let [sym (symbol named)
         mapped (get (ns-map ns) sym)]
@@ -170,8 +176,68 @@
       (var? mapped) mapped
       (not (cljs?)) nil
       :else (let [here (str (ns-name ns))]
-              (when-not (or (= cljs/core (symbol here)) (cljs/excluded? here sym))
-                (get (ns-interns (core-namespace)) sym))))))
+              (or (when-not (or (= cljs/core (symbol here)) (cljs/excluded? here sym))
+                    (get (ns-interns (core-namespace)) sym))
+                  (cljs/macro-var here sym))))))
+
+(defn resolve-macro
+  "The macro the qualified name SCOPE/NAMED means in NS, or nil.
+
+  Nil for Clojure, where a macro is a var like any other and the namespace
+  SCOPE resolves to already holds it. A ClojureScript namespace does not: its
+  macros are in the jvm namespace of the same name or of another one, which is
+  a rule of the compiler's - see `replique.cljs/macro-var'."
+  [ns ^String scope ^String named]
+  (when (cljs?)
+    (cljs/macro-var (ns-name ns) (symbol scope named))))
+
+(defn interned-macro
+  "The macro the qualified name NAMED names, or nil.
+
+  `interned' for the other world: nil for Clojure, where that already finds a
+  macro. A ClojureScript macro is a var of this jvm, found by the compiler's
+  rule for a name written in full - clojure.core/let is cljs.core's let there,
+  and so is cljs.core/let - read from cljs.core, where no alias of anybody's
+  can stand in the way."
+  [named]
+  (when (cljs?)
+    (let [sym (symbol (str named))]
+      (when (namespace sym)
+        (cljs/macro-var cljs/core sym)))))
+
+(defn macro-refers
+  "What NS can write as a bare name and mean a macro, by that name.
+
+  Nothing for Clojure, where a macro is a var the namespace maps like any
+  other. A ClojureScript namespace maps none of them: they are Clojure vars
+  of this jvm, which the compiler reaches through a view of its own - what a
+  :refer-macros referred, and cljs.core's macros by the rule that reaches
+  cljs.core's functions. So `defn', `when' and `let', which are macros there
+  and nothing else, are in no table but this one."
+  [ns]
+  (when (cljs?)
+    (cljs/macro-refers (ns-name ns))))
+
+(defn macro-scope
+  "The jvm namespace of macros SCOPE names from inside NS, or nil.
+
+  What `resolve-scope' is for a var, for a macro: the alias of a
+  :require-macros, the namespace an alias of the namespace stands for, or the
+  name in full. Nil for Clojure, where the namespace `resolve-scope' answers
+  holds its macros."
+  [ns ^String scope]
+  (when (cljs?)
+    (cljs/macro-namespace (ns-name ns) scope)))
+
+(defn macro-aliases
+  "The aliases NS holds for namespaces of macros, by alias.
+
+  Nothing for Clojure, where `ns-aliases' has them all. A :require-macros
+  aliases into the other world, and `ns-aliases' of a ClojureScript namespace
+  does not see it."
+  [ns]
+  (when (cljs?)
+    (cljs/macro-aliases (ns-name ns))))
 
 (defn interned
   "The var the qualified name NAMED names where it lives, or nil.
