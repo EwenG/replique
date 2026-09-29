@@ -1,8 +1,10 @@
 (ns replique.repl-test
   (:require [clojure.string :as string]
             [clojure.test :refer [deftest is testing]]
+            [replique.analysis :as analysis]
             [replique.classpath :as classpath]
             [replique.core]
+            [replique.hooks :as hooks]
             [replique.output]
             [replique.state :as state]
             [replique.test-client :as client
@@ -1163,6 +1165,101 @@
                 (is (= "clojure.string" (:value (frame-tagged frames "ret"))))
                 (is (= 1 (count (frames-tagged frames "prompt")))))))
           (finally (disconnect r) (client/delete-recursively dir)))))))
+
+;;; What happens after an evaluation replaced some of the program
+
+(defn- analysing?
+  "Whether this process's clojure says what it defines. Hooks are fired off what
+  the compiler reports, so a stock clojure has none - see `replique.hooks'."
+  []
+  (analysis/available?))
+
+(defmacro ^:private with-clj-hook
+  "Body with a hook registered under PREFIX, and taken off again afterwards."
+  [prefix f & body]
+  `(do (swap! hooks/clj-hooks assoc ~prefix ~f)
+       (try ~@body (finally (swap! hooks/clj-hooks dissoc ~prefix)))))
+
+(deftest a-hook-fires-once-per-evaluation-that-defined-something
+  ;; WHAT HOOKS ARE FOR: a program whose top level built something has to be told
+  ;; when its code was replaced underneath it, and nothing in this protocol knows
+  ;; that on its behalf. Replique master watched every var's root and compared
+  ;; what each namespace mapped, after every evaluation, over every namespace in
+  ;; the process; this reads what the compiler said it defined, which is the same
+  ;; question asked of the one thing that knows the answer.
+  (when (analysing?)
+    (with-process [info nil]
+      (let [dir   (client/temp-dir)
+            r     (repl-client info)
+            fired (atom [])]
+        (try
+          (with-clj-hook 'hk (fn [e] (swap! fired conj e))
+            (testing "a load of a file in a namespace it covers"
+              (let [path (write-file! dir "hk_loaded.clj"
+                                      "(ns hk.loaded)\n(def v 1)\n(defn f [] 2)\n")]
+                (loaded! r {:file path}))
+              (is (= 1 (count @fired)) (pr-str @fired))
+              (let [e (first @fired)]
+                (is (= :clj (:dialect e)))
+                (is (= ['hk.loaded] (:namespaces e)) (pr-str e))
+                (testing "and every var of it, because a def is all this compiler
+                          ever reports - which is also what catches the one typed
+                          at a prompt"
+                  (is (= ['hk.loaded/v 'hk.loaded/f] (:vars e)) (pr-str e)))
+                (is (= [] (:removed e)))))
+
+            (testing "a defn typed at the prompt, which is inside no file at all"
+              (reset! fired [])
+              (eval! r "#replique/ns hk.loaded\n(defn typed [] :here)")
+              (is (= 1 (count @fired)) (pr-str @fired))
+              (is (= ['hk.loaded/typed] (:vars (first @fired))) (pr-str @fired)))
+
+            (testing "a form that defines nothing fires nothing"
+              (reset! fired [])
+              (eval! r "#replique/ns user\n(+ 1 2)")
+              (is (= [] @fired) (pr-str @fired)))
+
+            (testing "and neither does a def in a namespace no hook covers"
+              (reset! fired [])
+              (eval! r "(def elsewhere 1)")
+              (is (= [] @fired) (pr-str @fired))))
+          (finally (disconnect r) (client/delete-recursively dir)))))))
+
+(deftest a-hook-does-not-fire-for-an-evaluation-that-threw
+  ;; A file that would not load did not replace the program that is running, and
+  ;; saying it did is the one thing a hook must not be told.
+  (when (analysing?)
+    (with-process [info nil]
+      (let [dir   (client/temp-dir)
+            r     (repl-client info)
+            fired (atom 0)]
+        (try
+          (with-clj-hook 'hkbroken (fn [_] (swap! fired inc))
+            (let [path   (write-file! dir "hkbroken_a.clj"
+                                      "(ns hkbroken.a)\n(def v 1)\n(this-is-not-a-thing)\n")
+                  frames (loaded! r {:file path})]
+              (is (= "exception" (:tag (frame-tagged frames "exception"))) (pr-str frames)))
+            (is (zero? @fired))
+            (testing "and the repl is a repl anyway"
+              (is (= "3" (:value (frame-tagged (eval! r "(+ 1 2)") "ret"))))))
+          (finally (disconnect r) (client/delete-recursively dir)))))))
+
+(deftest a-hook-that-throws-does-not-take-the-repl-with-it
+  ;; What it was called after happened - the code was replaced - so turning the
+  ;; hook's failure into the form's failure would report the wrong thing about
+  ;; the wrong thing. It goes to err, and the form's own result follows it.
+  (when (analysing?)
+    (with-process [info nil]
+      (let [r (repl-client info)]
+        (try
+          (with-clj-hook 'hkthrowing (fn [_] (throw (ex-info "the hook is broken" {})))
+            (let [frames (eval! r "#replique/ns hkthrowing.a\n(def v 1)")]
+              (is (= "ret" (:tag (frame-tagged frames "ret"))) (pr-str frames))
+              (is (string/includes? (printed frames "err") "the hook is broken")
+                  (pr-str frames)))
+            (testing "and the repl goes on"
+              (is (= "3" (:value (frame-tagged (eval! r "(+ 1 2)") "ret"))))))
+          (finally (disconnect r)))))))
 
 ;;; Lifecycle
 

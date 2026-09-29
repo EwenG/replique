@@ -19,6 +19,7 @@
             [replique.analysis :as analysis]
             [replique.cljs-repl :as cljs-repl]
             [replique.directives :as directives]
+            [replique.hooks :as hooks]
             [replique.protocol :as protocol]
             [replique.server :as server]
             [replique.state :as state])
@@ -351,7 +352,15 @@
                  (set! *data-readers* (merge *data-readers*
                                              directives/data-readers)))
          :read (make-repl-read conn)
-         :eval (fn [form] (interruptible conn #(eval form)))
+         ;; ROUND THE EVALUATION AND NOT ROUND A DIRECTIVE, because what defines
+         ;; something is not only a load: a `defn' typed here, a `require', a
+         ;; `#replique/reload' of forty files, and a `load-file' somebody wrote
+         ;; out by hand all replace code that may be running, and the compiler
+         ;; says which in every one of those cases - see `replique.hooks'.
+         ;; Inside `interruptible', so that a hook is part of the evaluation it
+         ;; follows: its output is this connection's and a hook that will not
+         ;; come back can be interrupted like anything else.
+         :eval (fn [form] (interruptible conn #(hooks/around* (fn [] (eval form)))))
          ;; The frame is built before the output is flushed: printing a
          ;; value may itself print - a print-method warning about what it was
          ;; handed - and that output belongs before the result, not after it.

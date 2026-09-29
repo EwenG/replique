@@ -1,6 +1,7 @@
 (ns replique.remove-var-test
   (:require [clojure.string :as string]
             [clojure.test :refer [deftest is testing]]
+            [replique.hooks :as hooks]
             [replique.ops]
             [replique.test-client :as client
              :refer [control-client disconnect eval! repl-client request! with-process]]))
@@ -197,3 +198,34 @@
           (is (= "probe.spelt/two"
                  (:removed (request! c {:op :remove-var :var 'probe.spelt/two :id 1}))))
           (finally (disconnect r) (disconnect c)))))))
+
+(deftest removing-a-var-tells-whoever-is-running
+  ;; A var taken away is a program changed, which is what a hook exists to hear
+  ;; about - and it is the one such change no compiler reports, because this op
+  ;; does the unmapping itself rather than asking a compiler to. See
+  ;; `replique.hooks/removed!'.
+  (with-process [info nil]
+    (let [r     (repl-client info)
+          c     (control-client info)
+          fired (atom [])]
+      (try
+        (swap! hooks/clj-hooks assoc 'rmhook (fn [e] (swap! fired conj e)))
+        (make! r "(ns rmhook.a)" "(def gone 1)")
+        (reset! fired [])
+        (remove! c "rmhook.a/gone")
+        (is (= 1 (count @fired)) (pr-str @fired))
+        (let [e (first @fired)]
+          (is (= :clj (:dialect e)))
+          (is (= ['rmhook.a] (:namespaces e)) (pr-str e))
+          (is (= ['rmhook.a/gone] (:removed e)) (pr-str e))
+          (is (= [] (:vars e))))
+        (testing "and a var no hook covers tells nobody"
+          (reset! fired [])
+          (make! r "(ns rmelsewhere.a)" "(def gone 1)")
+          (reset! fired [])
+          (remove! c "rmelsewhere.a/gone")
+          (is (= [] @fired) (pr-str @fired)))
+        (finally
+          (swap! hooks/clj-hooks dissoc 'rmhook)
+          (disconnect r)
+          (disconnect c))))))

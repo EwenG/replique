@@ -107,6 +107,7 @@
          ;; every other entry is then called as a function - so this costs a
          ;; line and nothing else.
          :reload-progress (named '*reload-progress*)
+         :defining* (named 'defining*)
          :find-usages (named 'find-usages)
          :find-keyword-usages (named 'find-keyword-usages)
          :find-class-usages (named 'find-class-usages)})
@@ -532,6 +533,23 @@
   [f]
   (if-let [v (of :reload-progress)]
     (with-bindings {v print-progress!} (f))
+    (f)))
+
+(defn defining*
+  "Call F with REPORT told every var defined under it, and answer what F answers.
+
+  WHAT A HOOK IS FIRED OFF - see `replique.hooks'. The events are
+  `clojure.analysis/*defined*'s, both dialects report through them, and what a
+  repl does with one is the repl's business rather than the compiler's, which is
+  why this is a binding and not a callback registered somewhere.
+
+  Nothing at all where this process has no analysis subsystem, as `telling*' is
+  nothing there: the compiler of a stock clojure says what it defines to nobody,
+  so there is no var to bind and there are no events to collect. F is called all
+  the same, and the repl that wrapped it goes on working with no hooks in it."
+  [report f]
+  (if-let [d (of :defining*)]
+    (d report f)
     (f)))
 
 (defn reload!

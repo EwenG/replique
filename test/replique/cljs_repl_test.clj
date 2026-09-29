@@ -26,6 +26,7 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [replique.cljs :as cljs]
             [replique.core :as core]
+            [replique.hooks :as hooks]
             [replique.protocol :as protocol]
             [replique.test-client :as client
              :refer [disconnect eval! frame-tagged frames-tagged printed recv
@@ -655,63 +656,127 @@
         (is (= "prompt" (:tag (:prompt r))))
         (finally (disconnect r))))))
 
-;;; What happens after a load
+
+;;; What happens after an evaluation replaced some of the program
 
 (defmacro ^:private with-hook
   "Body with a hook registered under PREFIX, and taken off again afterwards."
   [prefix f & body]
-  `(do (swap! cljs/env-hooks assoc ~prefix ~f)
-       (try ~@body (finally (swap! cljs/env-hooks dissoc ~prefix)))))
+  `(do (swap! hooks/cljs-hooks assoc ~prefix ~f)
+       (try ~@body (finally (swap! hooks/cljs-hooks dissoc ~prefix)))))
+
+(def ^:private clock
+  "Writes are stamped rather than timed: a test writes a file, loads it and writes
+  it again inside one millisecond, which on a filesystem whose timestamps are that
+  coarse is a file nothing noticed had changed."
+  (atom 0))
 
 (defn- a-file
-  "A .cljs file holding NS, written under DIR, as a #replique/load directive."
+  "A .cljs file holding NS, written under DIR, as a #replique/load directive.
+
+  Stamped with an mtime no earlier write of this run can share, so that a file
+  written twice reads as a file that was edited - which is what a reload is
+  about and what a filesystem with coarse timestamps would otherwise hide."
   [dir ns src]
   (let [f (io/file (str dir) (str (string/replace (str ns) "." "/") ".cljs"))]
     (.mkdirs (.getParentFile f))
     (spit f (str "(ns " ns ")\n" src "\n"))
+    (.setLastModified f (+ (System/currentTimeMillis) (* 10000 (swap! clock inc))))
     (str "#replique/load {:file \"" (.getPath f) "\"}\n")))
 
-(deftest test-a-hook-fires-after-a-load-and-after-nothing-else
+(deftest test-a-hook-fires-once-per-evaluation-that-replaced-something
   (when (compiling?)
-    ;; WHAT MASTER'S env-hooks WERE FOR: a program whose top level built
-    ;; something - a React tree - has to be told when its code was replaced
-    ;; underneath it, and nothing in this protocol knows that on its behalf.
+    ;; WHAT HOOKS ARE FOR: a program whose top level built something - a React
+    ;; tree - has to be told when its code was replaced underneath it, and
+    ;; nothing in this protocol knows that on its behalf.
     ;;
-    ;; WHAT FIRES ONE IS A LOAD DIRECTIVE, which is a client SAYING it loaded
-    ;; something rather than replique working it out. Master worked it out, and
-    ;; could: its namespaces are the JVM's, so a watch on every var's root
-    ;; caught a redefinition and ns-map identity caught a var arriving. Neither
-    ;; reads a ClojureScript namespace of this compiler - a var of one is
-    ;; unbound and its value is in JavaScript - so this is the floor, and the
-    ;; ceiling is for the compiler to say what it compiled.
+    ;; AND WHAT FIRES ONE IS THE COMPILER SAYING WHAT IT DEFINED, not a client
+    ;; saying what it asked for. The first version of this fired after a load
+    ;; directive and after nothing else, so a reload of forty files fired
+    ;; nothing and a def typed at a prompt fired nothing; both replace code that
+    ;; is running. See `replique.hooks'.
     (let [dir   (client/temp-dir)
           fired (atom [])]
       (try
-        (with-hook 'hk.watched (fn [e] (swap! fired conj (:namespace e)))
+        (with-hook 'hk.watched (fn [e] (swap! fired conj e))
           (with-repl [r nil]
             (testing "a load of a namespace it covers"
               (eval! r (a-file dir 'hk.watched.one "(def v :one)"))
-              (is (= ['hk.watched.one] @fired) (pr-str @fired)))
+              (is (= 1 (count @fired)) (pr-str @fired))
+              (let [e (first @fired)]
+                (is (= :cljs (:dialect e)))
+                (is (= ['hk.watched.one] (:namespaces e)) (pr-str e))
+                (testing "and the unit is the namespace, because the module was
+                          rewritten whole - there is no one var to name"
+                  (is (= [] (:vars e))))))
 
-            (testing "loading it again"
-              (eval! r (a-file dir 'hk.watched.one "(def v :two)"))
-              (is (= 2 (count @fired))))
-
-            (testing "a require is not a load directive, and does not fire it"
-              (eval! r "(require 'hk.watched.one :reload)")
-              (is (= 2 (count @fired))))
-
-            (testing "nor does a defn typed at the repl - load the file it is in"
+            (testing "a def typed at the prompt, which names no file and is the
+                      other unit: one var, in the namespace the cursor is in"
+              (reset! fired [])
               (eval! r "#replique/ns hk.watched.one\n(defn typed [] :here)")
-              (is (= 2 (count @fired))))
+              (is (= 1 (count @fired)) (pr-str @fired))
+              (let [e (first @fired)]
+                (is (= ['hk.watched.one] (:namespaces e)))
+                (is (= ['hk.watched.one/typed] (:vars e)) (pr-str e))))
 
-            (testing "nor a form that loaded nothing at all"
+            (testing "a form that defines nothing fires nothing"
+              (reset! fired [])
               (eval! r "(+ 1 2)")
-              (is (= 2 (count @fired))))
+              (is (= [] @fired) (pr-str @fired)))
 
             (testing "and neither does a load of a namespace no hook covers"
+              (reset! fired [])
               (eval! r (a-file dir 'hk.elsewhere "(def v :other)"))
-              (is (= 2 (count @fired))))))
+              (is (= [] @fired) (pr-str @fired)))))
+        (finally (client/delete-recursively dir))))))
+
+(deftest test-a-hook-fires-once-for-a-reload-of-many-namespaces
+  (when (compiling?)
+    ;; THE CASE THE FIRST VERSION COULD NOT REACH AT ALL. A reload names files
+    ;; and works out the rest for itself, so a hook keyed to one namespace fired
+    ;; nothing - and a reload after a branch switch is the moment a page most
+    ;; needs redrawing. One event for the whole of it, because one redraw is
+    ;; what it wants, not one per file.
+    (let [dir   (client/temp-dir)
+          fired (atom [])]
+      (try
+        (with-hook 'hk.reloaded (fn [e] (swap! fired conj e))
+          (with-repl [r nil]
+            (eval! r (a-file dir 'hk.reloaded.a "(def v :one)"))
+            (eval! r (a-file dir 'hk.reloaded.b "(def w :one)"))
+            (reset! fired [])
+            ;; both edited, so both are stale, and one reload answers for both
+            (a-file dir 'hk.reloaded.a "(def v :two)")
+            (a-file dir 'hk.reloaded.b "(def w :two)")
+            (let [frames (eval! r "#replique/reload {}\n")]
+              (is (= "ret" (:tag (frame-tagged frames "ret"))) (pr-str frames)))
+            (is (= 1 (count @fired)) (pr-str @fired))
+            ;; BOTH IN ONE EVENT, which is what is being asserted, rather than
+            ;; the two of them being the whole of it: the model is the process's
+            ;; and a reload answers for whatever else the tests of this jvm have
+            ;; left on it, which is not this test's business and is not stable.
+            (let [nss (set (:namespaces (first @fired)))]
+              (is (contains? nss 'hk.reloaded.a) (pr-str @fired))
+              (is (contains? nss 'hk.reloaded.b) (pr-str @fired)))))
+        (finally (client/delete-recursively dir))))))
+
+(deftest test-a-hook-hears-what-a-reload-took-away
+  (when (compiling?)
+    ;; A def deleted from a file is not deleted by recompiling it; a reload
+    ;; prunes it, and that is a definition taken away by something nobody typed.
+    (let [dir   (client/temp-dir)
+          fired (atom [])]
+      (try
+        (with-hook 'hk.pruned (fn [e] (swap! fired conj e))
+          (with-repl [r nil]
+            (eval! r (a-file dir 'hk.pruned.a "(def kept 1)\n(def gone 2)"))
+            (reset! fired [])
+            (a-file dir 'hk.pruned.a "(def kept 1)")
+            (eval! r "#replique/reload {}\n")
+            (is (= 1 (count @fired)) (pr-str @fired))
+            ;; In it rather than the whole of it, for the reason above.
+            (is (contains? (set (:removed (first @fired))) 'hk.pruned.a/gone)
+                (pr-str @fired))))
         (finally (client/delete-recursively dir))))))
 
 (deftest test-a-hook-does-not-fire-for-a-load-that-failed
@@ -733,7 +798,7 @@
 
 (deftest test-a-hook-that-throws-does-not-take-the-repl-with-it
   (when (compiling?)
-    ;; What it was called after happened - the file loaded - so turning the
+    ;; What it was called after happened - the code was replaced - so turning the
     ;; hook's failure into the form's failure would report the wrong thing
     ;; about the wrong thing. It goes to err, and the form's own result follows.
     (let [dir (client/temp-dir)]

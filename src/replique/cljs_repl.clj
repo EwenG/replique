@@ -34,6 +34,7 @@
             [replique.analysis :as analysis]
             [replique.cljs :as cljs]
             [replique.cljs-analysis :as cljs-analysis]
+            [replique.hooks :as hooks]
             [replique.protocol :as protocol]
             [replique.server :as server]
             [replique.state :as state])
@@ -163,9 +164,10 @@
   expanding rather than expanding the body nothing holds any more.
 
   What it answers is the files it recompiled. The hooks of
-  `replique.cljs/env-hooks' do not fire: they are keyed to one namespace and a
-  reload loads many, and what the special answers is files rather than
-  namespaces.
+  `replique.hooks' fire for every namespace it replaced, which is the case they
+  were most wanted for and the one the first version of them could not reach:
+  a reload names files, and the compiler is what turns that into the namespaces
+  whose code is no longer what is running.
 
   THE DIRECTIVE'S `:timeout' IS CARRIED INTO IT, and this is the one repl where
   it means anything. A ClojureScript reload compiles on this jvm and then has to
@@ -270,16 +272,12 @@
             (instance? LoadDirective form)
             (do (vreset! pending nil) (vreset! moved false)
                 (let [r (load-input form)]
-                  ;; :load is the namespace this is loading, and it is the one
-                  ;; thing `replique.cljs/env-hooks' fires after. Carried on the
-                  ;; opts rather than worked out from the form below, because
-                  ;; this is the only place that KNOWS: by the time it is a
-                  ;; (load-file ...) it looks like any other form somebody could
-                  ;; have typed, and loading does not move the repl, so nothing
-                  ;; afterwards says what was loaded either.
-                  (if (seq? r)
-                    [r {:load (cljs/declared-namespace (:file form))}]
-                    r)))
+                  ;; NO OPTS, where the other forms carry their text and their
+                  ;; file. A load names a file that is read from where it is, so
+                  ;; there is no typed source to map and no position to place,
+                  ;; and what it compiled is the compiler's to say rather than
+                  ;; this step's to guess - see `replique.hooks'.
+                  (if (seq? r) [r nil] r)))
 
             ;; The pending #replique/src is dropped for `load-input's reason:
             ;; it was about a form that never came, and leaving it would place
@@ -481,27 +479,27 @@
                                          ;; files it loads on the way, which
                                          ;; report through the same var - see
                                          ;; `replique.analysis/telling*'.
+                                         ;;
+                                         ;; AND THE HOOKS ROUND ALL OF IT, for
+                                         ;; the reason the Clojure repl has them
+                                         ;; round its own evaluation: what
+                                         ;; replaced some of the program is not
+                                         ;; only a load, and what a reload
+                                         ;; replaced is the case nothing else
+                                         ;; could name. Inside `with-evaluation',
+                                         ;; because a hook may evaluate and what
+                                         ;; it prints belongs beside what the
+                                         ;; form printed - this target's output
+                                         ;; is still this connection's here and
+                                         ;; is not once this returns.
                                          (let [evaluate (fn []
-                                                          (cljs/eval-form form opts))
-                                               r (if (:reload opts)
-                                                   (analysis/telling* evaluate)
-                                                   (evaluate))]
-                                           ;; INSIDE the evaluation, because a
-                                           ;; hook may evaluate and what it
-                                           ;; prints belongs beside what the
-                                           ;; form printed - this target's
-                                           ;; output is still this connection's
-                                           ;; here and is not once this returns.
-                                           ;;
-                                           ;; AFTER A LOAD AND AFTER NOTHING
-                                           ;; ELSE, and only where it worked: a
-                                           ;; file that would not compile did
-                                           ;; not replace the program that is
-                                           ;; running.
-                                           (when (and (:load opts)
-                                                      (not= :error (:status r)))
-                                             (cljs/run-hooks! (:load opts)))
-                                           r)))
+                                                          (cljs/eval-form form opts))]
+                                           (hooks/around*
+                                            (fn [r] (not= :error (:status r)))
+                                            (fn []
+                                              (if (:reload opts)
+                                                (analysis/telling* evaluate)
+                                                (evaluate)))))))
                                     ;; The flag is left CLEARED, which is what
                                     ;; `done-evaluating!' just did and what a
                                     ;; repl about to block on a socket read

@@ -8,6 +8,7 @@
             [replique.cljs :as cljs]
             [replique.completion :as completion]
             [replique.css :as css]
+            [replique.hooks :as hooks]
             [replique.names :as names]
             [replique.protocol :as protocol]
             [replique.server :as server]
@@ -414,13 +415,20 @@
   (names/with-dialect msg
     (exclusively*
      (fn []
-       (let [the-var (var-to-remove msg)]
-         {:removed (qualified-name the-var)
-          ;; Always at least the namespace it was interned in, which is where
-          ;; it was found; the rest are the namespaces that referred it, and
-          ;; they are the ones whose code will not compile until somebody
-          ;; edits it.
-          :unmapped (unmap-everywhere! the-var)})))))
+       (let [the-var  (var-to-remove msg)
+             removed  (qualified-name the-var)
+             ;; Always at least the namespace it was interned in, which is where
+             ;; it was found; the rest are the namespaces that referred it, and
+             ;; they are the ones whose code will not compile until somebody
+             ;; edits it.
+             unmapped (unmap-everywhere! the-var)]
+         ;; AND WHOEVER IS RUNNING IS TOLD, once the name is really gone. This op
+         ;; takes a definition away from a program that is running, which is what
+         ;; a hook exists to hear about - and it is the one such thing no compiler
+         ;; reports, because replique does the unmapping itself rather than asking
+         ;; a compiler to. See `replique.hooks/removed!'.
+         (hooks/removed! (if (names/cljs?) :cljs :clj) (symbol removed))
+         {:removed removed :unmapped unmapped})))))
 
 ;; Reading the classpath again. It is read when the process starts and kept,
 ;; since walking every jar and every directory of it behind a keystroke is not
