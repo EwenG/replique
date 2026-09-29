@@ -542,3 +542,79 @@
 ;;; every other op it cannot answer: the refusal is `:usages' and `:stale'
 ;;; getting the same "no-cljs" as `:namespaces', and the point of it is the list
 ;;; rather than one more test of one more op.
+
+;;; Where a name of the host's is used
+
+(deftest a-name-of-the-host-is-found-by-what-it-is
+  (testing "a Closure var, a global and an export of a module are found however
+  they were written - an alias, a :refer, an :import, in full - because the
+  model files each under what it names"
+    (when (compiling?)
+      (let [root (source-root!)
+            ;; A JavaScript module, where the bundler would have put one. There
+            ;; is no node_modules here to build npm/ out of, and a module that
+            ;; is not there fails the load and leaves the runtime a load that
+            ;; failed - which every test after this one then runs in.
+            out-dir (binding [cljs/*target* :node] (:out-dir (cljs/environment)))]
+        (written-file! out-dir "npm/hostmod.js"
+                       "export const $module = { readText(x) { return x; } };\n")
+        (written-file! root "host/core.cljs"
+                       (str "(ns host.core\n"
+                            "  (:require [goog.string :as gstr :refer [trim]] [\"hostmod\" :as hm :refer [readText]])\n"
+                            "  (:import [goog.math Long]))\n"
+                            "(defn a [x] (gstr/trim x) (trim x) (goog.string/trim x) (gstr/startsWith x \"a\"))\n"
+                            "(defn b [] (js/console.log 1) (.log js/console 2) (Long.fromNumber 3) (Long/fromNumber 4) Long)\n"
+                            "(defn c [] (hm/readText \"x\") (readText \"y\") hm)\n"))
+        (with-cljs-repl r
+          (is (not-any? #(= "exception" (:tag %)) (eval! r "(require 'host.core)")))
+          (let [usages (fn [text]
+                         (let [found (about {:op :usages :position :code
+                                             :ns "host.core" :text text})]
+                           (is (nil? (refused found)))
+                           found))
+                places (fn [found] (mapv (juxt :line :column :member) (remove :declaration (:usages found))))
+                declared (fn [found] (mapv (juxt :line :column :member :declaration)
+                                           (filter :declaration (:usages found))))]
+            (testing "one var of a Closure namespace, three ways of writing it"
+              (doseq [text ["gstr/trim" "trim" "goog.string/trim"]]
+                (let [found (usages text)]
+                  (is (= {:type "host" :kind "goog-var" :ns "goog.string" :name "trim"}
+                         (:symbol found)))
+                  (is (= [[4 14 nil] [4 28 nil] [4 37 nil]] (places found)))
+                  (testing "and the :refer that names it, which a rename rewrites too"
+                    (is (= [[2 43 nil "refer"]] (declared found)))))))
+            (testing "a global, and the one under it that is a name of its own"
+              (is (= [[5 13 nil]] (places (usages "js/console.log")))))
+            (testing "an export, through the alias and through the :refer"
+              (is (= [[6 13 nil] [6 31 nil]] (places (usages "hm/readText"))))
+              (is (= [[6 13 nil] [6 31 nil]] (places (usages "readText"))))
+              (is (= [[2 76 nil "refer"]] (declared (usages "readText")))))
+            (testing "and a package, which is every use of anything in it, each
+            saying which"
+              (is (= [[4 14 "trim"] [4 28 "trim"] [4 37 "trim"] [4 58 "startsWith"]]
+                     (places (usages "gstr"))))
+              (is (= [[2 43 "trim" "refer"]] (declared (usages "gstr"))))
+              (is (= [[6 13 "readText"] [6 31 "readText"] [6 45 nil]]
+                     (places (usages "hm"))))
+              (is (= [[2 76 "readText" "refer"]] (declared (usages "hm"))))
+              (is (= [[5 13 "console.log"] [5 37 nil]] (places (usages "js/console"))))
+              (testing "where an :import is written as a value, it is where it
+              was written - it was filed at a line of another file, off the name
+              of the namespace it stands for"
+                (is (= [[5 52 "fromNumber"] [5 72 "fromNumber"] [5 91 nil]]
+                       (places (usages "Long")))))
+              (testing "and the :import is where the class is named, and says so"
+                (is (= [[3 23 nil "import"]] (declared (usages "Long"))))))
+            (testing "and asking adds nothing to the namespace: a Closure name
+            written in full is its own require to the analyzer, which is not
+            the question's to add"
+              (usages "goog.math.Long/fromNumber")
+              (usages "goog.object/get")
+              (is (not (contains? (binding [cljs/*target* :node]
+                                    ((requiring-resolve 'clojure.cljs.env/requires)
+                                     (:cenv (cljs/environment)) 'host.core))
+                                  'goog.object))))
+            (testing "and the module is completed out of the runtime, as js/ is"
+              (is (some #{"hm/readText"}
+                        (map :candidate (:completions (about {:op :completions :position :code
+                                                              :ns "host.core" :text "hm/rea"}))))))))))))

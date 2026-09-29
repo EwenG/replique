@@ -63,6 +63,7 @@
          :find-usages (named 'find-usages)
          :find-macro-usages (named 'find-macro-usages)
          :find-keyword-usages (named 'find-keyword-usages)
+         :find-host-usages-where (named 'find-host-usages-where)
          :analysed-files (named 'analysed-files)
          :changed-files (named 'changed-files)
          :changed-macro-files (named 'changed-macro-files)
@@ -166,6 +167,26 @@
   (or ((of :find-keyword-usages) kw) #{}))
 
 ;;; What has moved on
+
+(defn host-usages
+  "Every reference to the host whose ref satisfies PRED, with the places it is
+  used: {ref #{span}}, the ref in the model's host-ref shape -
+
+    {:kind :global    :name js/console.log}
+    {:kind :goog-var  :name goog.string/trim}
+    {:kind :goog-ns   :name goog.math.Long}
+    {:kind :js-module :specifier \"react\" :export \"useState\"}
+
+  plus the :written symbol each place spelled it with.
+
+  BY REF AND NOT AS ONE SET, because the question is often a package: every
+  export of react, every var of goog.string - and which of them each place is,
+  which the places do not carry and only the key they are filed under says.
+
+  Refused where there is nothing to read, for `usages's reason."
+  [pred]
+  (refuse-unless-available! "record where names are used")
+  (or ((of :find-host-usages-where) pred) {}))
 
 (defn stale
   "What a reload would compile: {:changed #{source} :stale #{source}

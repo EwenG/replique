@@ -961,7 +961,7 @@
   `:only', and `:import' where it is the name written in its `:import'. Those
   are places a rename has to rewrite and are not uses of anything, and a
   client showing a list of call sites wants to say which is which."
-  [{:keys [source line column end-line end-column from-ns macro dead declaration]}]
+  [{:keys [source line column end-line end-column from-ns macro dead declaration member]}]
   (when-let [found (sym/source-of source)]
     (cond-> (assoc found :line line :column column)
       end-line (assoc :end-line end-line)
@@ -969,7 +969,9 @@
       from-ns (assoc :from-ns (str from-ns))
       macro (assoc :macro true)
       dead (assoc :dead dead)
-      declaration (assoc :declaration declaration))))
+      declaration (assoc :declaration declaration)
+      ;; which part of a package the place is - see `host-usages-of'
+      member (assoc :member member))))
 
 (defn- in-reading-order
   "The usages sorted the way somebody reads them: by file, and down each file.
@@ -980,6 +982,63 @@
   between two askings is one nothing can be walked through."
   [usages]
   (vec (sort-by (juxt #(or (:entry %) "") #(or (:file %) "") :line :column) usages)))
+
+(defn- under-name?
+  "Whether NAMED is WHOLE or a name inside it: js/console.log is inside
+  js/console, and useState$default inside nothing but itself."
+  [^String named ^String whole]
+  (or (= named whole) (string/starts-with? named (str whole "."))))
+
+(defn- host-question
+  "What the model is asked about the host thing FOUND names, as
+  [which refs, what each one is a member of the package as] - the second nil
+  where FOUND is one thing rather than a package of them.
+
+  A PACKAGE IS WHAT A MODULE, A CLOSURE NAMESPACE AND AN OBJECT UNDER js/ ARE,
+  and asking where one is used is asking where anything in it is: react is
+  every export of react, goog.string every var of goog.string, js/console
+  js/console.log as well as js/console. Each place then says which of them it
+  was, which the places themselves cannot - it is the key they are filed under
+  that knows, and the answer is what somebody wants to read down: that the
+  project uses three things of this package and where."
+  [{:keys [kind ns name specifier export]}]
+  (let [root (fn [k] (clojure.core/name (:name k)))]
+    (case kind
+      "global"
+      (let [whole name]
+        [(fn [k] (and (= :global (:kind k)) (under-name? (root k) whole)))
+         (fn [k] (let [n (root k)] (when (not= n whole) n)))])
+
+      "goog-var"
+      (let [qualified (symbol ns name)]
+        [(fn [k] (and (= :goog-var (:kind k)) (= qualified (:name k))))
+         nil])
+
+      "goog-ns"
+      (let [provide (symbol name)]
+        [(fn [k] (or (and (= :goog-ns (:kind k)) (= provide (:name k)))
+                     (and (= :goog-var (:kind k)) (= name (namespace (:name k))))))
+         (fn [k] (when (= :goog-var (:kind k)) (root k)))])
+
+      "js-module"
+      (if export
+        [(fn [k] (and (= :js-module (:kind k)) (= specifier (:specifier k))
+                      (some? (:export k)) (under-name? (:export k) export)))
+         nil]
+        [(fn [k] (and (= :js-module (:kind k)) (= specifier (:specifier k))))
+         :export])
+
+      nil)))
+
+(defn- host-usages-of
+  "Every place the host thing FOUND names is used, each carrying the :member
+  of the package it is where FOUND is one - see `host-question'."
+  [found]
+  (when-let [[pred member] (host-question found)]
+    (for [[k spans] (cljs-analysis/host-usages pred)
+          :let [m (when member (member k))]
+          span spans]
+      (cond-> span m (assoc :member (str m))))))
 
 (defn- usages-of
   "Every place FOUND is used, as `located' writes one.
@@ -1000,9 +1059,8 @@
   CLOJURE ONLY, and answering nothing for ClojureScript is the honest answer
   rather than a gap: what a .cljs file refers to is a JavaScript global, a
   Closure namespace or an npm export, and the ClojureScript model records those
-  as host references keyed by what they name and by the name the source wrote -
-  a different question, whose answer has more in it than a list of places, and
-  which wants an op of its own rather than to be squeezed through this one.
+  as host references keyed by what they name. Those are a fourth kind, asked of
+  ClojureScript only - see `host-usages-of'.
 
   A PROTOCOL ANSWERS WHAT IMPLEMENTS IT as well, and nothing here does that: it
   is the Clojure model that puts the two together, because a `deftype', a
@@ -1033,6 +1091,18 @@
         "class"
         (when-not cljs
           ((of :find-class-usages) (if package (str package "." name) name)))
+
+        ;; js/console, gstr/trim, a module's export - see `host-usages-of'
+        "host"
+        (when cljs (host-usages-of found))
+
+        ;; A namespace of ClojureScript's is where its vars are and has no uses
+        ;; of its own to answer with. One of Closure's is a package of the
+        ;; host's - gstr, or Long, standing for it - and where it is used is
+        ;; where anything of it is.
+        "namespace"
+        (when (and cljs (cljs/goog-ns? name))
+          (host-usages-of {:kind "goog-ns" :name name}))
 
         nil))))
 

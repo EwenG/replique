@@ -145,7 +145,12 @@
          ;; host's is spelled in JavaScript - see `host-object'
          :js-aliases    (env 'js-aliases)
          :goog-ns?      (goog 'goog-ns?)
+         :goog-known?   (goog 'known?)
          :host-name     (nms 'host-name)
+         ;; and what a name written in code is, where it is the host's - the
+         ;; analyzer's own reading of it, see `host-ref'
+         :analyze       (ana 'analyze)
+         :analysis-env  (env 'analysis-env)
          :compile-namespace! (drv 'compile-namespace!)
          :default-source-paths (drv 'default-source-paths)
          :find-source   (drv 'find-source)
@@ -1491,6 +1496,11 @@
             (when ((of :goog-ns?) named)
               {:root "ns" :name (str named) :path []})))))))
 
+(defn goog-ns?
+  "Whether NAMED is a name in the Closure tree - goog, or under goog."
+  [named]
+  ((of :goog-ns?) (symbol (str named))))
+
 (defn host-name
   "The JavaScript spelling of a name the host owns: js/foo-bar is foo_bar."
   ^String [^String written]
@@ -1523,3 +1533,97 @@
         (let [[functions fields] (try (edn/read-string (edn/read-string value))
                                       (catch Exception _ nil))]
           {:functions (vec functions) :fields (vec fields)})))))
+
+(def ^:private host-ops
+  "The analyzer's nodes for a reference to the host, and the kind the model
+  files each of them under. See clojure.cljs.analysis's host-ref."
+  {:js-var :global
+   :goog-var :goog-var
+   :goog-ns :goog-ns
+   :js-module :js-module
+   :js-module-var :js-module})
+
+(defn- written-in-full
+  "What SYM names of the Closure tree when it is written out in full, or nil
+  where it names nothing there.
+
+  Read off the name rather than analysed, because the analyzer treats writing
+  one out as requiring it - see clojure.cljs.analyzer's require-goog! - and a
+  question asked about a name must not add a require to the namespace it was
+  asked in."
+  [sym]
+  (let [goog? (of :goog-ns?)
+        known? (of :goog-known?)
+        provide (fn [named] (when (known? named) {:kind :goog-ns :name named}))
+        member (fn [ns-part member]
+                 (or (provide (symbol (str ns-part "." member)))
+                     {:kind :goog-var :name (symbol (str ns-part) (str member))}))]
+    (if-let [ns-part (namespace sym)]
+      (when (goog? (symbol ns-part)) (member ns-part (name sym)))
+      (when (goog? sym)
+        (or (provide sym)
+            (let [s (str sym)
+                  index (.lastIndexOf s ".")]
+              (when (pos? index) (member (subs s 0 index) (subs s (inc index))))))))))
+
+(defn- analysable?
+  "Whether SYM can be handed to the analyzer without the analyzer changing
+  anything.
+
+  It can change something: a namespace written out in full is its own require
+  there - a Closure one always, a ClojureScript one that was compiled but not
+  required too (clojure.cljs.analyzer's analyze-qualified-symbol) - and so is
+  a dotted name whose head is one. What is left is every way a namespace
+  writes a host name for itself: js/, an alias, a :refer, an :import, a bare
+  name. Each of those reads what the ns form set up and adds nothing to it."
+  [ns sym]
+  (let [head (fn [^String s] (first (string/split s #"\.")))
+        own? (fn [^String written]
+               (let [named (symbol written)]
+                 (or (= "js" written)
+                     (some? (some-> (find-namespace ns) ns-aliases (get named)))
+                     (contains? ((of :js-aliases) (:cenv (environment)) ns) named))))]
+    (if-let [ns-part (namespace sym)]
+      (own? ns-part)
+      (or (not (string/includes? (name sym) "."))
+          (own? (head (name sym)))))))
+
+(defn host-ref
+  "What the name WRITTEN in NS refers to of the host's, as the model names it,
+  or nil where it is not the host's.
+
+    {:kind :global    :name js/console.log}
+    {:kind :goog-var  :name goog.string/trim}
+    {:kind :goog-ns   :name goog.math.Long}
+    {:kind :js-module :specifier \"react\" :export \"useState\"}
+
+  THE ANALYZER'S READING wherever it can be had, and not one written again
+  here, because the ways of writing one of these are many and every one of
+  them is a rule of the compiler's: gstr/trim through an alias, a bare trim
+  through a :refer, Long through an :import, useState through a :refer of a
+  module, sub through the $ sugar. What the model filed a use under is what
+  the analyzer made of it, so asking the analyzer is asking the model's own
+  question. A symbol is analysed and nothing else: it compiles nothing,
+  expands no macro and runs nothing - and a name the analyzer would answer by
+  adding a require is read off the name instead, see `analysable?'.
+
+  One the analyzer refuses - a var that does not exist, a Closure name the
+  vendored subset does not have - is not the host's to answer about, and what
+  it printed on the way is not the client's to read."
+  [ns ^String written]
+  (let [{:keys [cenv]} (environment)
+        here (symbol ns)
+        sym (try (edn/read-string written) (catch Exception _ nil))]
+    (when (symbol? sym)
+      (or (written-in-full sym)
+          (when (analysable? here sym)
+            (when-let [node (try
+                              (binding [*err* (java.io.StringWriter.)]
+                                (with-ns here
+                                  ((of :analyze) cenv ((of :analysis-env) cenv) sym)))
+                              (catch Throwable _ nil))]
+              (when-let [kind (host-ops (:op node))]
+                (cond-> {:kind kind}
+                  (:name node) (assoc :name (:name node))
+                  (:specifier node) (assoc :specifier (:specifier node))
+                  (:export node) (assoc :export (:export node))))))))))

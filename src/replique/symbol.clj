@@ -27,6 +27,7 @@
             [clojure.repl]
             [clojure.string :as string]
             [replique.classpath :as classpath]
+            [replique.cljs :as cljs]
             [replique.names :as names])
   (:import [java.lang.reflect Constructor Field Method Modifier]
            [java.net JarURLConnection URL]
@@ -563,6 +564,29 @@
                           "A symbol needs the :position it is written at"
                           (str "Unknown position: " (pr-str (:position msg)))))))
 
+(defn- of-host
+  "What the name WRITTEN in NS is of the host's, as the answer carries it, or
+  nil where it is nothing of the host's.
+
+  For ClojureScript only, and last of all: js/console, gstr/trim through a
+  Closure alias, useState through a :refer of a JavaScript module. None of
+  them is a var and none has a file here to open, so what is said is what it
+  is - the kind, and the name written in full the way `:ns' and `:name' write
+  a var's - and the model's own key for it, which is what finding where it is
+  used asks by. See `replique.cljs/host-ref'."
+  [ns ^String written]
+  (when (names/cljs?)
+    (when-let [{:keys [kind name specifier export]}
+               (cljs/host-ref (ns-name ns) written)]
+      (case kind
+        :global {:type "host" :kind "global" :ns "js" :name (clojure.core/name name)}
+        :goog-var {:type "host" :kind "goog-var"
+                   :ns (namespace name) :name (clojure.core/name name)}
+        :goog-ns {:type "host" :kind "goog-ns" :name (str name)}
+        :js-module (cond-> {:type "host" :kind "js-module" :specifier specifier}
+                     export (assoc :ns specifier :name export :export export)
+                     (nil? export) (assoc :name specifier))))))
+
 (defmethod resolved :code [msg]
   (let [ns (names/namespace-named msg)
         written (names/text msg)]
@@ -578,7 +602,8 @@
       :else (or (of-constructed ns written)
                 (when-let [[scope named] (under-a-scope written)]
                   (of-scoped ns scope named))
-                (of-plain ns msg written)))))
+                (of-plain ns msg written)
+                (of-host ns written)))))
 
 (defmethod resolved :namespace [msg]
   (let [prefix (names/named-argument msg :prefix)
