@@ -65,6 +65,8 @@
          :find-keyword-usages (named 'find-keyword-usages)
          :analysed-files (named 'analysed-files)
          :changed-files (named 'changed-files)
+         :changed-macro-files (named 'changed-macro-files)
+         :stale-macro-files (named 'stale-macro-files)
          :stale-files (named 'stale-files)})
       (catch Throwable _ nil))))
 
@@ -194,13 +196,29 @@
 
   No cascade among the .cljs files themselves, and that is right rather than
   missing: a var is a property looked up at run time, so editing the file a
-  var is defined in leaves the code that calls it correct."
+  var is defined in leaves the code that calls it correct.
+
+  AND THE MACRO FILES ARE IN BOTH LISTS, although neither is a file this
+  compiles. They are Clojure files, loaded on the jvm before anything is
+  recompiled, and a reload loads them - so they are part of what a reload
+  would do, which is the question. Leaving them out named the effect and not
+  the cause: a .cljs file with nothing in it touched appeared as stale beside
+  an empty changed list, and the one file that would have explained it - the
+  .clj whose macro it expands - was in neither. Which is the case this op
+  exists for, since it is the half nobody can work out from their buffers.
+
+  The one that was edited is changed and the ones that expand its macros in
+  turn are stale, the same way round as on the ClojureScript side. A macro
+  file this process also loaded through the Clojure model is named by the
+  Clojure question too, and that is not a duplicate: the two ops answer about
+  two compiles, and it is out of date in both."
   []
   (refuse-unless-available! "record what it compiled")
   (let [{:keys [cenv]} (cljs/environment)
-        changed ((of :changed-files))]
-    {:changed (set changed)
-     :stale (into #{} (remove (set changed)) ((of :stale-files) cenv))
+        changed (into (set ((of :changed-files))) ((of :changed-macro-files)))]
+    {:changed changed
+     :stale (into #{} (remove changed)
+                  (concat ((of :stale-files) cenv) ((of :stale-macro-files))))
      ;; And whether anything has been compiled here at all - see
      ;; `replique.analysis/stale', where the same key answers the same
      ;; question about the JVM side and for the same reason. It is rarer to

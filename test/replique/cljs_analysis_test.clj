@@ -350,10 +350,13 @@
             (edited-file! macros (str "(ns stale.macros)\n"
                                       "(defmacro twice [x] (list 'cljs.core/* x 10))\n"))
             (let [found (about {:op :stale})]
-              (is (= [] (under root found :changed))
-                  "no .cljs file on disk is newer than what was compiled")
+              (is (= ["stale/macros.clj"] (under root found :changed))
+                  "the .clj is not a file this compiles, but it is the file that
+  changed - and a reload loads it, so it is part of what a reload would do")
               (is (= ["stale/core.cljs"] (under root found :stale))
-                  "and the one that expands the macro is stale all the same")))
+                  "and the one that expands the macro is stale all the same")
+              (is (= [] (filter #{"stale/macros.clj"} (under root found :stale)))
+                  "in one list or the other, never both")))
 
           (testing "and the reload loads the macro file before recompiling it"
             (eval! r "#replique/reload {}")
