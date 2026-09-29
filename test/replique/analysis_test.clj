@@ -34,6 +34,19 @@
     (spit f source)
     (.getPath f)))
 
+(defn- source-root!* [dir]
+  (let [dir (str dir)]
+    (.addURL state/class-loader (.toURL (.toURI (java.io.File. (str dir)))))
+    ;; Through the loader the process shares, which is what every thread of a
+    ;; running process reads the classpath through - a connection adopts it
+    ;; before it answers anything, and the thread a test runs on is the one
+    ;; thread of this process that has not. Without it the reading walks up
+    ;; from whatever loader the test runner was left holding and finds no
+    ;; source root at all.
+    (state/adopt-class-loader!)
+    (classpath/rescan!)
+    dir))
+
 (defn- source-root!
   "A directory the process reads names off the classpath, and its path.
 
@@ -47,19 +60,18 @@
   named under is that reading - see `replique.classpath/naming-anchors'. A
   client that put a directory there does the same thing: `:add-libs' and
   `:sync-deps' both end in a reading, and `:update-classpath' is one asked
-  for by itself."
-  []
-  (let [dir (client/temp-dir)]
-    (.addURL state/class-loader (.toURL (.toURI (java.io.File. (str dir)))))
-    ;; Through the loader the process shares, which is what every thread of a
-    ;; running process reads the classpath through - a connection adopts it
-    ;; before it answers anything, and the thread a test runs on is the one
-    ;; thread of this process that has not. Without it the reading walks up
-    ;; from whatever loader the test runner was left holding and finds no
-    ;; source root at all.
-    (state/adopt-class-loader!)
-    (classpath/rescan!)
-    dir))
+  for by itself.
+
+  UNDER A DIRECTORY GIVEN, where a test needs the source root to be part of
+  the project rather than beside it: what a process answers about its own
+  application is scoped to the directory it was started on - see
+  `replique.analysis/unread' - so a test of that answer has to write the
+  application where the process would look for it."
+  ([] (source-root!* (client/temp-dir)))
+  ([parent]
+   (let [dir (java.io.File. (str parent) "src")]
+     (.mkdirs dir)
+     (source-root!* (.getPath dir)))))
 
 (defn- load! [r path]
   (eval! r (str "#replique/load " (pr-str {:file path}))))
@@ -1123,6 +1135,120 @@
             (disconnect r)
             (disconnect c)
             (client/delete-recursively root)))))))
+
+(deftest what-is-running-here-and-unread-is-answered-beside-what-has-been-read
+  (testing "a count of what has been read tells the two empty answers apart
+  only where it is nothing, and the case that matters is not that one. A
+  process whose application came up by `require' and was then loaded from
+  once has read a file, so it is not nothing, reads as a model and answers
+  nothing whatever is edited - which is a client saying \"nothing has changed\"
+  to somebody who has just changed branch. What says so is the other count:
+  how much of this project is running here that no model holds"
+    (with-process [info nil]
+      (let [root (source-root! (:directory info))
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (when (analysing? c)
+            ;; Counted from where this test starts rather than from zero, for
+            ;; `how-many-files-have-been-read-is-answered-beside-what-changed's
+            ;; reason: the model is one per jvm and a test runs inside the
+            ;; process it is testing. `:unread' needs no such allowance - it is
+            ;; scoped to this process's directory, and every test that came
+            ;; before it was a process with a directory of its own.
+            (let [before (:analysed (stale! c))]
+              (testing "nothing of this project is loaded, so there is nothing
+              it has not read"
+                (is (= 0 (:unread (stale! c)))))
+              (written-file! root "probe/required.clj"
+                             (str "(ns probe.required)\n"
+                                  "(defn value [] 1)\n"))
+              (written-file! root "probe/loaded.clj"
+                             (str "(ns probe.loaded)\n"
+                                  "(defn value [] 2)\n"))
+              (testing "a namespace required rather than loaded is running
+              here and is in no model, which is the whole of what this counts"
+                (is (= "1" (value! r (str "(do (require 'probe.required)"
+                                          " (probe.required/value))"))))
+                (let [found (stale! c)]
+                  (is (= 1 (:unread found)))
+                  (is (= before (:analysed found)))))
+              (testing "loading another file does not answer for it. Which is
+              the state the count exists for: one file read, so the count of
+              what has been read is not nothing - and the empty lists beside
+              it are about that file and about nothing else"
+                (load! r (str root "/probe/loaded.clj"))
+                (let [found (stale! c)]
+                  (is (= (inc before) (:analysed found)))
+                  (is (= 1 (:unread found)))
+                  (is (= [] (named-files found :changed)))))
+              (testing "and loading it does: a file the model holds is a file
+              this answers for, so it is counted in one place and not in both"
+                (load! r (str root "/probe/required.clj"))
+                (let [found (stale! c)]
+                  (is (= (+ 2 before) (:analysed found)))
+                  (is (= 0 (:unread found)))))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
+(deftest what-is-running-outside-this-project-is-not-counted-against-it
+  (testing "a file of a library is not what the question is about, and a
+  library brought in by `:local/root' is a directory of real files like any
+  source root - so a count that took every loaded namespace with a file
+  behind it would never be nothing, and a fact that is never nothing is a
+  fact nobody reads. What is asked about is what is under the directory this
+  process was started on"
+    (with-process [info nil]
+      (let [elsewhere (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (when (analysing? c)
+            (written-file! elsewhere "probe/beside.clj"
+                           (str "(ns probe.beside)\n"
+                                "(defn value [] 3)\n"))
+            (is (= "3" (value! r (str "(do (require 'probe.beside)"
+                                      " (probe.beside/value))"))))
+            (testing "loaded, running, in no model, and none of this
+            process's business"
+              (is (= 0 (:unread (stale! c))))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively elsewhere)))))))
+
+(deftest a-project-that-is-a-tree-of-links-is-still-this-project
+  (testing "a checkout is pointed at without the classpath moving by making
+  the project directory a tree of links into a worktree - so the files under
+  it are named here and are real somewhere else entirely. Asking where a file
+  really is would lose every one of them, and this process would answer that
+  it has nothing it has not read while it holds the whole application"
+    (with-process [info nil]
+      (let [worktree (client/temp-dir)
+            linked (java.io.File. (str (:directory info)) "src")
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (when (analysing? c)
+            (written-file! worktree "probe/linked.clj"
+                           (str "(ns probe.linked)\n"
+                                "(defn value [] 4)\n"))
+            (java.nio.file.Files/createSymbolicLink
+             (.toPath linked)
+             (.toPath (java.io.File. (str worktree)))
+             (make-array java.nio.file.attribute.FileAttribute 0))
+            (source-root!* (.getPath linked))
+            (is (= "4" (value! r (str "(do (require 'probe.linked)"
+                                      " (probe.linked/value))"))))
+            (testing "named under this project, so it is one of this
+            project's, whatever the file it opens turns out to be"
+              (is (= 1 (:unread (stale! c))))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively worktree)))))))
 
 (deftest a-file-written-over-one-in-a-jar-is-seen-once-the-classpath-is-read-again
   (testing "a file inside a jar is not a file anybody edits, so whether it is

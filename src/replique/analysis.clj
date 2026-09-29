@@ -62,6 +62,7 @@
             [replique.cljs :as cljs]
             [replique.cljs-analysis :as cljs-analysis]
             [replique.names :as names]
+            [replique.state :as state]
             [replique.symbol :as sym])
   (:import [java.io File]
            [java.net JarURLConnection URL]
@@ -676,6 +677,92 @@
   (vec (sort-by (juxt #(str (:entry %)) #(str (:file %)))
                 (keep sym/source-of sources))))
 
+(defn- under?
+  "Whether PATH is DIR or something inside it, comparing them as written."
+  [^Path dir ^Path path]
+  (and dir path (.startsWith path dir)))
+
+(defn- of-this-project?
+  "Whether SOURCE names a file of the application this process was started on.
+
+  Which is two questions, and the second is the one that keeps this fact
+  readable. A file inside a jar is not a file anybody edits - `changed-files'
+  skips those for that reason and this skips them for the same one - and a
+  file of a library brought in by `:local/root' is somebody else's project
+  that this one depends on, editable and still not what is being asked about.
+  What is being asked about is what is under this process's directory, which
+  is the same thing the lists beside this are named relative to.
+
+  Without the second half the count is never nothing: a process running
+  replique out of a checkout holds replique's own namespaces, loaded from
+  real files and analysed by nobody, and a fact that is never nothing is a
+  fact nobody reads.
+
+  ASKED OF THE PATH AS THE CLASSPATH WRITES IT FIRST, and of the file every
+  link has been resolved away from only if that says no. Both, because the
+  two say different things and each is wrong on its own.
+
+  A project directory that is a tree of links into a worktree - which is how
+  a checkout is pointed at without a classpath moving - holds files whose real
+  path is in the worktree and under nothing here. Resolving those is losing
+  every file of the application, and the answer would be that this process has
+  nothing it has not read while it holds three hundred namespaces of the
+  thing. So the written path is asked first: a classpath entry and a directory
+  a repl was started in are written by the same hand, and a file reached
+  through the one is named under the other.
+
+  And /tmp on a mac is a link to /private/tmp, so a directory named one way
+  and a file opened the other are the same file under two names and neither
+  is under the other. That is what the second question is for."
+  [^Path project ^Path real-project ^String source]
+  (when project
+    (when-let [{:keys [file entry]} (sym/source-of source)]
+      (and (nil? entry)
+           (let [^Path written (.normalize (Paths/get file (make-array String 0)))]
+             (or (under? project written)
+                 (under? real-project (canonical-path written))))))))
+
+(defn- unread
+  "How many files of this project are behind namespaces loaded here and in no
+  model.
+
+  THE OTHER HALF OF `:analysed', and the half that makes it mean something.
+  A count of what has been read answers \"has anything\" and nothing else, so a
+  process that read one file and then had three hundred namespaces required
+  into it reads as a process with a model - and its empty lists read as an
+  application up to date. They are an application this process has never
+  heard of, and this is the number that says so.
+
+  Read off the namespaces rather than off the classpath, because what is
+  loaded is the question. A file on the classpath that nothing has loaded is
+  not missing from the model, it is simply not running; a file whose vars are
+  interned in this jvm is code this process is executing and cannot say the
+  first thing about.
+
+  A namespace names its files through the vars written in it - a var carries
+  the source path the compiler recorded - so a namespace made by `intern' and
+  one typed at a prompt name nothing, which is right both times: there is no
+  file behind either of them to be out of date.
+
+  Costs one resolution of every distinct file behind a loaded namespace that
+  the model does not already hold, on every asking, and nothing is remembered
+  between two of them. Which is the opposite of what `changed-files' does
+  with the same lookup, and deliberately: what it remembers is that a jar
+  answers to a name, and what would be remembered here is that nothing has
+  been read - the one thing a load is about to change."
+  []
+  (let [project (when-let [dir (:directory (state/info))]
+                  (.normalize (Paths/get (str dir) (make-array String 0))))
+        real-project (when project (canonical-path project))
+        analysed (set ((of :analysed-files)))]
+    (count (into #{}
+                 (comp (mapcat (fn [ns] (map (comp :file meta) (vals (ns-interns ns)))))
+                       (remove nil?)
+                       (distinct)
+                       (remove analysed)
+                       (filter #(of-this-project? project real-project %)))
+                 (all-ns)))))
+
 (defn stale
   "What would be loaded if this process were asked to load what changed.
 
@@ -699,6 +786,11 @@
   And `:analysed', how many files this process has read. Two empty lists
   have two meanings - up to date, or nothing here to be out of date - and a
   client that cannot tell them apart has to guess which it is showing.
+
+  And, on the Clojure side, `:unread': how many files of this project are
+  behind namespaces loaded here that no model holds. Which is what makes the
+  count above answerable, since the interesting case is not a model with
+  nothing in it but a model with almost nothing - see `unread'.
 
   A file a jar answered to is in neither list until the classpath has been
   read again, which is the one thing here that is not a fact about the disk -
@@ -755,7 +847,23 @@
        ;; such key in it - an older process than itself - can tell that from
        ;; a process saying it has read nothing, and go on saying what it used
        ;; to say rather than announcing an empty model that is not there.
-       :analysed (count ((of :analysed-files)))})))
+       :analysed (count ((of :analysed-files)))
+       ;; AND HOW MUCH OF THIS PROJECT IS RUNNING HERE THAT IT HAS NOT READ,
+       ;; because a count of what has been read is not enough to tell the two
+       ;; empty answers apart and reading it as though it were is how a
+       ;; process reports an application it has never heard of as up to date.
+       ;; One file read and three hundred namespaces required in is a model
+       ;; that answers nothing whatever is edited, and it is not zero, so a
+       ;; client testing for zero is a client that says "nothing has changed"
+       ;; to somebody who has just changed branch. See `unread'.
+       ;;
+       ;; NO CLOJURESCRIPT COUNTERPART, and the asymmetry is the compilers'
+       ;; rather than this answer's. A ClojureScript namespace of this
+       ;; process exists BECAUSE this process compiled it - compiling is what
+       ;; the model is written from, there is no second way in - so there is
+       ;; no such thing there as a namespace loaded past the model. On the jvm
+       ;; there is, `require' is it, and it is how most applications arrive.
+       :unread (unread)})))
 
 ;;; What was found
 
