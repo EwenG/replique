@@ -593,6 +593,38 @@
               (cljs/main-modules dir)
               [])})
 
+;; Moving every main module under this project to the port this process is
+;; serving on, which is `refresh-main-js-on-start!' asked for rather than done.
+;;
+;; THE PORT GOES STALE WITHOUT THE PROCESS STOPPING. A main module names the
+;; port of whichever process last wrote it and lives in an application's own
+;; assets, so the browser runtime refreshes every one under its directory when
+;; it starts - the moment there is a port at all. That is the only moment the
+;; process can find by itself, and it is not the only moment the files move
+;; out from under it: a project directory that is a tree of links into a
+;; worktree is pointed somewhere else between one repl and the next, and what
+;; is under it afterwards is another checkout's modules, named for another
+;; day's port. Nothing about that happens inside this process, so this is the
+;; op the client that did it says so with.
+;;
+;; NOTHING IS STARTED TO ANSWER IT, which is what makes it a thing to run after
+;; pointing rather than only after asking for a repl. A process with no browser
+;; runtime up has no port for a module to name and nothing to refresh, and
+;; answers that it moved none - `:main-js' is the op that writes one and starts
+;; the runtime because it must, and its own docstring says it is not for a hook.
+;;
+;; NOT REFUSED WITHOUT A COMPILER, for `:main-modules's reason: this walks a
+;; directory for files whose first line says what they are and rewrites two
+;; lines in them, and a process that cannot compile ClojureScript has no
+;; runtime, so it truthfully answers nothing rather than a classpath.
+(defmethod protocol/handle :refresh-main-js [_ _]
+  (if-let [url (cljs/browser-runtime-url)]
+    {:url url
+     :modules (if-let [dir (:directory (state/info))]
+                (cljs/refresh-main-js! dir url)
+                [])}
+    {:url nil :modules []}))
+
 ;; Reloading a stylesheet, in every page connected to this process. The client
 ;; has just built one - or just saved one that something else builds - and what
 ;; it wants is to see it without losing what the page is in the middle of.

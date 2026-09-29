@@ -595,6 +595,47 @@
       (is (= "error" (:tag r)))
       (is (= "invalid-message" (:error r))))))
 
+(deftest test-refreshing-the-main-modules-again
+  ;; THE PORT IS NOT THE ONLY HALF THAT GOES STALE. A browser runtime refreshes
+  ;; every main module under this directory when it starts, which is the moment
+  ;; the port changes and the only such moment the process can find by itself.
+  ;; It is not the only moment the answer changes: a project directory that is
+  ;; a tree of links into a checkout elsewhere has ANOTHER checkout's modules
+  ;; under it the moment those links move, naming whichever port was current
+  ;; the day they were last written. The process cannot see that happen, so
+  ;; this is the op whoever moved them says it with.
+  (when (compiling?)
+    (let [dir (io/file (:directory (ask {:op :process-info})))
+          a   (io/file dir "refresh-me" "main.js")]
+      (try
+        ;; Writing one starts the browser runtime, which is the port every
+        ;; refresh after this moves them to.
+        (let [url     (:url (ask {:op :main-js :file (str a) :main "ops.refreshed"}))
+              current (slurp a)]
+          (testing "a module already naming this port is found and left where it is"
+            ;; Only where it changed: a file already naming this port is a file
+            ;; whose modification time means something to somebody's build.
+            (let [r (ask {:op :refresh-main-js})
+                  m (first (filter #(= (str a) (:file %)) (:modules r)))]
+              (is (= "reply" (:tag r)) (pr-str r))
+              (is (= url (:url r)))
+              (is (some? m) (pr-str (:modules r)))
+              (is (false? (:refreshed m)))
+              (testing "and it is answered beside the program its page loads"
+                (is (= "ops.refreshed" (:main m))))))
+          (testing "and one naming yesterday's port is moved to this one"
+            (spit a (string/replace current #"const port = \"[^\"]*\";"
+                                    "const port = \"1\";"))
+            (let [r (ask {:op :refresh-main-js})
+                  m (first (filter #(= (str a) (:file %)) (:modules r)))]
+              (is (true? (:refreshed m)) (pr-str m))
+              (testing "which is the file as the process itself wrote it"
+                ;; The host and the port and nothing else: `mainNs' and
+                ;; `mainPath' are the choice of whoever wrote the page.
+                (is (= current (slurp a)))))))
+        (finally (when (.exists (.getParentFile a))
+                   (client/delete-recursively (.getParentFile a))))))))
+
 (deftest test-which-programs-this-project-has
   ;; THE OTHER HALF OF `mainNs'. A main module names the namespace its page
   ;; loads for whoever finds the file - the browser imports `mainPath' and

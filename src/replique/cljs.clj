@@ -720,6 +720,27 @@
          :node    true
          :browser (some? (:session rt)))))))
 
+(defn browser-runtime-url
+  "The URL the browser runtime of this process is serving on, or nil.
+
+  WITHOUT STARTING ONE, which is the whole of why this is not `runtime!' asked
+  for its `:url'. Everything that wants this is asking whether there is a port
+  to name, and a port brought into being in order to answer that question is a
+  page pointed at two servers nobody asked for. A process that has never
+  compiled a line of ClojureScript answers nil rather than paying for
+  cljs.core's macros in order to say so, which is why the environment is read
+  where it lies instead of through `environment'.
+
+  NOT `runtime-connected?', which asks whether a PAGE is there. The two servers
+  listen from the moment the runtime is made, and a main module naming that port
+  is right whether or not anybody has opened the page yet - being opened is what
+  the module is for.
+
+  THE BROWSER AND ONLY THE BROWSER. Node is a process replique starts and talks
+  to over its own pipe; there is no page on it and no URL for one to name."
+  []
+  (some-> (:browser @environments) :runtime deref :url))
+
 ;;; One evaluation at a time, per target
 
 (defn with-evaluation*

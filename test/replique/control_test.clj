@@ -205,6 +205,31 @@
           (is (= [{:file (str f) :main "my.app"}] (:modules reply))))
         (finally (disconnect client))))))
 
+;; NOTHING IS STARTED TO ANSWER IT, which is what makes this the refresh a
+;; client can run after moving some links without knowing or caring whether a
+;; ClojureScript repl was ever opened. Where no browser runtime is up there is
+;; no port for a module to name, so the answer is no url and no modules - and
+;; the file is left naming what it named, rather than being moved to a port
+;; this op brought into being in order to have one to move it to. A process
+;; with no compiler in it is the case where that can never be anything else.
+(deftest refreshing-main-modules-without-a-runtime-moves-nothing
+  (with-process [info nil]
+    (let [client (control-client info)
+          f      (io/file (:directory info) "assets" "main.js")
+          text   (str "//replique-2 main module\n"
+                      "const host = \"127.0.0.1\";\n"
+                      "const port = \"1\";\n"
+                      "const mainNs = \"my.app\";\n")]
+      (try
+        (io/make-parents f)
+        (spit f text)
+        (let [reply (request! client {:op :refresh-main-js :id 7})]
+          (is (= "reply" (:tag reply)) (pr-str reply))
+          (is (nil? (:url reply)))
+          (is (= [] (:modules reply)))
+          (is (= text (slurp f))))
+        (finally (disconnect client))))))
+
 (deftest unknown-op
   (with-process [info nil]
     (let [client (control-client info)]
