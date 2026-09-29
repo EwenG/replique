@@ -169,6 +169,58 @@
             name is, not a use of it"
               (is (not-any? #(= 2 (second %)) (at root found))))))))))
 
+(deftest what-the-ns-form-writes-is-a-place-and-says-it-is-one
+  (testing "a :refer is where the name is written without being used, and the
+  answer says which of the places is which - a rename walks them all, a list of
+  call sites is the ones with nothing on them"
+    (when (compiling?)
+      (let [root (source-root!)]
+        (written-file! root "decl/util.cljs"
+                       (str "(ns decl.util)\n"
+                            "(defn twice [x] (* 2 x))\n"))
+        (written-file! root "decl/core.cljs"
+                       (str "(ns decl.core\n"
+                            "  (:require [decl.util :as u :refer [twice]]))\n"
+                            "(defn run []\n"
+                            "  (+ (twice 1) (u/twice 2)))\n"))
+        (with-cljs-repl r
+          (eval! r "(require 'decl.core)")
+          (let [found (about {:op :usages :position :code
+                              :ns "decl.core" :text "u/twice"})]
+            (is (nil? (refused found)))
+            (is (= [[2 38 "refer"] [4 7 nil] [4 17 nil]]
+                   (mapv (juxt :line :column :declaration) (:usages found))))
+            (testing "and the one that is not a call site is the one in the ns form"
+              (is (= ["decl/core.cljs" 2 38 "decl.core"]
+                     (first (at root (update found :usages
+                                             #(filterv :declaration %)))))))))))))
+
+(deftest a-name-written-in-code-that-does-not-run-says-so
+  (testing "a use inside a #_ or a (comment ...) is a place the name is written
+  and is not a call site, and the compiler is the only thing that can tell them
+  apart: it resolves dead code without compiling it"
+    (when (compiling?)
+      (let [root (source-root!)]
+        (written-file! root "cdead/util.cljs"
+                       (str "(ns cdead.util)\n"
+                            "(defn helper [x] x)\n"))
+        (written-file! root "cdead/core.cljs"
+                       (str "(ns cdead.core\n"
+                            "  (:require [cdead.util :as u]))\n"
+                            "(defn run [] (u/helper 1))\n"
+                            "#_(u/helper 2)\n"
+                            "(comment (u/helper 3))\n"))
+        (with-cljs-repl r
+          (eval! r "(require 'cdead.core)")
+          (let [found (about {:op :usages :position :code
+                              :ns "cdead.core" :text "u/helper"})
+                live (remove #(or (:dead %) (:declaration %)) (:usages found))]
+            (is (nil? (refused found)))
+            (is (= [[3 15 nil] [4 4 "discard"] [5 11 "comment"]]
+                   (mapv (juxt :line :column :dead) (:usages found))))
+            (testing "the one that runs is the one with nothing on it"
+              (is (= [[3 15]] (mapv (juxt :line :column) live))))))))))
+
 (deftest the-two-models-are-not-one
   (testing "a ClojureScript var and a Clojure var of the same name are two
   things, and each model answers only about its own"

@@ -768,14 +768,31 @@
 
   Nothing where the source reaches no file. A span is written down when the
   compiler reads a file and read back long afterwards, and by then the file
-  may have been deleted, moved out of the classpath, or replaced by a jar."
-  [{:keys [source line column end-line end-column from-ns macro]}]
+  may have been deleted, moved out of the classpath, or replaced by a jar.
+
+  `:dead' IS CARRIED, and it is the one thing here that a client cannot work
+  out by opening the file: a name written inside a `#_' or a `(comment ...)'
+  is `:discard' or `:comment', and one in code that runs carries nothing. The
+  model has the distinction because the compiler resolves dead code without
+  compiling it, and this process already acts on it - a prune says nothing
+  about a var whose only use is in a comment block - so a list of places that
+  did not carry it would be this process knowing which of them are real and
+  not saying.
+
+  And `:declaration', which is the other half of the same courtesy: `:refer'
+  where the place is the name written in the `ns' form's own `:refer' or
+  `:only', and `:import' where it is the name written in its `:import'. Those
+  are places a rename has to rewrite and are not uses of anything, and a
+  client showing a list of call sites wants to say which is which."
+  [{:keys [source line column end-line end-column from-ns macro dead declaration]}]
   (when-let [found (sym/source-of source)]
     (cond-> (assoc found :line line :column column)
       end-line (assoc :end-line end-line)
       end-column (assoc :end-column end-column)
       from-ns (assoc :from-ns (str from-ns))
-      macro (assoc :macro true))))
+      macro (assoc :macro true)
+      dead (assoc :dead dead)
+      declaration (assoc :declaration declaration))))
 
 (defn- in-reading-order
   "The usages sorted the way somebody reads them: by file, and down each file.
