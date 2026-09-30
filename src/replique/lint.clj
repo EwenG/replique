@@ -76,13 +76,14 @@
   (delay (named-in "clojure.analysis"
                    '[file-facts file-failure file-mtime file-namespaces find-usages
                      definition unused-locals unused-aliases unused-refers unused-imports
-                     analysed-files])))
+                     ns-referenced-namespaces analysed-files])))
 
 (def ^:private cljs-model
   (delay (named-in "clojure.cljs.analysis"
                    '[file-facts file-failure file-mtime file-namespaces find-usages
                      definition unused-locals unused-aliases unused-refers unused-imports
-                     unused-macro-aliases unused-macro-refers analysed-files])))
+                     unused-macro-aliases unused-macro-refers ns-referenced-namespaces
+                     analysed-files])))
 
 (defn- model
   "The functions of the model this thread's dialect asks, or a refusal."
@@ -241,13 +242,48 @@
 
 ;;; Arity
 
+(defn- fn-arities
+  "What the FUNCTION F takes: [fixed-counts variadic-min], or nil where it is not a
+  function this can read.
+
+  ASKED OF THE OBJECT, because `:arglists' is documentation and says whatever its
+  author wanted it to say. `clojure.core/eduction' declares ([xform* coll]) and is
+  `[& xforms]'; honeysql's helpers declare ([limit]) and are `[& args]'. Both are
+  called perfectly legally with counts their :arglists forbids, and a linter that
+  believes the docstring calls correct code an error - which is the one thing it
+  must not do.
+
+  What a compiled `fn' really takes is on its class: one `invoke' method per fixed
+  signature it declares (the inherited ones are the arity-exception throwers and are
+  not declared here), and `getRequiredArity' for the & - which is why the fixed
+  arities are read off `getDeclaredMethods' and not off all of them.
+
+  A `clojure.lang.AFunction', which is what `fn' compiles to and what `defn' puts in
+  a var. Not a multimethod, not a map, not a keyword: they are callable and they are
+  not this, and each would answer the reflection with something that is not their
+  arity."
+  [f]
+  (when (instance? clojure.lang.AFunction f)
+    (let [fixed (into #{} (comp (filter #(= "invoke" (.getName ^java.lang.reflect.Method %)))
+                                (map #(.getParameterCount ^java.lang.reflect.Method %)))
+                      (.getDeclaredMethods (class f)))
+          vmin  (when (instance? clojure.lang.RestFn f)
+                  (.getRequiredArity ^clojure.lang.RestFn f))]
+      (when (or (seq fixed) vmin)
+        [fixed vmin]))))
+
 (defn- arities
   "What the var with metadata M can be called with: [fixed-counts variadic-min], or
   nil where it does not say - a var holding a map, a multimethod.
 
   :arglists for Clojure, where it is written by `defn' - and quoted, in a
   ClojureScript var; `:top-fn' before it for ClojureScript, which is what the
-  compiler dispatches on."
+  compiler dispatches on.
+
+  A LAST RESORT FOR CLOJURE, where `fn-arities' has the real answer and this has
+  only what somebody wrote down - see it. It is the whole answer for ClojureScript,
+  where there is no function on this side of the wire to ask, and it is a good one:
+  `:top-fn' is not documentation but what the ClojureScript compiler dispatches on."
   [m]
   (let [of-lists (fn [a]
                    ;; Not only vectors: ClojureScript's single-arity variadic
@@ -262,9 +298,19 @@
         {:keys [method-params variadic? max-fixed-arity]} (:top-fn m)]
     (if (seq method-params)
       (let [[fixed vmin :as a] (of-lists (vec method-params))]
-        ;; a variadic signature whose & the compiler has already taken apart
+        ;; WHICH OF THE TWO SHAPES :method-params IS, and the lengths tell them
+        ;; apart. cljs.core's variadic-fn - a defn of ONE arity, that one variadic -
+        ;; puts the signature there with its & taken out, so it is one longer than
+        ;; :max-fixed-arity and is no arity the function has. multi-arity-fn - a
+        ;; defn of several - puts only the FIXED signatures there and leaves the
+        ;; variadic one to :max-fixed-arity, so every one of them is an arity the
+        ;; function has and none is longer. Dropping the longest in that case loses
+        ;; a real arity: (defn f ([] ...) ([x & opts] ...)) would stop having a
+        ;; 0-arity and every (f) would read as a call of the wrong number.
         (if (and variadic? (nil? vmin) max-fixed-arity)
-          [(disj fixed (apply max fixed)) max-fixed-arity]
+          [(cond-> fixed
+             (> (apply max fixed) max-fixed-arity) (disj (apply max fixed)))
+           max-fixed-arity]
           a))
       (let [a (:arglists m)]
         (of-lists (if (and (seq? a) (= 'quote (first a))) (second a) a))))))
@@ -331,6 +377,30 @@
 (defn- counts-as-use? [s]
   (and (not= :discard (:dead s)) (nil? (:declaration s))))
 
+(defn- enclosing-def
+  "A function answering which var's definition a position is inside, of the DEFS of
+  one file - or nil where it is inside none.
+
+  THE LAST DEF ITS OWN TOP-LEVEL FORM WROTE BEFORE IT, which is as near as a model
+  of forms gets to the question: the form log says where each `def' is and where
+  each form starts, and nothing about where a def's body ends. It does not have to
+  be nearer. What this is for is telling a private var that only calls itself from
+  one that something else calls, and between one def and the next is exactly the
+  stretch of the file that is the first one's body.
+
+  A top-level form is the unit and not the file, so a bare `(helper)` at the top
+  level - a form that defines nothing - is inside no definition and is a use.
+
+  OWN-FORM is `form-index' over the same file."
+  [defs own-form]
+  (let [by-form (reduce (fn [m d]
+                          (update m (own-form d) (fnil assoc (sorted-map))
+                                  [(:line d) (:column d)] (:var d)))
+                        {} defs)]
+    (fn [{:keys [line column] :as at}]
+      (when-let [in (get by-form (own-form at))]
+        (some-> (first (rsubseq in <= [line column])) val)))))
+
 (defn- namespace-lints
   "The ns form's verdicts: requires, refers and imports nothing uses - which the
   namespace says, at the places NS-SPECS say the ns form wrote them. The last ns
@@ -344,6 +414,7 @@
   (let [cljs? (= :cljs dialect)
         cenv (when cljs? (:cenv (cljs/environment)))
         unused (memoize (fn [k ns] (if cljs? (call k cenv ns) (call k ns))))
+        referenced (memoize (fn [ns] (call :ns-referenced-namespaces ns)))
         calls (for [{:keys [top-level requires] :as c} require-calls
                     :when top-level
                     :let [live (remove :dead requires)]
@@ -360,6 +431,12 @@
           l (concat
              (mapcat
               (fn [{:keys [lib at clause as refer renamed refer-all? refer-macros]}]
+                ;; A :refer in a plain :require reaches both ClojureScript
+                ;; universes at once - the compiler infers macros for a :require,
+                ;; so [hx.react :refer [defnc]] refers a macro and no var at all -
+                ;; and clojure.cljs.analysis/unused-refers answers for both. So
+                ;; `refers' is the whole answer for a :require, and `macro-refers'
+                ;; is for the clauses that are nothing but macros.
                 (let [macros? (#{:require-macros :use-macros} clause)
                       unused-alias? (if macros? macro-aliases aliases)
                       unused-refer? (if macros? macro-refers refers)
@@ -379,7 +456,15 @@
                                     (for [[r _] refer-macros]
                                       (boolean (and macro-refers (macro-refers (local r))))))]
                   (concat
-                   (when (and at (seq names) (every? true? names) (not refer-all?))
+                   ;; A REQUIRE AND WHAT IT BRINGS IN ARE TWO QUESTIONS, and this is
+                   ;; the first: not one name the ns form gave this namespace is
+                   ;; used, AND nothing of the library is reached at all. The second
+                   ;; is what refer-lints answers, and the two come apart - a file
+                   ;; that refers `f' and then writes `lib/f' every time has a refer
+                   ;; doing nothing and a require doing its job, and only the refer
+                   ;; is the lint. See clojure.analysis/unused-refers.
+                   (when (and at (seq names) (every? true? names) (not refer-all?)
+                              (not (contains? (referenced ns-sym) lib)))
                      [(lint :unused-namespace :warning
                             (str "namespace " lib " is required but never used")
                             at :scope "file")])
@@ -458,6 +543,7 @@
   [dialect source]
   (let [facts (call :file-facts source)
         own-form (form-index (:forms facts))
+        inside (enclosing-def (:defs facts) own-form)
         ;; what another file's changes say about a var: nothing, where that file
         ;; changed on disk since it was compiled
         ;; and nothing, either, about a var defined since at a prompt: what the
@@ -472,7 +558,19 @@
                                                                      ns-name)
                                                           (changed? s)))
                                              (call :analysed-files)))))
-        usages (filterv #(not= :discard (:dead %)) (:usages facts))]
+        ;; WHAT THE PROGRAM DOES NOT RUN IS NOT WRONG. These are the verdicts about
+        ;; code - a var that is not there, one that is private, one that is
+        ;; deprecated - and a `#_' or a (comment ...) is not code: the compiler never
+        ;; analysed it, so nothing in it was arity-checked either, and a block that
+        ;; is half-checked is worse than one that is not checked at all. The reader
+        ;; resolves the names in it so that find-usages can answer about them, which
+        ;; is a different question and still answered.
+        ;;
+        ;; Not the same filter as the unused-* lints', which count a use in a
+        ;; (comment ...) - see clojure.analysis/counts-as-use?. A rich comment is
+        ;; code somebody means to run at a prompt, so the require it needs is needed;
+        ;; that is a fact about the ns form and not a verdict about the block.
+        usages (filterv #(nil? (:dead %)) (:usages facts))]
     (concat
      ;; unused-binding
      (for [{:keys [name] :as l} (call :unused-locals)
@@ -483,14 +581,21 @@
 
      (namespace-lints dialect (:ns-specs facts) (:require-calls facts))
 
-     ;; unused-private-var: nothing uses it, but its own definition
+     ;; unused-private-var: nothing uses it but its own definition - a `defn-' whose
+     ;; only caller is itself is not called, and a recursive one would otherwise
+     ;; keep itself alive forever.
+     ;;
+     ;; ITS OWN DEFINITION AND NOT ITS OWN TOP-LEVEL FORM, which are the same thing
+     ;; until they are not: a #?(:clj (do ...)) around a dozen `defn-'s is ONE form,
+     ;; and reading "the form that defines it" as the whole of that made every one
+     ;; of them unused by every other. What the rule is about is a definition's own
+     ;; body, so that is what is asked - see `enclosing-def'.
      (for [{v-sym :var :as d} (:defs facts)
            :let [v (var-now v-sym)]
            :when (and v (:private (meta v)))
-           :let [home (own-form d)
-                 uses (filter (fn [u] (and (counts-as-use? u)
+           :let [uses (filter (fn [u] (and (counts-as-use? u)
                                            (not (and (= source (:source u))
-                                                     (= home (own-form u))))))
+                                                     (= v-sym (inside u))))))
                               (call :find-usages v-sym))]
            :when (empty? uses)]
        (lint :unused-private-var :warning (str "Unused private var " v-sym) d :scope "file"))
@@ -538,11 +643,18 @@
                       u)])))))
       usages)
 
-     ;; invalid-arity
+     ;; invalid-arity - of the function itself where there is one to ask, and of
+     ;; what the var says about itself only where there is not
      (for [{v-sym :var :keys [argc] :as i} (:invokes facts)
            :let [v (var-now v-sym)]
            :when (and v (not (other-changed v-sym false)))
-           :let [a (arities (meta v))]
+           :let [m (meta v)
+                 a (or (when-not (or (names/cljs?) (:macro m))
+                         ;; not a macro's: its `invoke' carries &form and &env in
+                         ;; front of what the call site writes, so its class is two
+                         ;; arguments out from what anybody could have typed
+                         (fn-arities (try (deref v) (catch Throwable _ nil))))
+                       (arities m))]
            :when (and a (or (seq (first a)) (second a)) (not (accepts? a argc)))]
        (lint :invalid-arity :error
              (str v-sym " is called with " argc (if (= 1 argc) " arg" " args")

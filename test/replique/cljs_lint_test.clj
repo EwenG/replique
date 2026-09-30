@@ -141,3 +141,124 @@
             (eval! r "(require 'comp.core)")
             (is (= [["unused-binding" 2 15 "unused binding props"]]
                    (said (lints! core))))))))))
+
+(deftest a-defn-of-several-arities-keeps-every-one-of-them
+  (testing "cljs.core writes :top-fn two ways. A defn of ONE arity, that one
+  variadic, leaves the signature itself in :method-params with its & taken out, so
+  it is one longer than :max-fixed-arity and is no arity the function has; a defn
+  of SEVERAL leaves only the fixed signatures there, every one of them an arity it
+  has, and the variadic one in :max-fixed-arity alone"
+    (when (cljs/available?)
+      (let [root (source-root!)]
+        (written-file! root "ma/util.cljs"
+                       (str "(ns ma.util)\n"
+                            "(defn pick\n"
+                            "  ([] (pick nil))\n"
+                            "  ([ids & {:keys [all?] :or {all? false}}] [ids all?]))\n"
+                            "(defn two-or-more\n"
+                            "  ([a b] a)\n"
+                            "  ([a b & more] (list a b more)))\n"))
+        (let [core (written-file!
+                    root "ma/core.cljs"
+                    (str "(ns ma.core (:require [ma.util :as u]))\n"
+                         "(defn g [] [(u/pick) (u/pick 1) (u/pick 1 :all? true)\n"
+                         "            (u/two-or-more 1 2) (u/two-or-more 1 2 3)])\n"
+                         "(defn h [] [(u/two-or-more 1)])\n"))]
+          (with-cljs-repl r
+            (eval! r "(require 'ma.core)")
+            (is (= [["invalid-arity" 4 13
+                     "ma.util/two-or-more is called with 1 arg but expects 2 or more"]]
+                   (said (lints! core))))))))))
+
+(deftest a-macro-a-plain-require-referred-is-a-refer-like-any-other
+  (testing "the compiler infers macros for a :require, so a :refer there can name a
+  macro and no var at all - and a name is unused when every universe that holds it
+  says so, which is where a library with a macro and a var of one name comes in:
+  reading the var leaves the macro uncalled and the refer is doing its job"
+    (when (cljs/available?)
+      (let [root (source-root!)]
+        (written-file! root "mr/macros.clj"
+                       (str "(ns mr.macros)\n"
+                            "(defmacro defc [n args & body] `(def ~n (fn ~n ~args ~@body)))\n"
+                            "(defmacro never-called [] 1)\n"
+                            "(defmacro both [] 2)\n"))
+        (written-file! root "mr/macros.cljs"
+                       (str "(ns mr.macros (:require-macros [mr.macros]))\n"
+                            "(def both 3)\n"
+                            "(def plain 4)\n"))
+        (let [core (written-file!
+                    root "mr/core.cljs"
+                    (str "(ns mr.core (:require [mr.macros :as m :refer [defc never-called both plain]]))\n"
+                         "(defc Button [props] props)\n"
+                         "(defn f [] [both m/plain])\n"))]
+          (with-cljs-repl r
+            (eval! r "(require 'mr.core)")
+            (is (= [["unused-referred-var" 1 53
+                     "#'mr.macros/never-called is referred but never used"]
+                    ["unused-referred-var" 1 71
+                     "#'mr.macros/plain is referred but never used"]]
+                   (said (lints! core))))))))))
+
+(deftest a-refer-is-used-where-the-short-name-is-written
+  (testing "a refer is a NAME, so what counts for it is the spelling: a file that
+  refers f and then writes lib/f every time has a refer doing nothing and a require
+  doing its job, and only the refer is the lint - clojure.analysis/unused-refers"
+    (when (cljs/available?)
+      (let [root (source-root!)]
+        (written-file! root "sp/lib.cljs"
+                       (str "(ns sp.lib)\n"
+                            "(defn short-name [] 1)\n"
+                            "(defn long-name [] 2)\n"
+                            "(defn never [] 3)\n"
+                            "(defn renamed [] 4)\n"))
+        (let [core (written-file!
+                    root "sp/core.cljs"
+                    (str "(ns sp.core (:require [sp.lib :as l :refer [short-name long-name never renamed] :rename {renamed rs}]))\n"
+                         "(defn g [] [(short-name) (l/long-name) (rs)])\n"))]
+          (with-cljs-repl r
+            (eval! r "(require 'sp.core)")
+            (is (= [["unused-referred-var" 1 56
+                     "#'sp.lib/long-name is referred but never used"]
+                    ["unused-referred-var" 1 66
+                     "#'sp.lib/never is referred but never used"]]
+                   (said (lints! core))))))))))
+
+(deftest a-reify-captures-the-locals-around-it-and-they-stay-locals
+  (testing "ClojureScript's reify makes a field of EVERY local in scope - the field
+  vector is (keys (:locals &env)) - and writes it with the symbols the source bound
+  those locals with, so each capture lands on a binding that is already there and
+  the body's reads of the bare name are field reads. Neither is what the source
+  wrote: the local is bound once, and it is used where the body reads it"
+    (when (cljs/available?)
+      (let [root (source-root!)]
+        (let [core (written-file!
+                    root "rfy/core.cljs"
+                    (str "(ns rfy.core)\n"
+                         "\n"
+                         "(defprotocol P (m [this]))\n"
+                         "\n"
+                         "(defn f [param unused-param]\n"
+                         "  (let [used-in-reify 1\n"
+                         "        never-used 2]\n"
+                         "    (reify P\n"
+                         "      (m [this] (+ used-in-reify param)))))\n"
+                         "\n"
+                         "(defn g [notice]\n"
+                         "  (let [notice (atom notice)\n"
+                         "        other 3]\n"
+                         "    (reify P\n"
+                         "      (m [this] @notice))))\n"
+                         "\n"
+                         "(defn h [plain-unused]\n"
+                         "  (let [also-unused 4]\n"
+                         "    1))\n"))]
+          (with-cljs-repl r
+            (eval! r "(require 'rfy.core)")
+            (is (= [["unused-binding" 5 16 "unused binding unused-param"]
+                    ["unused-binding" 7 9 "unused binding never-used"]
+                    ["unused-binding" 9 11 "unused binding this"]
+                    ["unused-binding" 13 9 "unused binding other"]
+                    ["unused-binding" 15 11 "unused binding this"]
+                    ["unused-binding" 17 10 "unused binding plain-unused"]
+                    ["unused-binding" 18 9 "unused binding also-unused"]]
+                   (said (lints! core))))))))))

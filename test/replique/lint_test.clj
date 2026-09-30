@@ -248,6 +248,104 @@
             (disconnect c)
             (client/delete-recursively root)))))))
 
+(deftest a-private-var-is-kept-alive-by-its-callers-and-not-by-its-neighbours
+  (testing "what keeps a private var alive is something calling it, and what does
+  not is its own body - which is a definition and not a top-level form: a
+  #?(:clj (do ...)) is one form holding many definitions, and reading the rule at
+  form granularity made every one of them invisible to every other"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (let [core (written-file! root "priv/core.cljc"
+                                    (str "(ns priv.core)\n"
+                                         "#?(:clj\n"
+                                         "   (do\n"
+                                         "     (defn- helper [x] (inc x))\n"
+                                         "     (defn- only-its-own [x] (only-its-own x))\n"
+                                         "     (defn- nobody [x] x)\n"
+                                         "     (defn shown [x] (helper x))))\n"
+                                         "(defn- rec [n] (rec n))\n"
+                                         "(defn- called-from-the-top [] 1)\n"
+                                         "(called-from-the-top)\n"))]
+            (load! r core)
+            (when (analysing? c)
+              (is (= [["unused-private-var" 5 13 "Unused private var priv.core/only-its-own"]
+                      ["unused-private-var" 6 13 "Unused private var priv.core/nobody"]
+                      ["unused-private-var" 8 8 "Unused private var priv.core/rec"]]
+                     (said (lints! c core)))
+                  "helper is called by its neighbour, called-from-the-top by a form
+                  that defines nothing, and neither recursive one by anything")))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
+(deftest an-arity-is-the-functions-and-not-the-docstrings
+  (testing "`:arglists' is documentation and says whatever its author wanted: a
+  linter that believed it would call working code an error, which is the one thing
+  it must not do"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (written-file! root "arity/util.clj"
+                         (str "(ns arity.util)\n"
+                              ;; what honeysql's helpers and clojure.core/eduction
+                              ;; both do: a signature written for a reader
+                              "(defn ^{:arglists '([limit])} lim [& args] args)\n"
+                              "(defn two [a b] [a b])\n"
+                              "(defn some-of [a] a)\n"))
+          (let [core (written-file! root "arity/core.clj"
+                                    (str "(ns arity.core (:require [arity.util :as u]))\n"
+                                         "(defn ok [q] (u/lim q 10))\n"
+                                         "(defn also-ok [] (u/two 1 2))\n"
+                                         "(defn wrong [] (u/two 1 2 3))\n"
+                                         "(defn also-wrong [] (u/some-of))\n"))]
+            (load! r core)
+            (when (analysing? c)
+              (is (= [["invalid-arity" 4 16 "arity.util/two is called with 3 args but expects 2"]
+                      ["invalid-arity" 5 21 "arity.util/some-of is called with 0 args but expects 1"]]
+                     (said (lints! c core)))
+                  "the & takes whatever it is given, and a fixed arity still does not")))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
+(deftest a-comment-block-is-not-half-checked
+  (testing "what the program does not run is not wrong: the compiler never analysed
+  a (comment ...) or a #_, so nothing in one was arity-checked - and a block where
+  the arity is not checked but the privacy is would be worse than one nobody checks"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (written-file! root "dead/util.clj"
+                         (str "(ns dead.util)\n"
+                              "(defn- secret [] 1)\n"
+                              "(defn ^{:deprecated \"1.2\"} old [] 1)\n"
+                              "(defn one [a] a)\n"))
+          (let [core (written-file! root "dead/core.clj"
+                                    (str "(ns dead.core (:require [dead.util :as u]))\n"
+                                         "(comment\n"
+                                         "  (#'dead.util/secret)\n"
+                                         "  (u/old)\n"
+                                         "  (u/one 1 2))\n"
+                                         "#_(u/old)\n"
+                                         "(defn live [] (u/one 1))\n"))]
+            (load! r core)
+            (when (analysing? c)
+              (is (= [] (said (lints! c core)))
+                  "and the require the comment needs is still a require this file needs")))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
 (deftest what-the-source-wrote-the-compiler-kept
   (testing "a #' and a var-ized symbol name a private var legally, a declare is
   not a definition, and a use is reported the way it was spelled"
