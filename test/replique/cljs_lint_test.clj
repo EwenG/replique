@@ -106,3 +106,22 @@
             (eval! r "#replique/reload {}")
             (is (some #{["unresolved-var" 5 50 "Unresolved var: u/old"]}
                       (said (lints! core))))))))))
+
+(deftest the-name-a-component-macro-gives-its-fn-is-not-a-binding
+  (testing "hx's defnc writes (def C (fn C [props] ...)) out of the one symbol the
+  source wrote: the fn's name is there so that it can call itself, and neither
+  clj-kondo nor the Clojure compiler's model calls it unused"
+    (when (cljs/available?)
+      (let [root (source-root!)]
+        (written-file! root "comp/macros.clj"
+                       (str "(ns comp.macros)\n"
+                            "(defmacro defc [n args & body]\n"
+                            "  `(def ~(vary-meta n assoc :doc \"c\") (fn ~n ~args ~@body)))\n"))
+        (let [core (written-file! root "comp/core.cljs"
+                                  (str "(ns comp.core (:require-macros [comp.macros :refer [defc]]))\n"
+                                       "(defc Button [props] 1)\n"
+                                       "(def f (fn step [x] x))\n"))]
+          (with-cljs-repl r
+            (eval! r "(require 'comp.core)")
+            (is (= [["unused-binding" 2 15 "unused binding props"]]
+                   (said (lints! core))))))))))
