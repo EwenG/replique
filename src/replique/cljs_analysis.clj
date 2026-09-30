@@ -64,6 +64,7 @@
          :find-macro-usages (named 'find-macro-usages)
          :find-keyword-usages (named 'find-keyword-usages)
          :find-namespace-usages (named 'find-namespace-usages)
+         :find-local-usages (named 'find-local-usages)
          :find-host-usages-where (named 'find-host-usages-where)
          :analysed-files (named 'analysed-files)
          :changed-files (named 'changed-files)
@@ -172,6 +173,15 @@
   [ns-sym]
   (refuse-unless-available! "record where names are used")
   (or ((of :find-namespace-usages) ns-sym) #{}))
+
+(defn local-usages
+  "Where the local written at LINE:COLUMN of SOURCE is - its binding and its uses -
+  or nil where no local is written there.
+
+  Refused where there is nothing to read, for `usages's reason."
+  [source line column]
+  (refuse-unless-available! "record where names are used")
+  ((of :find-local-usages) source line column))
 
 (defn keyword-usages
   "Every place KW is written, as the model records a span.

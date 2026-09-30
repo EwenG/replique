@@ -281,6 +281,30 @@
             (disconnect c)
             (client/delete-recursively root)))))))
 
+(deftest a-requiring-resolve-names-what-it-will-load
+  (testing "a private var is resolved, and a namespace nothing loaded yet is an
+  optional dependency and not a missing one - but a loaded namespace without the
+  var is still wrong"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (written-file! root "later/lib.clj" "(ns later.lib)\n(defn- hidden [] 1)\n")
+          (let [core (written-file! root "later/core.clj"
+                                    (str "(ns later.core (:require [later.lib]))\n"
+                                         "(defn a [] (requiring-resolve 'later.lib/hidden))\n"
+                                         "(defn b [] (requiring-resolve 'not.loaded.yet/thing))\n"
+                                         "(defn c [] (requiring-resolve 'later.lib/nope))\n"))]
+            (load! r core)
+            (when (analysing? c)
+              (is (= [["unresolved-var" 4 32 "Unresolved var: later.lib/nope"]]
+                     (said (lints! c core))))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
 (deftest a-var-redefined-at-a-prompt-is-not-the-one-on-disk
   (testing "a call of it is not judged by an arity the disk does not have, until a
   load defines it again - and the clients are told both times"

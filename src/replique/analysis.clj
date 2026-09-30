@@ -111,7 +111,10 @@
          :find-usages (named 'find-usages)
          :find-keyword-usages (named 'find-keyword-usages)
          :find-class-usages (named 'find-class-usages)
-         :find-namespace-usages (named 'find-namespace-usages)})
+         :find-namespace-usages (named 'find-namespace-usages)
+         :find-member-usages (named 'find-member-usages)
+         :find-local-usages (named 'find-local-usages)
+         :member-at (named 'member-at)})
       (catch Throwable _ nil))))
 
 (defn available?
@@ -965,7 +968,8 @@
   loads, which says so with `:call'. Those are places a rename
   has to rewrite rather than calls of anything, and a client showing a list of
   call sites wants to say which is which."
-  [{:keys [source line column end-line end-column from-ns macro dead declaration member call]}]
+  [{:keys [source line column end-line end-column from-ns macro dead declaration member call
+           role]}]
   (when-let [found (sym/source-of source)]
     (cond-> (assoc found :line line :column column)
       end-line (assoc :end-line end-line)
@@ -976,6 +980,8 @@
       declaration (assoc :declaration declaration)
       ;; a library loaded by a (require ...) rather than by the ns form
       call (assoc :call true)
+      ;; what the name is written as a part of - see `usages-of'
+      role (assoc :role role)
       ;; which part of a package the place is - see `host-usages-of'
       member (assoc :member member))))
 
@@ -1046,6 +1052,54 @@
           span spans]
       (cond-> span m (assoc :member (str m))))))
 
+(defn- member-class
+  "The class FOUND - a method, a field or a constructor as `:symbol' answers
+  one - is a member of, or nil where it cannot be loaded."
+  ^Class [{:keys [class]}]
+  (when (string? class)
+    (try (Class/forName ^String class false (clojure.lang.RT/baseLoader))
+         (catch Throwable _ nil))))
+
+(defn- local-usages
+  "Every place of the local written where MSG says - its binding, marked, and its
+  uses - or nil where no local is written there, or MSG says nowhere.
+
+  A LOCAL IS ASKED BY WHERE IT IS, and not by name: the name says which of a
+  form's locals it is only to somebody who can see the form, and two locals of
+  one name are two things. So `:file', `:line' and `:column' - the file and the
+  position of the name at point, as the client has them - and the model is asked
+  which binding is written there. Asked before the name is resolved, since the
+  compiler's answer is the better one: a client that did not list the local in
+  `:locals' still has a local at point."
+  [{:keys [file line column]}]
+  (when (and (string? file) (integer? line) (integer? column))
+    (when-let [source (source-path file)]
+      (seq (if (names/cljs?)
+             (cljs-analysis/local-usages source line column)
+             ((of :find-local-usages) source line column))))))
+
+(defn- member-written-at
+  "The Java member written where MSG says, as `:symbol' answers one, or nil.
+
+  Asked of the compiler rather than of the text, for `local-usages's reason and
+  one more: (.length s) says nothing of what s is, so the text alone names no
+  member unless the client sent the :tag or :on it is called on - and the
+  compiler resolved it already, to the class that declares it. Clojure only."
+  [{:keys [file line column]}]
+  (when (and (not (names/cljs?)) (string? file) (integer? line) (integer? column))
+    (when-let [source (source-path file)]
+      ;; Not a constructor: what it is recorded at is the class's name, and a
+      ;; name written as a class is asked about as the class - Foo. and Foo/new
+      ;; say constructor in the text, and are read as one there.
+      (when-let [[class member] ((of :member-at) source line column)]
+        (when-not (= "new" member)
+          (let [c (member-class {:class class})
+                method? (some #(= member (.getName ^java.lang.reflect.Method %))
+                              (some-> c .getMethods))]
+            {:type (if method? "method" "field")
+             :name member
+             :class class}))))))
+
 (defn- usages-of
   "Every place FOUND is used, as `located' writes one.
 
@@ -1109,6 +1163,27 @@
         "host"
         (when cljs (host-usages-of found))
 
+        ;; A Java member, which the model keys by the class DECLARING it: what
+        ;; the compiler resolved (.length s) to is String's length, and
+        ;; (.toString s) Object's. What is asked about is a class and a name,
+        ;; so it is turned into the classes declaring the members of that name
+        ;; the class has - one, nearly always. A method is every overload of
+        ;; its name, static or not, which is what a name is.
+        ("method" "field" "constructor")
+        (when-not cljs
+          (when-let [^Class c (member-class found)]
+            (mapcat (fn [[^Class declaring member]]
+                      ((of :find-member-usages) (.getName declaring) member))
+                    (distinct
+                     (case type
+                       "method" (for [^java.lang.reflect.Method m (.getMethods c)
+                                      :when (= name (.getName m))]
+                                  [(.getDeclaringClass m) name])
+                       "field" (for [^java.lang.reflect.Field f (.getFields c)
+                                     :when (= name (.getName f))]
+                                 [(.getDeclaringClass f) name])
+                       "constructor" [[c "new"]])))))
+
         ;; A namespace is used where an ns form requires it, or a call of
         ;; require or use does - anywhere, a function body's included, where
         ;; clojure-lsp only counts a top-level one. Where its vars and keywords are used is not
@@ -1138,6 +1213,9 @@
   heading that does not say which let."
   [msg]
   (refuse-unless-recording! "record where names are used")
-  (let [found (:symbol (sym/named msg))]
-    {:symbol found
-     :usages (in-reading-order (keep located (usages-of found)))}))
+  (if-let [local (local-usages msg)]
+    {:symbol {:type "local" :name (:text msg)}
+     :usages (in-reading-order (keep located local))}
+    (let [found (or (member-written-at msg) (:symbol (sym/named msg)))]
+      {:symbol found
+       :usages (in-reading-order (keep located (usages-of found)))})))

@@ -190,6 +190,43 @@
             (is (= [["nsused/core.cljs" 2 14 "nsused.core"]] (at root found)))
             (is (= ["require"] (mapv :declaration (:usages found))))))))))
 
+(deftest what-a-clojurescript-name-is-written-as-a-part-of-is-said
+  (testing "a defmethod and a :keys symbol, as in Clojure"
+    (when (compiling?)
+      (let [root (source-root!)]
+        (written-file! root "roles/core.cljs"
+                       (str "(ns roles.core)\n"
+                            "(defmulti area :shape)\n"
+                            "(defmethod area :square [{:keys [side]}] (* side side))\n"
+                            "(defn total [xs] (map area xs))\n"))
+        (with-cljs-repl r
+          (eval! r "(require 'roles.core)")
+          (let [places (fn [text]
+                         (let [found (about {:op :usages :position :code :ns "roles.core" :text text})]
+                           (is (nil? (refused found)))
+                           (mapv (juxt :line :column :role) (:usages found))))]
+            (is (= [[3 12 "defmethod"] [4 23 nil]] (places "area")))
+            (is (= [[3 34 "destructuring"]] (places ":side")))))))))
+
+(deftest a-clojurescript-local-is-asked-about-where-it-is-written
+  (when (compiling?)
+    (let [root (source-root!)
+          path (written-file! root "locs/core.cljs"
+                              (str "(ns locs.core)\n"
+                                   "(defn f [x y]\n"
+                                   "  (let [x (inc x)]\n"
+                                   "    (+ x y)))\n"))]
+      (with-cljs-repl r
+        (eval! r "(require 'locs.core)")
+        (let [at (fn [line column]
+                   (about {:op :usages :position :code :ns "locs.core" :text "x"
+                           :file path :line line :column column}))]
+          (is (= {:type "local" :name "x"} (:symbol (at 4 8))))
+          (is (= [[3 9 "binding"] [4 8 nil]]
+                 (mapv (juxt :line :column :declaration) (:usages (at 4 8)))))
+          (is (= [[2 10 "binding"] [3 16 nil]]
+                 (mapv (juxt :line :column :declaration) (:usages (at 2 10))))))))))
+
 (deftest what-the-ns-form-writes-is-a-place-and-says-it-is-one
   (testing "a :refer is where the name is written without being used, and the
   answer says which of the places is which - a rename walks them all, a list of

@@ -235,6 +235,101 @@
             (disconnect c)
             (client/delete-recursively root)))))))
 
+(deftest what-a-name-is-written-as-a-part-of-is-said
+  (testing "a defmethod is a use of its multimethod, and a :keys symbol a use of
+  the keyword it destructures - each says which, so a client can show the
+  implementations apart from the calls"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (load! r (written-file! root "roles/a.clj"
+                                  (str "(ns roles.a)\n"
+                                       "(defmulti area :shape)\n"
+                                       "(defmethod area :square [{:keys [side]}] (* side side))\n"
+                                       "(defn total [xs] (map area xs))\n"
+                                       "(defn later [] (requiring-resolve 'roles.a/total))\n")))
+          (if (analysing? c)
+            (let [places (fn [text] (mapv (juxt :line :column :role) (:usages (usages! c "roles.a" text))))]
+              (is (= [[3 12 "defmethod"] [4 23 nil]] (places "area")))
+              (testing "a requiring-resolve is a use of the var it names, and a load
+              of its namespace at the namespace's part of the name"
+                (is (= [[5 36 "requiring-resolve"]] (places "total")))
+                (is (= [[5 36 "requiring-resolve" true]]
+                       (mapv (juxt :line :column :declaration :call)
+                             (:usages (usages! c "roles.a" "roles.a"))))))
+              (is (= [[3 34 "destructuring"]] (places ":side"))))
+            (is (string/includes? (or (refused (usages! c "roles.a" "area")) "") "does not record")))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
+(deftest a-local-is-asked-about-where-it-is-written
+  (testing "two locals of one name are two things, so a local is asked by the
+  place the name at point is written - and answered with its binding and its uses"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (let [path (written-file! root "locs/a.clj"
+                                    (str "(ns locs.a)\n"
+                                         "(defn f [x y]\n"
+                                         "  (let [x (inc x)]\n"
+                                         "    (+ x y)))\n"))
+                at (fn [line column]
+                     (request! c {:op :usages :id 1 :position :code :ns "locs.a" :text "x"
+                                  :file path :line line :column column}))]
+            (load! r path)
+            (if (analysing? c)
+              (do
+                (is (= {:type "local" :name "x"} (:symbol (at 4 8))))
+                (is (= [[3 9 "binding"] [4 8 nil]]
+                       (mapv (juxt :line :column :declaration) (:usages (at 4 8)))))
+                (is (= [[2 10 "binding"] [3 16 nil]]
+                       (mapv (juxt :line :column :declaration) (:usages (at 3 16))))))
+              (is (string/includes? (or (refused (at 4 8)) "") "does not record"))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
+(deftest a-java-member-is-used-where-the-compiler-resolved-it
+  (testing "a method, a field and a constructor are found however they were
+  written, at the member's name"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (let [path (written-file! root "members/a.clj"
+                                    (str "(ns members.a)\n"
+                                         "(defn f [^String s]\n"
+                                         "  [(.length s) (. s length) String/.length Integer/MAX_VALUE (StringBuilder. s)])\n"))]
+            (load! r path)
+          (if (analysing? c)
+            (let [places (fn [text] (let [found (usages! c "members.a" text)]
+                                      [(:type (:symbol found))
+                                       (mapv (juxt :line :column :end-column) (:usages found))]))]
+              (is (= ["method" [[3 6 12] [3 21 27] [3 37 43]]] (places "String/.length")))
+              (testing "and where it is written, which says what (.length s) is called
+              on when the text does not - the compiler resolved it"
+                (let [found (request! c {:op :usages :id 1 :position :code :ns "members.a"
+                                         :text ".length" :file path :line 3 :column 6})]
+                  (is (= {:type "method" :name "length" :class "java.lang.String"}
+                         (:symbol found)))
+                  (is (= [6 21 37] (mapv :column (:usages found))))))
+              (is (= ["field" [[3 52 61]]] (places "Integer/MAX_VALUE")))
+              (is (= ["constructor" [[3 63 76]]] (places "StringBuilder/new"))))
+            (is (string/includes? (or (refused (usages! c "members.a" "String/.length")) "")
+                                  "does not record"))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
 (deftest what-the-ns-form-writes-is-a-place-and-says-it-is-one
   (testing "a :refer and an :import are where a name is written without being
   used - what makes the short name mean the var, and what a rename has to rewrite

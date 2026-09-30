@@ -496,7 +496,12 @@
         (let [v (var-now v-sym macro)]
           (cond
             (nil? v)
-            (when-not (ns-changed (symbol (namespace v-sym)))
+            ;; a `requiring-resolve' loads what it names when it runs, so a name in
+            ;; a namespace nothing has loaded yet - an optional dependency - is not
+            ;; missing; one in a loaded namespace that does not have it is
+            (when-not (or (ns-changed (symbol (namespace v-sym)))
+                          (and (= :requiring-resolve (:role u))
+                               (nil? (find-ns (symbol (namespace v-sym))))))
               ;; as the source spelled it: the model keeps a spelling that is not
               ;; the var's own name, unqualified
               (let [written (str (or (:written u) (name v-sym)))]
@@ -508,9 +513,10 @@
 
             :else
             (concat
-             ;; a #' names the var, which is allowed of a private one
+             ;; a #' names the var, which is allowed of a private one - and so does
+             ;; a `requiring-resolve', which resolves whatever is interned
              (when (and (:private (meta v)) from-ns (not= (str from-ns) (namespace v-sym))
-                        (not (:var-form u)))
+                        (not (:var-form u)) (not= :requiring-resolve (:role u)))
                [(lint :private-call :error (str "#'" v-sym " is private") u)])
              (when-let [d (and (nil? (:declaration u)) (:deprecated (meta v)))]
                [(lint :deprecated-var :warning
