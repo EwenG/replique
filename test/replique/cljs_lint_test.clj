@@ -107,6 +107,22 @@
             (is (some #{["unresolved-var" 5 50 "Unresolved var: u/old"]}
                       (said (lints! core))))))))))
 
+(deftest a-variadic-function-of-one-arity-is-called-with-its-arity
+  (testing "a single-arity variadic defn leaves its signature in :method-params as a
+  seq rather than a vector, and a call of it is judged all the same"
+    (when (cljs/available?)
+      (let [root (source-root!)]
+        (written-file! root "va/util.cljs"
+                       (str "(ns va.util)\n"
+                            "(defn vary [a & more] a)\n"))
+        (let [core (written-file! root "va/core.cljs"
+                                  (str "(ns va.core (:require [va.util :as u]))\n"
+                                       "(defn g [] (u/vary) (u/vary 1) (u/vary 1 2 3))\n"))]
+          (with-cljs-repl r
+            (eval! r "(require 'va.core)")
+            (is (= [["invalid-arity" 2 12 "va.util/vary is called with 0 args but expects 1 or more"]]
+                   (said (lints! core))))))))))
+
 (deftest the-name-a-component-macro-gives-its-fn-is-not-a-binding
   (testing "hx's defnc writes (def C (fn C [props] ...)) out of the one symbol the
   source wrote: the fn's name is there so that it can call itself, and neither

@@ -250,7 +250,9 @@
   compiler dispatches on."
   [m]
   (let [of-lists (fn [a]
-                   (when (and (sequential? a) (seq a) (every? vector? a))
+                   ;; Not only vectors: ClojureScript's single-arity variadic
+                   ;; defn writes its signature as (remove '#{&} arglist), a seq
+                   (when (and (sequential? a) (seq a) (every? sequential? a))
                      (reduce (fn [[fixed vmin] args]
                                (let [i (.indexOf ^java.util.List args '&)]
                                  (if (neg? i)
