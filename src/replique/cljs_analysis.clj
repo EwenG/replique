@@ -63,6 +63,7 @@
          :find-usages (named 'find-usages)
          :find-macro-usages (named 'find-macro-usages)
          :find-keyword-usages (named 'find-keyword-usages)
+         :find-namespace-usages (named 'find-namespace-usages)
          :find-host-usages-where (named 'find-host-usages-where)
          :analysed-files (named 'analysed-files)
          :changed-files (named 'changed-files)
@@ -161,6 +162,16 @@
   (into (or ((of :find-usages) qsym) #{})
         (map #(assoc % :macro true))
         (or ((of :find-macro-usages) qsym) #{})))
+
+(defn namespace-usages
+  "Every place an ns form requires the namespace named NS-SYM, as the model
+  records a span - the library as a :require, a :use, a :require-macros or a
+  :use-macros writes it.
+
+  Refused where there is nothing to read, for `usages's reason."
+  [ns-sym]
+  (refuse-unless-available! "record where names are used")
+  (or ((of :find-namespace-usages) ns-sym) #{}))
 
 (defn keyword-usages
   "Every place KW is written, as the model records a span.

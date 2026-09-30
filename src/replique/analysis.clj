@@ -110,7 +110,8 @@
          :defining* (named 'defining*)
          :find-usages (named 'find-usages)
          :find-keyword-usages (named 'find-keyword-usages)
-         :find-class-usages (named 'find-class-usages)})
+         :find-class-usages (named 'find-class-usages)
+         :find-namespace-usages (named 'find-namespace-usages)})
       (catch Throwable _ nil))))
 
 (defn available?
@@ -139,7 +140,7 @@
   Asked once, at the top of an op, rather than where each kind of name is
   looked up. A process on stock clojure has no usages of anything, so the
   answer must not depend on what was asked about: a name that happens to
-  resolve to a namespace - which nothing records usages of either way - would
+  resolve to a special form - which nothing records usages of either way - would
   otherwise be answered with an empty list, and read as \"this is used
   nowhere\" rather than as \"this process cannot say\".
 
@@ -958,10 +959,13 @@
 
   And `:declaration', which is the other half of the same courtesy: `:refer'
   where the place is the name written in the `ns' form's own `:refer' or
-  `:only', and `:import' where it is the name written in its `:import'. Those
-  are places a rename has to rewrite and are not uses of anything, and a
-  client showing a list of call sites wants to say which is which."
-  [{:keys [source line column end-line end-column from-ns macro dead declaration member]}]
+  `:only', `:import' where it is the name written in its `:import', and the
+  clause - `:require', `:use' and ClojureScript's two macro ones - where it is
+  a namespace written as a library the form loads - or a (require ...) call
+  loads, which says so with `:call'. Those are places a rename
+  has to rewrite rather than calls of anything, and a client showing a list of
+  call sites wants to say which is which."
+  [{:keys [source line column end-line end-column from-ns macro dead declaration member call]}]
   (when-let [found (sym/source-of source)]
     (cond-> (assoc found :line line :column column)
       end-line (assoc :end-line end-line)
@@ -970,6 +974,8 @@
       macro (assoc :macro true)
       dead (assoc :dead dead)
       declaration (assoc :declaration declaration)
+      ;; a library loaded by a (require ...) rather than by the ns form
+      call (assoc :call true)
       ;; which part of a package the place is - see `host-usages-of'
       member (assoc :member member))))
 
@@ -1043,8 +1049,8 @@
 (defn- usages-of
   "Every place FOUND is used, as `located' writes one.
 
-  FOUND is what `:symbol' answers - the var, keyword or class the name at
-  point resolves to - rather than the name as it was written, which is the
+  FOUND is what `:symbol' answers - the var, keyword, class or namespace the
+  name at point resolves to - rather than the name as it was written, which is the
   whole point: the question is about the thing, and what a namespace calls it
   is a different question with its own op.
 
@@ -1054,8 +1060,8 @@
   loaded, and saying so is the client's business - it is the half that knows
   whether anything has been loaded at all.
 
-  THE MODEL IS THE DIALECT'S, and the three kinds are not the same three. A var
-  and a keyword are asked of both, each of its own model. A CLASS IS ASKED OF
+  THE MODEL IS THE DIALECT'S, and the kinds are not the same in both. A var,
+  a keyword and a namespace are asked of both, each of its own model. A CLASS IS ASKED OF
   CLOJURE ONLY, and answering nothing for ClojureScript is the honest answer
   rather than a gap: what a .cljs file refers to is a JavaScript global, a
   Closure namespace or an npm export, and the ClojureScript model records those
@@ -1103,13 +1109,21 @@
         "host"
         (when cljs (host-usages-of found))
 
-        ;; A namespace of ClojureScript's is where its vars are and has no uses
-        ;; of its own to answer with. One of Closure's is a package of the
-        ;; host's - gstr, or Long, standing for it - and where it is used is
-        ;; where anything of it is.
+        ;; A namespace is used where an ns form requires it, or a call of
+        ;; require or use does - anywhere, a function body's included, where
+        ;; clojure-lsp only counts a top-level one. Where its vars and keywords are used is not
+        ;; asked: each is a thing of its own with its own usages, and a
+        ;; `my.lib/f' answered here as well would make every use of every var of
+        ;; the namespace a use of the namespace. A Closure namespace is more
+        ;; than that - a package of the host's, gstr or Long standing for it -
+        ;; and where it is used is also where anything of it is.
         "namespace"
-        (when (and cljs (cljs/goog-ns? name))
-          (host-usages-of {:kind "goog-ns" :name name}))
+        (let [ns-sym (symbol name)]
+          (if cljs
+            (concat (cljs-analysis/namespace-usages ns-sym)
+                    (when (cljs/goog-ns? name)
+                      (host-usages-of {:kind "goog-ns" :name name})))
+            ((of :find-namespace-usages) ns-sym)))
 
         nil))))
 

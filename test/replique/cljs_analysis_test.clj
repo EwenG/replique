@@ -169,6 +169,27 @@
             name is, not a use of it"
               (is (not-any? #(= 2 (second %)) (at root found))))))))))
 
+(deftest a-clojurescript-namespace-is-used-where-an-ns-form-requires-it
+  (testing "the one place usages.util is used is the :require that loads it;
+  u/twice is a use of twice, asked about as twice"
+    (when (compiling?)
+      (let [root (source-root!)]
+        (written-file! root "nsused/util.cljs"
+                       (str "(ns nsused.util)\n"
+                            "(defn twice [x] (* 2 x))\n"))
+        (written-file! root "nsused/core.cljs"
+                       (str "(ns nsused.core\n"
+                            "  (:require [nsused.util :as u]))\n"
+                            "(defn run [] (u/twice 1) (nsused.util/twice 2))\n"))
+        (with-cljs-repl r
+          (eval! r "(require 'nsused.core)")
+          (let [found (about {:op :usages :position :code
+                              :ns "nsused.core" :text "nsused.util"})]
+            (is (nil? (refused found)))
+            (is (= "namespace" (:type (:symbol found))))
+            (is (= [["nsused/core.cljs" 2 14 "nsused.core"]] (at root found)))
+            (is (= ["require"] (mapv :declaration (:usages found))))))))))
+
 (deftest what-the-ns-form-writes-is-a-place-and-says-it-is-one
   (testing "a :refer is where the name is written without being used, and the
   answer says which of the places is which - a rename walks them all, a list of
@@ -644,7 +665,9 @@
             saying which"
               (is (= [[4 14 "trim"] [4 28 "trim"] [4 37 "trim"] [4 58 "startsWith"]]
                      (places (usages "gstr"))))
-              (is (= [[2 43 "trim" "refer"]] (declared (usages "gstr"))))
+              (testing "and the :require that loads it, a namespace's own use"
+                (is (= [[2 14 nil "require"] [2 43 "trim" "refer"]]
+                       (declared (usages "gstr")))))
               (is (= [[6 13 "readText"] [6 31 "readText"] [6 45 nil]]
                      (places (usages "hm"))))
               (is (= [[2 76 "readText" "refer"]] (declared (usages "hm"))))

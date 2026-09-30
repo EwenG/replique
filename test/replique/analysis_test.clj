@@ -189,6 +189,52 @@
             (disconnect c)
             (client/delete-recursively root)))))))
 
+(deftest a-namespace-is-used-where-an-ns-form-requires-it
+  (testing "probe.util is required by name, through a prefix list, by a :use
+  and by a call of require - and each of those is a place it is used. u/twice and probe.util/twice
+  are uses of twice, asked about as twice"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (written-file! root "probe/util.clj" util-clj)
+          (load! r (written-file! root "probe/core.clj" core-clj))
+          (load! r (written-file! root "probe/other.clj"
+                                  (str "(ns probe.other\n"
+                                       "  (:require (probe [util :as pu])))\n"
+                                       "(defn run [] (probe.util/twice 1))\n")))
+          (load! r (written-file! root "probe/used.clj"
+                                  (str "(ns probe.used\n"
+                                       "  (:use [probe.util :only [twice]]))\n"
+                                       "(defn later [] (require 'probe.util))\n"
+                                       "(comment (require 'probe.util))\n")))
+          (let [found (usages! c "probe.core" "probe.util")]
+            (if (analysing? c)
+              (do
+                (is (= {:type "namespace" :name "probe.util"}
+                       (select-keys (:symbol found) [:type :name])))
+                (is (= [["core.clj" 2 14 "probe.core"]
+                        ["other.clj" 2 21 "probe.other"]
+                        ["used.clj" 2 10 "probe.used"]
+                        ["used.clj" 3 26 "probe.used"]
+                        ["used.clj" 4 20 "probe.used"]]
+                       (at found)))
+                (testing "each spans the library as it is written, the prefix
+                list's without its prefix, and says which clause wrote it - and
+                a call of require, in a function nothing has called, says it is one,
+                and one in a comment block that it is code the program does not run"
+                  (is (= [[14 24 "require" nil nil] [21 25 "require" nil nil]
+                          [10 20 "use" nil nil] [26 36 "require" true nil]
+                          [20 30 "require" true "comment"]]
+                         (mapv (juxt :column :end-column :declaration :call :dead)
+                               (:usages found))))))
+              (is (string/includes? (or (refused found) "") "does not record"))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
 (deftest what-the-ns-form-writes-is-a-place-and-says-it-is-one
   (testing "a :refer and an :import are where a name is written without being
   used - what makes the short name mean the var, and what a rename has to rewrite
