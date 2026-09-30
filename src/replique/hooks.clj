@@ -6,10 +6,12 @@
   behalf. The one this was written for re-renders a React tree:
 
     (swap! replique.hooks/cljs-hooks assoc 'my-app
-           (fn [_] (replique.cljs/eval-form '(my-app.dev/-render))))
+           (fn [_] (replique.cljs/eval-form '(my-app.dev/-render)
+                                            {:broadcast? true})))
 
   in a `.replique/init.clj', which is where things like this live - see
-  `replique.core's init scripts.
+  `replique.core's init scripts. :broadcast? because the reload went to every
+  page you have open, and each of them needs redrawing - see `replique.cljs/eval-form'.
 
   WHAT IS DIFFERENT HERE FROM EVERY OTHER VERSION OF THIS IDEA is where the
   answer comes from. Replique master watched the root of every var of every

@@ -191,6 +191,18 @@
     (is (identical? (requiring-resolve 'clojure.cljs.repl/evaluate-all-within)
                     (#'cljs/of :evaluate-all-within)))))
 
+(deftest test-a-form-can-be-sent-to-every-page
+  ;; What a render hook wants after a reload that reached every page. Node is
+  ;; one runtime, so the answer is the same either way and the fan-out is the
+  ;; compiler's to test - what this catches is the option going nowhere.
+  (when (compiling?)
+    (binding [cljs/*target* :node]
+      (is (= {:status :success :value "3"}
+             (select-keys (cljs/eval-form '(+ 1 2) {:broadcast? true})
+                          [:status :value])))
+      (is (identical? (requiring-resolve 'clojure.cljs.repl/broadcast-form)
+                      (#'cljs/of :broadcast-form))))))
+
 (deftest test-it-does-not-wait-behind-the-repl
   ;; THE POINT OF THE SEAM, and the thing a later edit would quietly undo by
   ;; reaching for `with-evaluation' because everything else that evaluates uses

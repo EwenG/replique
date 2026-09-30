@@ -162,6 +162,8 @@
          ;; the repl's half: one form evaluated, and the two runtimes it can be
          ;; evaluated in
          :eval-form     (rpl 'eval-form)
+         ;; the same, sent to every page rather than one - see `eval-form'
+         :broadcast-form (rpl 'broadcast-form)
          :node-runtime  (rpl 'node-runtime)
          ;; and the tooling's half: raw JavaScript, in every runtime, within a
          ;; bound - see `eval-js'. ONE KEY AND NOT TWO, although the compiler
@@ -1410,11 +1412,20 @@
   a var defined at one has none (doc/cljs-compiler.md 5.63) - unless the client
   says, which is what #replique/src is for. Clojure's repl answers the same
   question the same way: what a client sends becomes *file*, and the var
-  records it."
+  records it.
+
+  :broadcast? sends the compiled form to every page connected to the browser
+  runtime rather than to the one a repl evaluates in, as a `load-file' is sent -
+  which is what a hook that re-renders after a reload wants, since the reload
+  reached them all. The answer is still the one page's, stack trace read back
+  as ClojureScript like any other; the others are waited for a few seconds and
+  what went wrong with them is only reported. On node, which is one runtime,
+  it changes nothing."
   ([form] (eval-form form nil))
-  ([form {:keys [text file]}]
+  ([form {:keys [text file broadcast?]}]
    (let [{:keys [cenv ^File out-dir]} (environment)
-         run #((of :eval-form) cenv (runtime!) form (compiler-opts out-dir) text)]
+         evaluate (of (if broadcast? :broadcast-form :eval-form))
+         run      #(evaluate cenv (runtime!) form (compiler-opts out-dir) text)]
      (if file
        (with-bindings* {(of :source-file) file} run)
        (run)))))
