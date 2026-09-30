@@ -332,13 +332,24 @@
 (defn- namespace-lints
   "The ns form's verdicts: requires, refers and imports nothing uses - which the
   namespace says, at the places NS-SPECS say the ns form wrote them. The last ns
-  form of a namespace, where a file has two: it is the one the namespace is."
-  [dialect ns-specs]
+  form of a namespace, where a file has two: it is the one the namespace is.
+
+  And a top-level call of `require' or `use' in REQUIRE-CALLS, which the file makes
+  as it loads and clj-kondo reads as one more clause of the ns form. Not one in a
+  function body, which loads when the function runs - maybe never, and then its
+  alias is not the namespace's - nor one in a (comment ...) or a #_."
+  [dialect ns-specs require-calls]
   (let [cljs? (= :cljs dialect)
         cenv (when cljs? (:cenv (cljs/environment)))
-        unused (fn [k ns] (if cljs? (call k cenv ns) (call k ns)))]
-    (for [{ns-sym :ns :keys [requires imports]} (vals (into {} (map (juxt :ns identity))
-                                                            ns-specs))
+        unused (memoize (fn [k ns] (if cljs? (call k cenv ns) (call k ns))))
+        calls (for [{:keys [top-level requires] :as c} require-calls
+                    :when top-level
+                    :let [live (remove :dead requires)]
+                    :when (seq live)]
+                (assoc c :requires live))]
+    (for [{ns-sym :ns :keys [requires imports]} (concat (vals (into {} (map (juxt :ns identity))
+                                                                    ns-specs))
+                                                        calls)
           :let [aliases (set (keys (unused :unused-aliases ns-sym)))
                 refers (set (keys (unused :unused-refers ns-sym)))
                 macro-aliases (when cljs? (set (keys (unused :unused-macro-aliases ns-sym))))
@@ -468,7 +479,7 @@
            :when (not (or (string/starts-with? n "_") (#{"&form" "&env"} n)))]
        (lint :unused-binding :warning (str "unused binding " n) l))
 
-     (namespace-lints dialect (:ns-specs facts))
+     (namespace-lints dialect (:ns-specs facts) (:require-calls facts))
 
      ;; unused-private-var: nothing uses it, but its own definition
      (for [{v-sym :var :as d} (:defs facts)

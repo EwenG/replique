@@ -305,6 +305,31 @@
             (disconnect c)
             (client/delete-recursively root)))))))
 
+(deftest a-require-the-file-calls-as-it-loads-is-one-of-its-clauses
+  (testing "a top-level require is linted as the ns form's clauses are, and one
+  in a function body or a comment is not"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (let [core (written-file! root "calls/core.clj"
+                                    (str "(ns calls.core)\n"
+                                         "(require '[clojure.set :as cset :refer [union]])\n"
+                                         "(require '[clojure.walk :as walk :refer [keywordize-keys]])\n"
+                                         "(walk/stringify-keys (keywordize-keys {}))\n"
+                                         "(defn f [] (require '[clojure.edn :as edn]) 1)\n"
+                                         "(comment (require '[clojure.data :as data]))\n"))]
+            (load! r core)
+            (when (analysing? c)
+              (is (= [["unused-namespace" 2 12 "namespace clojure.set is required but never used"]
+                      ["unused-referred-var" 2 41 "#'clojure.set/union is referred but never used"]]
+                     (said (lints! c core))))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
 (deftest a-var-redefined-at-a-prompt-is-not-the-one-on-disk
   (testing "a call of it is not judged by an arity the disk does not have, until a
   load defines it again - and the clients are told both times"
