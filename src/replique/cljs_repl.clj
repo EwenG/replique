@@ -35,6 +35,7 @@
             [replique.cljs :as cljs]
             [replique.cljs-analysis :as cljs-analysis]
             [replique.hooks :as hooks]
+            [replique.lint :as lint]
             [replique.protocol :as protocol]
             [replique.server :as server]
             [replique.state :as state])
@@ -440,7 +441,9 @@
          (fn []
            (let [rdr (cljs/reader (:in conn))]
              (try
-               (when main (load-main! conn flush-output! main))
+               ;; watched, as every evaluation is (`replique.hooks/around*'):
+               ;; compiling a program is what fills the model a lint reads
+               (when main (lint/watching* #(load-main! conn flush-output! main)))
                (loop []
                  (flush-output!)
                  (protocol/write-frame! conn (prompt-frame conn))

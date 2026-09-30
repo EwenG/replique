@@ -33,9 +33,20 @@
     (djson/read-str line :key-fn keyword)
     :eof))
 
-(defn request! [client msg]
+(defn request!
+  "Send MSG and read what answers it.
+
+  Past any `analysis' event, which says that what the compilers recorded has
+  changed and arrives whenever it did - after a load on another connection,
+  and before the reply to a `:remove-var' that caused it. An editor handles an
+  event where it handles events; a test asking a question wants the answer."
+  [client msg]
   (send! client msg)
-  (recv client))
+  (loop []
+    (let [f (recv client)]
+      (if (and (map? f) (= "event" (:tag f)) (= "analysis" (:event f)))
+        (recur)
+        f))))
 
 (defn disconnect [{:keys [^Socket socket]}]
   (try (.close socket) (catch Exception _)))

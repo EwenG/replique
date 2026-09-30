@@ -40,8 +40,8 @@
 
   AND ONLY WHERE THE EVALUATION WORKED. What a hook is called after is the
   program having changed; a file that would not compile did not change it."
-  (:require [replique.analysis :as analysis]
-            [replique.cljs :as cljs]))
+  (:require [replique.cljs :as cljs]
+            [replique.lint :as lint]))
 
 ;;; Where a hook is put
 
@@ -158,6 +158,8 @@
 
   DIALECT is the op's, since a var of that name can exist in both worlds."
   [dialect qsym]
+  ;; a use of it anywhere is now a use of nothing
+  (lint/changed!)
   (when (listening?)
     (fired! [{:dialect dialect :op :remove
               :ns (symbol (namespace qsym)) :var qsym}]))
@@ -177,9 +179,14 @@
   is still this connection's."
   ([f] (around* (constantly true) f))
   ([worked? f]
+   ;; AND THE CLIENTS SHOWING LINTS ARE TOLD, whether or not anything listens
+   ;; here: what they show is read from the model this evaluation may have just
+   ;; rewritten - see `replique.lint/watching*'. Which collects what F defines
+   ;; itself, and hands it on: a second `replique.analysis/defining*' under it would be a
+   ;; binding hiding what F defines from it.
    (if-not (listening?)
-     (f)
+     (lint/watching* f)
      (let [seen (volatile! [])
-           r    (analysis/defining* #(vswap! seen conj %) f)]
+           r    (lint/watching* #(vswap! seen conj %) f)]
        (when (worked? r) (fired! @seen))
        r))))

@@ -9,6 +9,7 @@
             [replique.completion :as completion]
             [replique.css :as css]
             [replique.hooks :as hooks]
+            [replique.lint :as lint]
             [replique.names :as names]
             [replique.protocol :as protocol]
             [replique.server :as server]
@@ -256,6 +257,17 @@
 (defmethod protocol/handle :usages [_ msg]
   (names/with-dialect msg
     (analysis/usages (assoc msg :position (protocol/as-keyword (:position msg))))))
+
+;; What is wrong with a file, as the compiler saw it - see `replique.lint'.
+;;
+;; Of the version of the file on disk the compiler last compiled, and only
+;; while that is the version on disk: the answer carries its `:mtime', which is
+;; how a client knows whether the text in front of it is the text the lints are
+;; about. Of the `:dialect's compiler, since a .cljc file is compiled by both and
+;; each has its own things to say about it.
+(defmethod protocol/handle :lints [_ msg]
+  (names/with-dialect msg
+    (lint/lints msg)))
 
 ;; What a #replique/reload would load, asked without loading anything.
 ;;
