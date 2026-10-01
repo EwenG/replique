@@ -39,12 +39,16 @@
   Past any `analysis' event, which says that what the compilers recorded has
   changed and arrives whenever it did - after a load on another connection,
   and before the reply to a `:remove-var' that caused it. An editor handles an
-  event where it handles events; a test asking a question wants the answer."
+  event where it handles events; a test asking a question wants the answer.
+
+  And past an `inspect-changed' event, for the same reason: it is written by
+  whichever thread changed the value, and arrives whenever that was."
   [client msg]
   (send! client msg)
   (loop []
     (let [f (recv client)]
-      (if (and (map? f) (= "event" (:tag f)) (= "analysis" (:event f)))
+      (if (and (map? f) (= "event" (:tag f))
+               (contains? #{"analysis" "inspect-changed"} (:event f)))
         (recur)
         f))))
 

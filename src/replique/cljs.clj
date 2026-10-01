@@ -165,13 +165,13 @@
          ;; the same, sent to every page rather than one - see `eval-form'
          :broadcast-form (rpl 'broadcast-form)
          :node-runtime  (rpl 'node-runtime)
-         ;; and the tooling's half: raw JavaScript, in every runtime, within a
-         ;; bound - see `eval-js'. ONE KEY AND NOT TWO, although the compiler
-         ;; has `evaluate-within' beside it: this map is all or nothing by
-         ;; design, so a key nothing calls could do nothing here but make
-         ;; `available?' false against a compiler that happens not to have it,
-         ;; and take the reading ops and the node repl down with it
+         ;; and the tooling's half: raw JavaScript, within a bound - in every
+         ;; runtime, see `eval-js', or in the one a repl evaluates in, see
+         ;; `eval-js-here'. Both, now that something calls each: this map is
+         ;; all or nothing by design, so a key nothing calls could only make
+         ;; `available?' false against a compiler that happens not to have it
          :evaluate-all-within (rpl 'evaluate-all-within)
+         :evaluate-within (rpl 'evaluate-within)
          ;; and the reader a form is read with, which is the compiler's and not
          ;; clojure's: it resolves in the ClojureScript world and reads
          ;; #?(:cljs ...) the right way round
@@ -683,6 +683,27 @@
                            " once - and a repl on node needs none of it.")
                       {:replique/error :no-cljs}))))
 
+;;; What a runtime says unasked
+;;
+;; A runtime answers what it is asked, prints, and - for whoever wants to be
+;; told when something changed in it, which is what an editor watching an atom
+;; in a page wants - notifies. A notification is a string, whose meaning is
+;; whoever sent it's: replique.inspect is the one that does, and it is the one
+;; that is told. One listener, and not a list of them, because one is what
+;; there is.
+
+(defonce ^:private listener (atom nil))
+
+(defn on-notify!
+  "Call F with the target and the content of everything a runtime notifies,
+  from now on."
+  [f]
+  (reset! listener f))
+
+(defn- notified [target content]
+  (when-let [f @listener]
+    (try (f target content) (catch Throwable _ nil))))
+
 ;; `runtime!' refreshes the main modules of the project when it starts the
 ;; browser runtime, and those live in the section below - which in turn needs
 ;; `runtime!' for the port to refresh them to.
@@ -710,11 +731,14 @@
     (or @runtime
         (locking runtime
           (or @runtime
-              (let [made (case target
+              (let [heard (fn [content] (notified target content))
+                    made (case target
                            :node    ((of :node-runtime) {:dir out-dir
-                                                         :out (runtime-writer env)})
+                                                         :out (runtime-writer env)
+                                                         :on-notify heard})
                            :browser ((browser-runtime) {:dir out-dir
-                                                       :out (runtime-writer env)}))]
+                                                       :out (runtime-writer env)
+                                                       :on-notify heard}))]
                 (reset! runtime made)
                 ;; THE PORT IS NEW AND THE FILES NAMING THE OLD ONE ARE STILL
                 ;; THERE. A main module is written into an application's own
@@ -770,6 +794,12 @@
 
 (defn- page-of [rt]
   {:runtime rt :session (:session rt)})
+
+(defn page
+  "The page `*target*' evaluates in now - see `page-of' - or nil where it has
+  no runtime. Two answers are the same page when they are `='."
+  []
+  (some-> @(:runtime (environment)) page-of))
 
 (defn params
   "What `*target*'s runtime prints under, as its results last said: a map of
@@ -1580,6 +1610,23 @@
     ;; Without the printing it went through, which the runtime says of every
     ;; script and is a repl's business rather than tooling's - see `params'
     (dissoc ((of :evaluate-all-within) runtime js ms) :params)))
+
+(defn eval-js-here
+  "Evaluate the JavaScript JS in the runtime of `*target*' a repl evaluates in,
+  giving up after MS - `eval-js', in one page rather than in all of them.
+
+  ONE PAGE, FOR WHAT IS ONLY THERE. A value inspected in a page is that
+  page's: the tab beside it is another program, with its own atoms, and asking
+  it about the first one's would be asking it about nothing. Where a repl
+  evaluates is where the value was made, so it is where it is looked at.
+
+  Never starts a runtime, unlike `eval-js': what asks this is looking at a
+  value that is already in one."
+  [js ms]
+  (let [{:keys [runtime]} (environment)]
+    (if-let [rt @runtime]
+      (dissoc ((of :evaluate-within) rt js ms) :params)
+      {:status :error :value "No runtime is running."})))
 
 ;;; The host's names
 

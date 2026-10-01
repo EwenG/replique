@@ -58,3 +58,20 @@
   (if-let [server (:server @process)]
     @(:connections server)
     {}))
+
+;; What has to happen when a connection goes, by who wants it to: a view an
+;; editor was inspecting through a control connection holds the value it shows,
+;; and nothing else would let go of it.
+(defonce ^:private on-close (atom {}))
+
+(defn on-close!
+  "Call F with the id of every connection that closes, from now on. K names
+  it, so that loading the namespace that says so again does not say it twice."
+  [k f]
+  (swap! on-close assoc k f))
+
+(defn closed!
+  "Say that the connection ID closed. Never throws."
+  [id]
+  (doseq [[_ f] @on-close]
+    (try (f id) (catch Throwable _ nil))))

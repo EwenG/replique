@@ -241,11 +241,13 @@
     ;; written about. What this loads stays loaded for every test after it,
     ;; here and in the other files - and more than one of them is written
     ;; about a namespace that has not been loaded.
-    (is (nil? (find-ns 'clojure.datafy)))
-    (is (empty? (candidates {:position :var :namespace "clojure.datafy" :text ""})))
-    (require 'clojure.datafy)
-    (is (contains? (typed {:position :var :namespace "clojure.datafy" :text "dataf"})
-                   "datafy"))))
+    ;; clojure.datafy was the one, until the inspector loaded it for every
+    ;; process
+    (is (nil? (find-ns 'clojure.xml)))
+    (is (empty? (candidates {:position :var :namespace "clojure.xml" :text ""})))
+    (require 'clojure.xml)
+    (is (contains? (typed {:position :var :namespace "clojure.xml" :text "pars"})
+                   "parse"))))
 
 (deftest a-var-of-a-refer-clojure-comes-from-core
   (testing "a refer-clojure names no namespace anywhere in itself"

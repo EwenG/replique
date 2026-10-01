@@ -20,6 +20,7 @@
             [replique.cljs-repl :as cljs-repl]
             [replique.directives :as directives]
             [replique.hooks :as hooks]
+            [replique.inspect :as inspect]
             [replique.protocol :as protocol]
             [replique.server :as server]
             [replique.state :as state])
@@ -398,7 +399,11 @@
          :print (fn [value]
                   (let [f (interruptible conn #(ret-frame value))]
                     (flush-output!)
-                    (protocol/write-frame! conn f)))
+                    (protocol/write-frame! conn f)
+                    ;; what *1 is to this repl, which no other thread can
+                    ;; read - and a view of this repl's results is asked
+                    ;; for on the control connection's
+                    (inspect/record-result! (:id conn) value)))
          :caught (fn [t]
                    (let [f (exception-frame t)]
                      (flush-output!)

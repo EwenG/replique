@@ -35,6 +35,7 @@
             [replique.cljs :as cljs]
             [replique.cljs-analysis :as cljs-analysis]
             [replique.hooks :as hooks]
+            [replique.inspect :as inspect]
             [replique.lint :as lint]
             [replique.protocol :as protocol]
             [replique.server :as server]
@@ -336,7 +337,10 @@
             (exception-frame result)
             (ret-frame result))]
     (flush-output!)
-    (protocol/write-frame! conn f)))
+    (protocol/write-frame! conn f)
+    ;; *1 is something else now, and only this side knows it happened
+    (when-not (= :error (:status result))
+      (inspect/evaluated!))))
 
 (defn- failed-here
   "A Throwable this side caught, in the shape a failed evaluation has.
@@ -513,6 +517,10 @@
                                          ;; one, is given the printing the
                                          ;; others print under first
                                          (cljs/apply-params!)
+                                         ;; and what an editor inspects
+                                         ;; with, which keeps what is tapped
+                                         ;; from now on
+                                         (inspect/prepare-page!)
                                          (let [evaluate (fn []
                                                           (cljs/eval-form form opts))]
                                            (hooks/around*

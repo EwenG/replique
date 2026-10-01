@@ -483,6 +483,124 @@
                 (is (= 2 (:print-length (:params (frame-tagged frames "prompt"))))))
               (finally (eval! r no-params) (.destroy page) (.waitFor page)))))))))
 
+;;; Inspecting a value of the runtime's
+
+(defn- inspect-events
+  "The inspect-changed events C receives in the next MS."
+  [c ms]
+  (let [^java.net.Socket socket (:socket c)
+        deadline (+ (System/currentTimeMillis) ms)]
+    (loop [seen []]
+      (let [left (- deadline (System/currentTimeMillis))]
+        (if (<= left 0)
+          seen
+          (do (.setSoTimeout socket (int (max 1 left)))
+              (let [f (try (recv c) (catch java.net.SocketTimeoutException _ ::none))]
+                (.setSoTimeout socket 10000)
+                (if (= ::none f)
+                  seen
+                  (recur (cond-> seen
+                           (= "inspect-changed" (:event f)) (conj f)))))))))))
+
+(defn- line-keyed [children k]
+  (first (filter #(= k (:key %)) children)))
+
+(deftest test-a-value-of-the-runtime-is-inspected-where-it-is
+  (when (compiling?)
+    (with-repl [r]
+      (let [c (client/control-client @the-process)]
+        (try
+          (eval! r "#replique/ns insp.node\n(def state (atom {:a 1 :b (vec (range 300)) :o #js {:x 1}}))")
+          (let [o (request! c {:op :inspect :dialect :cljs :target :node
+                               :source {:var "insp.node/state"} :history 3 :id 1})
+                b (line-keyed (:children o) ":b")]
+            (is (= "reply" (:tag o)))
+            (is (= "map" (:kind (:root o))))
+            (is (= 300 (:count b)))
+            (is (:expandable b))
+            (testing "a page at a time, out of the runtime"
+              (let [page (request! c {:op :inspect-children :view (:view o) :node (:node b)
+                                      :offset 298 :id 2})]
+                (is (= ["298" "299"] (mapv :key (:children page))))
+                (is (false? (:more page)))))
+            (testing "a JavaScript object is browsed by its properties"
+              (is (= "object" (:kind (line-keyed (:children o) ":o")))))
+            (testing "and a swap in the runtime is said, by the runtime"
+              (eval! r "(swap! state assoc :a 2)")
+              (is (= 1 (count (inspect-events c 2000))))
+              (testing "once, until the view is asked for again"
+                (eval! r "(swap! state assoc :a 2)")
+                (is (empty? (inspect-events c 500))))
+              (let [again (request! c {:op :inspect-refresh :view (:view o) :id 3})]
+                (is (:changed (line-keyed (:children again) ":a")))
+                (is (= "2" (:value (line-keyed (:children again) ":a"))))
+                (is (= {:count 2} (:history again))))
+              (eval! r "(swap! state assoc :a 3)")
+              (is (= 1 (count (inspect-events c 2000)))))
+            (testing "and what is shown is brought to the repl by the code that
+            reaches it, or by the view"
+              (let [p (request! c {:op :inspect-path :view (:view o) :node (:node b) :id 4})]
+                (is (= "(-> (deref insp.node/state) :b)" (:code p)))
+                (is (= "300" (:value (frame-tagged (eval! r (str "(count " (:value p) ")")) "ret")))))))
+          (testing "and a var the runtime does not have is said to be one"
+            (is (= "unknown-var" (:error (request! c {:op :inspect :dialect :cljs :target :node
+                                                      :source {:var "insp.node/nope"} :id 5})))))
+          (finally (disconnect c)))))))
+
+(deftest test-what-a-runtime-tapped-and-returned-are-views-too
+  (when (compiling?)
+    (with-repl [r]
+      (let [c (client/control-client @the-process)]
+        (try
+          ;; before any view: the repl loads what keeps them before its forms
+          (eval! r "(tap> {:tapped :early})")
+          (Thread/sleep 200)
+          (let [o (request! c {:op :inspect :dialect :cljs :target :node
+                               :source {:taps true} :id 1})]
+            (is (some #{"{:tapped :early}"} (map :value (:children o)))))
+          (let [o (request! c {:op :inspect :dialect :cljs :target :node
+                               :source {:results true} :id 2})]
+            (is (= ["*1" "*2" "*3"] (mapv :key (:children o))))
+            (eval! r ":latest")
+            (is (seq (inspect-events c 1000)))
+            (is (= ":latest" (:value (line-keyed (:children (request! c {:op :inspect-refresh
+                                                                         :view (:view o) :id 3}))
+                                                 "*1")))))
+          (finally (disconnect c)))))))
+
+(deftest test-a-view-of-a-page-that-reloaded-is-gone
+  (when (compiling?)
+    (with-repl [r {:dialect :cljs :target :browser}]
+      (let [url (:url (:runtime r))
+            c (client/control-client @the-process)
+            connected! (fn []
+                         (loop [waited 0]
+                           (when (and (< waited 20000)
+                                      (not= "3" (:value (frame-tagged (eval! r "(+ 1 2)") "ret"))))
+                             (Thread/sleep 200)
+                             (recur (+ waited 200)))))]
+        (try
+          (let [o (let [page (start-page! url)]
+                    (try
+                      (connected!)
+                      (eval! r "#replique/ns insp.page\n(def state (atom 1))")
+                      (let [o (request! c {:op :inspect :dialect :cljs :target :browser
+                                           :source {:var "insp.page/state"} :id 1})]
+                        (is (= "1" (:value (:root o))))
+                        (testing "a page says a swap as node does"
+                          (eval! r "(reset! state 2)")
+                          (is (seq (inspect-events c 2000))))
+                        o)
+                      (finally (.destroy page) (.waitFor page))))]
+            (let [page (start-page! url)]
+              (try
+                (connected!)
+                (testing "a new page is a new program, without the view"
+                  (is (= "view-gone" (:error (request! c {:op :inspect-refresh
+                                                          :view (:view o) :id 2})))))
+                (finally (.destroy page) (.waitFor page)))))
+          (finally (disconnect c)))))))
+
 (deftest test-two-targets-are-two-programs
   (when (compiling?)
     ;; Q2, and the reason for it: a browser and node resolve npm packages

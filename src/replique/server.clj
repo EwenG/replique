@@ -135,7 +135,8 @@
 
 (defn- close-connection! [server {:keys [id ^Socket socket]}]
   (swap! (:connections server) dissoc id)
-  (try (.close socket) (catch Exception _)))
+  (try (.close socket) (catch Exception _))
+  (state/closed! id))
 
 (defn- accept-connection! [server ^Socket socket client-id]
   (let [conn (connection server socket client-id)]
