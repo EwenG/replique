@@ -330,9 +330,36 @@
   (try (f)
        (finally (server/done-evaluating! conn))))
 
+;;; Printing params
+
+(def ^:private param-kinds
+  "The params a handshake may set, and what each one takes. The same four the
+  prompt reports, under the same names, so that what a prompt said can be
+  handed back as it is - which is what an editor reopening a repl does."
+  {:print-length :count
+   :print-level :count
+   :print-meta :boolean
+   :warn-on-reflection :boolean})
+
+(defn- set-params!
+  "Set the params named in params, inside the bindings clojure.main/repl
+  establishes. One left out is left as clojure.main sets it."
+  [params]
+  (when (contains? params :print-length)
+    (set! *print-length* (:print-length params)))
+  (when (contains? params :print-level)
+    (set! *print-level* (:print-level params)))
+  (when (contains? params :print-meta)
+    (set! *print-meta* (boolean (:print-meta params))))
+  (when (contains? params :warn-on-reflection)
+    (set! *warn-on-reflection* (boolean (:warn-on-reflection params)))))
+
 (defn repl
-  "Run a repl on conn until the client disconnects."
-  [conn]
+  "Run a repl on conn until the client disconnects.
+
+  params are set before the first prompt, which reports them - see
+  `set-params!'."
+  [conn params]
   (let [out (frame-writer conn "out")
         err (frame-writer conn "err")
         ;; Output is flushed before every frame that concludes something, so
@@ -350,7 +377,8 @@
                  ;; assoc rather than a fixed map: the data readers of the
                  ;; project being worked on must keep working
                  (set! *data-readers* (merge *data-readers*
-                                             directives/data-readers)))
+                                             directives/data-readers))
+                 (set-params! params))
          :read (make-repl-read conn)
          ;; ROUND THE EVALUATION AND NOT ROUND A DIRECTIVE, because what defines
          ;; something is not only a load: a `defn' typed here, a `require', a
@@ -387,12 +415,15 @@
 (defn- accept-clj!
   "Take over conn as a Clojure repl."
   [conn hello]
-  (protocol/write-frame! conn (protocol/reply hello (assoc (state/info)
-                                                           :role "repl"
-                                                           :connection (:id conn))))
-  ;; after the reply, as for a control connection
-  (server/set-role! conn :repl)
-  (repl conn))
+  (if-let [why (protocol/invalid-params param-kinds (:params hello))]
+    (protocol/write-frame! conn (protocol/params-error hello param-kinds why))
+    (do
+      (protocol/write-frame! conn (protocol/reply hello (assoc (state/info)
+                                                               :role "repl"
+                                                               :connection (:id conn))))
+      ;; after the reply, as for a control connection
+      (server/set-role! conn :repl)
+      (repl conn (:params hello)))))
 
 (defmethod protocol/accept-role :repl [conn hello]
   ;; ONE ROLE AND TWO DIALECTS, rather than two roles. A repl connection is one

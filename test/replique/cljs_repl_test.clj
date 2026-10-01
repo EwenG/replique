@@ -131,10 +131,12 @@
         (is (= "cljs" (:dialect (:prompt r))))
         (is (= "node" (:target (:prompt r))))
         (is (= (:connection (:hello r)) (:connection (:prompt r)))))
-      (testing "and no params, which a Clojure prompt has and this cannot"
-        ;; the *print-* the last value went through, which for ClojureScript
-        ;; happened in another process
-        (is (nil? (:params (:prompt r))))))))
+      (testing "and params, when there are any, are the runtime's three"
+        ;; the *print-* the runtime prints under, as its last result said - so
+        ;; absent before anything was evaluated on it, which depends on what ran
+        ;; before this - and no reflection, which is the JVM's
+        (when-let [params (:params (:prompt r))]
+          (is (= #{:print-length :print-level :print-meta} (set (keys params)))))))))
 
 (deftest test-a-dialect-this-process-does-not-speak-is-refused-by-name
   (let [r (repl-client @the-process {:dialect :fortran} slow)]
@@ -415,6 +417,71 @@
               (is (string/includes?
                    (:value (frame-tagged (eval! r "(pages)") "ret")) "*")))
             (finally (.destroy page))))))))
+
+;;; The printing a runtime prints under
+
+(def ^:private no-params "(set! *print-length* nil) (set! *print-level* nil) (set! *print-meta* false)")
+
+(deftest test-the-prompt-says-what-the-runtime-prints-under
+  (when (compiling?)
+    (with-repl [a]
+      (with-repl [b]
+        (try
+          (let [frames (eval! a "(set! *print-length* 2)")]
+            (is (= {:print-length 2 :print-level nil :print-meta false}
+                   (:params (frame-tagged frames "prompt")))))
+          (is (= "(0 1 ...)" (:value (frame-tagged (eval! a "(range 5)") "ret"))))
+          (testing "and it is the runtime's, so another repl on it prints the same way"
+            (let [frames (eval! b "(range 5)")]
+              (is (= "(0 1 ...)" (:value (frame-tagged frames "ret"))))
+              (is (= 2 (:print-length (:params (frame-tagged frames "prompt")))))))
+          (finally (eval! a no-params)))))))
+
+(deftest test-a-handshake-says-what-the-runtime-is-to-print-under
+  (when (compiling?)
+    (with-repl [r {:dialect :cljs :target :node :params {:print-level 1}}]
+      (try
+        (testing "the first prompt says so before anything is evaluated"
+          (is (= 1 (:print-level (:params (:prompt r))))))
+        (testing "and the first form is printed under it"
+          (is (= "[1 #]" (:value (frame-tagged (eval! r "[1 [2]]") "ret")))))
+        (finally (eval! r no-params))))))
+
+(deftest test-params-a-clojurescript-repl-cannot-be-started-with-are-refused
+  (when (compiling?)
+    (doseq [params [{:warn-on-reflection true} {:print-length -1} {:print-meta 1}]]
+      (let [r (cljs-repl! {:dialect :cljs :target :node :params params})]
+        (try
+          (is (= "error" (:tag (:hello r))) (pr-str params))
+          (is (= "invalid-params" (:error (:hello r))) (pr-str params))
+          (finally (disconnect r)))))))
+
+(deftest test-a-page-that-reloads-prints-the-way-the-last-one-did
+  (when (compiling?)
+    (with-repl [r {:dialect :cljs :target :browser}]
+      (let [url (:url (:runtime r))
+            connected! (fn []
+                         (loop [waited 0]
+                           (when (and (< waited 20000)
+                                      (not= "3" (:value (frame-tagged (eval! r "(+ 1 2)") "ret"))))
+                             (Thread/sleep 200)
+                             (recur (+ waited 200)))))]
+        (try
+          (let [page (start-page! url)]
+            (try
+              (connected!)
+              (eval! r "(set! *print-length* 2)")
+              (is (= "(0 1 ...)" (:value (frame-tagged (eval! r "(range 5)") "ret"))))
+              (finally (.destroy page) (.waitFor page))))
+          ;; a new page is a new program, with cljs.core's defaults in it - and
+          ;; is given the printing the last one had before the first form
+          (let [page (start-page! url)]
+            (try
+              (connected!)
+              (let [frames (eval! r "(range 5)")]
+                (is (= "(0 1 ...)" (:value (frame-tagged frames "ret"))))
+                (is (= 2 (:print-length (:params (frame-tagged frames "prompt"))))))
+              (finally (eval! r no-params) (.destroy page) (.waitFor page)))))))))
 
 (deftest test-two-targets-are-two-programs
   (when (compiling?)

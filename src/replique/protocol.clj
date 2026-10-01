@@ -483,6 +483,44 @@
   frames by the caller."
   (fn [conn msg] (:op msg)))
 
+;;; The printing a repl is started with
+
+(defn invalid-params
+  "Why PARAMS cannot be what a repl is started with, or nil when they can.
+
+  KINDS maps each param a repl takes to what it takes - :count or :boolean -
+  and is the repl's to say: a Clojure repl takes `:warn-on-reflection' and a
+  ClojureScript one has no such thing. The names are the ones every prompt
+  reports them under, so what a prompt said can be handed back as it is.
+
+  Nil is a value of every param: a count of nil is no limit, and a boolean of
+  nil is false - which is what a client reading the prompt's JSON with null
+  and false as one value hands back."
+  [kinds params]
+  (cond
+    (nil? params) nil
+    (not (map? params)) "they are not a map"
+    :else
+    (some (fn [[k v]]
+            (case (get kinds k)
+              nil (str (pr-str k) " is not one of them")
+              :count (when-not (or (nil? v) (nat-int? v))
+                       (str (pr-str k) " is a count or nil, and was "
+                            (pr-str v)))
+              :boolean (when-not (or (nil? v) (boolean? v))
+                         (str (pr-str k) " is a boolean, and was "
+                              (pr-str v)))))
+          params)))
+
+(defn params-error
+  "The error frame refusing the handshake HELLO, whose :params are wrong
+  because of WHY - see `invalid-params'."
+  [hello kinds why]
+  (error hello :invalid-params
+         (str "A repl is started with these params, each one optional, and"
+              " :params " why ": " (pr-str (:params hello)))
+         {:params (mapv name (sort (keys kinds)))}))
+
 (def no-reply ::no-reply)
 
 (defmethod handle :default [_ msg]

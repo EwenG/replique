@@ -58,21 +58,33 @@
   (protocol/buffering-writer
    (fn [s] (protocol/write-frame! conn (protocol/frame {:tag tag :string s})))))
 
+(def ^:private param-kinds
+  "The params a ClojureScript repl reports and may be started with: the
+  Clojure repl's, minus `:warn-on-reflection', which ClojureScript has no
+  such thing as."
+  {:print-length :count
+   :print-level :count
+   :print-meta :boolean})
+
 (defn- prompt-frame
   "The repl is ready, and this is the state it is ready in.
 
-  NO `params', which the Clojure prompt carries: what it carries there is the
-  *print-* the last result went through, and here the value was printed in
-  another process by a printer this one does not set. What replaces it is
-  `target', which is the thing about a ClojureScript repl that a client cannot
-  work out and has to be told - and `dialect', so that a client reading frames
-  need not remember which of its connections was which."
+  `params' as the Clojure prompt carries them, with one difference: they are
+  the RUNTIME's, as its last result said - the value was printed there, by
+  cljs.core's printer - and so they are shared with every repl on that
+  runtime. Absent until a result has said or a handshake has asked. See
+  `replique.cljs/params'.
+
+  `target' as well, which is the thing about a ClojureScript repl that a client
+  cannot work out and has to be told - and `dialect', so that a client reading
+  frames need not remember which of its connections was which."
   [conn]
-  (protocol/frame {:tag "prompt"
-                   :connection (:id conn)
-                   :ns (str (cljs/current-ns))
-                   :dialect "cljs"
-                   :target (name cljs/*target*)}))
+  (protocol/frame (cond-> {:tag "prompt"
+                           :connection (:id conn)
+                           :ns (str (cljs/current-ns))
+                           :dialect "cljs"
+                           :target (name cljs/*target*)}
+                    (cljs/params) (assoc :params (cljs/params)))))
 
 (defn- ret-frame [result]
   (protocol/frame {:tag "ret"
@@ -318,6 +330,8 @@
 (defn- report!
   "Frame one result, after everything it printed."
   [conn flush-output! result]
+  ;; Whatever the runtime said it printed under, which the next prompt reports
+  (cljs/heard-params! (:params result))
   (let [f (if (= :error (:status result))
             (exception-frame result)
             (ret-frame result))]
@@ -495,6 +509,10 @@
                                          ;; form printed - this target's output
                                          ;; is still this connection's here and
                                          ;; is not once this returns.
+                                         ;; A page that reloaded, or a new
+                                         ;; one, is given the printing the
+                                         ;; others print under first
+                                         (cljs/apply-params!)
                                          (let [evaluate (fn []
                                                           (cljs/eval-form form opts))]
                                            (hooks/around*
@@ -607,6 +625,11 @@
                                  (pr-str (:target hello)))
                             {:targets (mapv name (sort cljs/targets))}))
 
+      (protocol/invalid-params param-kinds (:params hello))
+      (protocol/write-frame!
+       conn (protocol/params-error hello param-kinds
+                                   (protocol/invalid-params param-kinds (:params hello))))
+
       (and (some? (:main hello)) (nil? main))
       (protocol/write-frame!
        conn (protocol/error hello :invalid-main
@@ -640,4 +663,7 @@
         ;; after the reply, as for every other connection
         (server/set-role! conn :repl)
         (when (runtime-event! conn target)
+          ;; After the runtime, which is what made the environment they are
+          ;; kept in - and before the first prompt, which reports them
+          (cljs/want-params! (:params hello))
           (repl conn (some-> main symbol)))))))

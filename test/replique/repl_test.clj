@@ -207,6 +207,37 @@
             (is (= "(0 1 2 ...)" (:value (frame-tagged frames "ret"))))))
         (finally (disconnect r))))))
 
+(deftest the-handshake-sets-the-params
+  (with-process [info nil]
+    (testing "the first prompt reports what the handshake set"
+      (let [r (repl-client info {:params {:print-length 3 :print-meta true}})]
+        (try
+          (is (= {:print-length 3 :print-level nil :print-meta true
+                  :warn-on-reflection false}
+                 (:params (:prompt r))))
+          (is (= "(0 1 2 ...)" (:value (frame-tagged (eval! r "(range 100)") "ret"))))
+          (finally (disconnect r)))))
+    (testing "and what a prompt reported can be handed back as it is"
+      (let [r (repl-client info {:params {:print-length nil :print-level 2
+                                          :print-meta nil
+                                          :warn-on-reflection true}})]
+        (try
+          (is (= {:print-length nil :print-level 2 :print-meta false
+                  :warn-on-reflection true}
+                 (:params (:prompt r))))
+          (finally (disconnect r)))))
+    (testing "a param that cannot be set refuses the repl"
+      (doseq [params [{:print-length -1}
+                      {:print-length "3"}
+                      {:print-meta 1}
+                      {:print-namespace-maps true}
+                      [:print-length 3]]]
+        (let [r (repl-client info {:params params})]
+          (try
+            (is (= "error" (:tag (:hello r))) (pr-str params))
+            (is (= "invalid-params" (:error (:hello r))) (pr-str params))
+            (finally (disconnect r))))))))
+
 (deftest stdin-is-a-real-stream
   (testing "the repl reads from the socket itself, which is what makes
   (read-line), nested repls and debuggers work"

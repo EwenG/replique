@@ -591,7 +591,9 @@
                 ;; and who is having it, which is what the runtime's own output
                 ;; is routed by
                 :evaluating (atom nil)
-                :runtime  (atom nil)}]
+                :runtime  (atom nil)
+                ;; the printing the runtime prints under - see `params'
+                :params   (atom {:params nil :applied-to nil})}]
       ;; CLJS.CORE BEFORE ANYBODY LOOKS. A fresh environment is an EMPTY symbol
       ;; table - the two worlds are made here and nothing has been compiled into
       ;; them - so a completion asked of it would answer that the language has no
@@ -747,6 +749,109 @@
        (case target
          :node    true
          :browser (some? (:session rt)))))))
+
+;;; The printing a runtime prints under
+;;
+;; ONE PER RUNTIME AND NOT ONE PER REPL, because the printer is the runtime's:
+;; *print-length* is a root value of cljs.core in one JavaScript program, and
+;; two repls on the browser are two repls on that program. A set! at one of
+;; them is a set! at both.
+;;
+;; KEPT HERE, BECAUSE THE RUNTIME FORGETS. A page that reloads is a new program
+;; with cljs.core's defaults in it, and so is a second tab. Every result says
+;; what it was printed under - runtime.js reads cljs.core's vars after the
+;; script ran - and what was heard is given back to a page that has not had it,
+;; before the next form is evaluated there. Without that a refresh would quietly
+;; undo what the developer chose, which is the one thing worth keeping.
+;;
+;; `:applied-to' is the page that has them: the runtime and its `:session',
+;; which is a different number after every refresh and every new tab. Node has
+;; no session, and its one program lasts as long as the runtime does.
+
+(defn- page-of [rt]
+  {:runtime rt :session (:session rt)})
+
+(defn params
+  "What `*target*'s runtime prints under, as its results last said: a map of
+  `:print-length', `:print-level' and `:print-meta', or nil before anything
+  has been heard or asked for."
+  []
+  (:params @(:params (environment))))
+
+(defn want-params!
+  "Have `*target*'s runtime print under PARAMS from the next evaluation on -
+  what a repl was asked to start with. Merged over what it had, and given to
+  every page before the next form, which is evaluated under them."
+  [params]
+  (when (seq params)
+    (swap! (:params (environment))
+           (fn [m] {:params (merge (:params m) params) :applied-to nil}))))
+
+(defn heard-params!
+  "Keep PARAMS, what a result said it was printed under.
+
+  ONLY FROM A PAGE THAT HAS BEEN GIVEN WHAT IS KEPT, or where nothing is kept
+  yet. A page that reloaded answers with cljs.core's defaults until it has been
+  given them back, and keeping those would be the refresh undoing the choice
+  after all."
+  [params]
+  (when params
+    (let [{:keys [runtime] :as env} (environment)
+          here (page-of @runtime)]
+      (swap! (:params env)
+             (fn [{kept :params applied-to :applied-to :as m}]
+               (if (or (nil? kept) (= applied-to here))
+                 {:params params :applied-to here}
+                 m))))))
+
+(declare eval-js)
+
+(def ^:private param-properties
+  "cljs.core's munged property name for each param - see runtime.js, which
+  reads them under the same names."
+  {:print-length "$STAR$print_length$STAR$"
+   :print-level "$STAR$print_level$STAR$"
+   :print-meta "$STAR$print_meta$STAR$"})
+
+(defn- params-js
+  "JavaScript setting PARAMS on cljs.core, loading it first where the page has
+  not yet, and answering whether it could."
+  [params]
+  (str "(async () => {"
+       " const core = () => $CLJS.namespaces.get(\"cljs.core\");"
+       " if (!core()) await $CLJS.require(\"cljs.core\");"
+       " const c = core();"
+       " if (!c) return false;"
+       (apply str (for [[k v] params
+                        :let [prop (param-properties k)]
+                        :when prop]
+                    (str " c." prop " = "
+                         (cond (nil? v) (if (= :print-meta k) "false" "null")
+                               :else (str v))
+                         ";")))
+       " return true; })()"))
+
+(defn apply-params!
+  "Give what is kept to every page of `*target*' that has not had it. Before a
+  form is evaluated, so that the form is printed under it.
+
+  Bounded, for `eval-js''s reason: a page asleep in a tab is no reason for the
+  form somebody typed not to be evaluated. A page that could not be given them
+  is given them before the next form instead."
+  []
+  (let [{:keys [target runtime] :as env} (environment)
+        rt @runtime
+        {:keys [params applied-to]} @(:params env)]
+    (when (and rt params
+               (not= applied-to (page-of rt))
+               (or (= :node target) (some? (:session rt))))
+      (let [here (page-of rt)
+            r (eval-js (params-js params) 5000)]
+        (when (= "true" (:value r))
+          (swap! (:params env)
+                 (fn [m] (if (= (:params m) params)
+                           (assoc m :applied-to here)
+                           m))))))))
 
 (defn browser-runtime-url
   "The URL the browser runtime of this process is serving on, or nil.
@@ -1472,7 +1577,9 @@
   ;; is `environment' in writing rather than by argument evaluation order:
   ;; `of' answers nil where there is none, and nil is not a thing to call
   (let [runtime (runtime!)]
-    ((of :evaluate-all-within) runtime js ms)))
+    ;; Without the printing it went through, which the runtime says of every
+    ;; script and is a repl's business rather than tooling's - see `params'
+    (dissoc ((of :evaluate-all-within) runtime js ms) :params)))
 
 ;;; The host's names
 
