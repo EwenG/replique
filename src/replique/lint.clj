@@ -590,15 +590,28 @@
      ;; and reading "the form that defines it" as the whole of that made every one
      ;; of them unused by every other. What the rule is about is a definition's own
      ;; body, so that is what is asked - see `enclosing-def'.
-     (for [{v-sym :var :as d} (:defs facts)
-           :let [v (var-now v-sym)]
-           :when (and v (:private (meta v)))
-           :let [uses (filter (fn [u] (and (counts-as-use? u)
-                                           (not (and (= source (:source u))
-                                                     (= v-sym (inside u))))))
-                              (call :find-usages v-sym))]
-           :when (empty? uses)]
-       (lint :unused-private-var :warning (str "Unused private var " v-sym) d :scope "file"))
+     ;;
+     ;; AND A USE THAT IS NOWHERE, which is what a core.async `go' leaves of every
+     ;; var it rewrites - see :refs in clojure.analysis/file-facts. It has no place,
+     ;; only the top-level form it is in, so its own definition is all of that form:
+     ;; one in a form that defines nothing but the var is the var calling itself, and
+     ;; one in a form that defines others too is taken for a use - a warning missed
+     ;; rather than one that is wrong.
+     (let [form-defs (reduce (fn [m d] (update m (own-form d) (fnil conj #{}) (:var d)))
+                             {} (:defs facts))]
+       (for [{v-sym :var :as d} (:defs facts)
+             :let [v (var-now v-sym)]
+             :when (and v (:private (meta v)))
+             :let [uses (filter (fn [u] (and (counts-as-use? u)
+                                             (not (and (= source (:source u))
+                                                       (= v-sym (inside u))))))
+                                (call :find-usages v-sym))
+                   refs (filter (fn [r] (and (= v-sym (:var r))
+                                             (counts-as-use? r)
+                                             (not= #{v-sym} (form-defs (own-form r)))))
+                                (:refs facts))]
+             :when (and (empty? uses) (empty? refs))]
+         (lint :unused-private-var :warning (str "Unused private var " v-sym) d :scope "file")))
 
      ;; redefined-var: defined again in another top-level form, not by `declare'
      (for [[v-sym defs] (group-by :var (:defs facts))

@@ -282,6 +282,38 @@
             (disconnect c)
             (client/delete-recursively root)))))))
 
+(deftest a-private-var-a-macro-left-nowhere-is-still-called
+  (testing "a core.async `go' hands back every var it rewrites as a fresh symbol,
+  spelled in full and with no position: the call is still a call, and only the
+  var's own form calling it is not"
+    (with-process [info nil]
+      (let [root (source-root!)
+            r (repl-client info)
+            c (control-client info)]
+        (try
+          (let [core (written-file! root "nowhere/core.clj"
+                                    (str "(ns nowhere.core (:require [clojure.walk]))\n"
+                                         "(defmacro requalified [& body]\n"
+                                         "  (clojure.walk/postwalk\n"
+                                         "   #(if-let [v (and (symbol? %) (resolve %))]\n"
+                                         "      (if (var? v)\n"
+                                         "        (symbol (str (.ns ^clojure.lang.Var v)) (str (.sym ^clojure.lang.Var v)))\n"
+                                         "        %)\n"
+                                         "      %)\n"
+                                         "   (cons 'do body)))\n"
+                                         "(defn- helper [x] (inc x))\n"
+                                         "(defn- rec [n] (requalified (rec n)))\n"
+                                         "(defn shown [x] (requalified (helper x)))\n"))]
+            (load! r core)
+            (when (analysing? c)
+              (is (= [["unused-private-var" 11 8 "Unused private var nowhere.core/rec"]]
+                     (said (lints! c core)))
+                  "helper is called through the macro, rec only by itself")))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)))))))
+
 (deftest an-arity-is-the-functions-and-not-the-docstrings
   (testing "`:arglists' is documentation and says whatever its author wanted: a
   linter that believed it would call working code an error, which is the one thing
