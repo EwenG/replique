@@ -3,6 +3,7 @@
   runs in - it is started by replique.main, never hosted by an application -
   so stopping is really only what a test does between two processes."
   (:require [replique.cljs :as cljs]
+            [replique.debug :as debug]
             [replique.json :as json]
             [replique.output :as output]
             [replique.server :as server]
@@ -366,6 +367,8 @@
       (try (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
            (catch IllegalStateException _)))
     (output/uninstall!)
+    ;; which lets go of whatever thread it stopped
+    (debug/release!)
     ;; Before the server, because this deletes a directory and the connections
     ;; are what might still be compiling into it
     (cljs/release!)

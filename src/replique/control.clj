@@ -11,6 +11,7 @@
             [replique.server :as server]
             [replique.state :as state]
             ;; loads the op implementations
+            [replique.debug]
             [replique.inspect]
             [replique.ops]))
 

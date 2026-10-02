@@ -12,6 +12,9 @@
     {:results id}      the last three results of the repl connection ID, as
                        *1, *2 and *3
     {:taps true}       the last values `tap>' was given, numbered
+    {:debug {:thread id :frame n}}
+                       the locals of a frame of a thread stopped by
+                       `replique.debug/break!'
 
   A source that is a reference is WATCHED: the client is told that the view
   changed, by an `inspect-changed' event, and asks for it again. The event
@@ -32,6 +35,7 @@
   `view-gone' error, which a client answers by opening it again."
   (:require [clojure.edn :as edn]
             [replique.cljs :as cljs]
+            [replique.debug :as debug]
             [replique.inspector :as inspector]
             [replique.json :as json]
             [replique.names :as names]
@@ -126,9 +130,19 @@
                                           #(or % (atom {})))
                                    id))))
     taps (constantly replique.inspect/taps)
+    ;; The locals of a frame of a stopped thread: asked again at every
+    ;; refresh, since the same frame of the same thread is another frame each
+    ;; time the thread stops - and what changed since the last stop is what
+    ;; a refresh shows
+    (:debug source) (let [{:keys [thread frame]} (:debug source)]
+                      (when-not (integer? thread)
+                        (refuse :invalid-message "A view of a frame names its :thread, got: "
+                                (pr-str (:debug source))))
+                      #(debug/frame-value (long thread) (long (or frame 0))))
     :else (refuse :invalid-message
                   "A view is opened on a :var, on the :results of a repl"
-                  " connection or on the :taps, got: " (pr-str source))))
+                  " connection, on the :taps or on a frame of a stopped thread"
+                  " - :debug - got: " (pr-str source))))
 
 ;;; The ops
 

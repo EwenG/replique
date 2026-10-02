@@ -8,6 +8,7 @@
             [replique.cljs :as cljs]
             [replique.completion :as completion]
             [replique.css :as css]
+            [replique.debug :as debug]
             [replique.deps-plan :as deps-plan]
             [replique.hooks :as hooks]
             [replique.lint :as lint]
@@ -44,7 +45,11 @@
            ;; one of them is a classpath to fix and the other is a classpath
            ;; that is already right. Absent where there is nothing to say, the
            ;; way every optional key of this protocol is.
-           :cljs-error (cljs/unavailable-reason))))
+           :cljs-error (cljs/unavailable-reason)
+           ;; And whether a thread can be stopped here, which is a flag the
+           ;; jvm was started with - and what a restart has to start the
+           ;; process with again
+           :debugger (debug/available?))))
 
 ;; Protocol smoke test. :value comes back both as JSON - which is lossy, EDN
 ;; keywords and symbols become strings - and as the EDN the process read, which

@@ -440,6 +440,13 @@
     (try (sort xs) (catch #?(:clj Exception :cljs :default) _ xs))
     xs))
 
+(defn- in-its-order?
+  "Whether the map M is shown in its own order, sorted or not: what it
+  holds was put in it in an order that is worth reading in - the locals of
+  a frame are, in the order they were bound in."
+  [m]
+  (boolean (::in-its-order (meta m))))
+
 (defn- page-of
   "The children of a node whose children are taken from B: the LIMIT of them
   from OFFSET, as [step raw] pairs, one more than asked for where there is one
@@ -447,7 +454,8 @@
   [b offset limit]
   (let [n (inc limit)]
     (case (shape b)
-      :map (if (<= (or (counted b) (inc sorted-up-to)) sorted-up-to)
+      :map (if (and (<= (or (counted b) (inc sorted-up-to)) sorted-up-to)
+                    (not (in-its-order? b)))
              (->> (in-order (keys b))
                   (drop offset) (take n)
                   (map (fn [k] [[:key k] (map-get b k)])))
