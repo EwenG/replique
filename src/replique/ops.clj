@@ -490,6 +490,19 @@
     ;; was added rather than only that it happened
     {:namespaces (count namespaces) :classes (count classes)}))
 
+;; Taking files that were swapped for another checkout's as loaded, where
+;; they are the same. The client says which: it moved them, and git knows what
+;; the two checkouts have in common - see `replique.analysis/rebaseline!'.
+(defmethod protocol/handle :rebaseline [_ msg]
+  (let [{:keys [root from unchanged]} msg]
+    (when-not (and (string? root) (string? from) (sequential? unchanged)
+                   (every? string? unchanged))
+      (throw (ex-info (str "A :rebaseline needs the :root files are under, the "
+                           ":from checkout they were read from, and the :unchanged "
+                           "paths under it, got: " (pr-str (select-keys msg [:root :from])))
+                      {:replique/error :invalid-message})))
+    (analysis/rebaseline! root from unchanged)))
+
 ;; Adding libraries to a running process, which is what clojure.repl.deps
 ;; does. It asks two things of the thread it runs on: a DynamicClassLoader to
 ;; add to, which every connection has because every connection loads through

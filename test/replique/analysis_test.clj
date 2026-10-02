@@ -1242,6 +1242,64 @@
             (disconnect c)
             (client/delete-recursively root)))))))
 
+;;; A checkout swapped under the process
+
+(defn- stamped!
+  "Write SOURCE into DIR under NAME with the mtime AT, and answer the path."
+  [dir name source at]
+  (let [path (written-file! dir name source)]
+    (.setLastModified (java.io.File. ^String path) (long at))
+    path))
+
+(deftest files-swapped-for-the-same-ones-are-taken-as-loaded
+  (testing "a link under a source root pointed at another checkout gives every
+  file under it another mtime, and nearly all of them hold what they held"
+    (with-process [info nil]
+      (let [root (source-root!)
+            was (client/temp-dir)
+            now (client/temp-dir)
+            r (repl-client info)
+            c (control-client info)
+            clock (System/currentTimeMillis)
+            same "(ns swapped.same)\n(def x 1)\n"
+            edited "(ns swapped.edited)\n(def x 1)\n"]
+        (try
+          (stamped! was "swapped/same.clj" same (- clock 50000))
+          (stamped! was "swapped/edited.clj" edited (- clock 50000))
+          (stamped! was "swapped/other.clj" "(ns swapped.other)\n(def x 1)\n" (- clock 50000))
+          (linked! (str root "/swapped") (str was "/swapped"))
+          (doseq [name ["same" "edited" "other"]]
+            (load! r (str root "/swapped/" name ".clj")))
+          (when (analysing? c)
+            (testing "an edit in the checkout left, never loaded, is not something
+            the other one can vouch for"
+              (stamped! was "swapped/edited.clj" "(ns swapped.edited)\n(def x 2)\n"
+                        (- clock 40000)))
+            (stamped! now "swapped/same.clj" same (- clock 90000))
+            (stamped! now "swapped/edited.clj" edited (- clock 90000))
+            (stamped! now "swapped/other.clj" "(ns swapped.other)\n(def x 2)\n"
+                      (- clock 90000))
+            (java.nio.file.Files/delete
+             (java.nio.file.Paths/get (str root "/swapped") (make-array String 0)))
+            (linked! (str root "/swapped") (str now "/swapped"))
+            (is (= ["edited.clj" "other.clj" "same.clj"]
+                   (sort (named-files (stale! c) :changed))))
+            (let [taken (request! c {:op :rebaseline :id 2 :root (str root)
+                                     :from (str was)
+                                     :unchanged ["swapped/same.clj" "swapped/edited.clj"]})]
+              (testing "what git says is the same and is what was loaded"
+                (is (= 1 (:clojure taken))))
+              (testing "and nothing else: the file that differs, and the one whose
+              loaded version is not the one left behind"
+                (is (= ["edited.clj" "other.clj"]
+                       (sort (named-files (stale! c) :changed)))))))
+          (finally
+            (disconnect r)
+            (disconnect c)
+            (client/delete-recursively root)
+            (client/delete-recursively was)
+            (client/delete-recursively now)))))))
+
 (defn- gone
   "The file this test is about, where FOUND lists it as one the disk no longer
   has."

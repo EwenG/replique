@@ -786,6 +786,52 @@
                        (filter #(of-this-project? project real-project %)))
                  (all-ns)))))
 
+;;; Files moved under the process
+
+(defn- relative
+  "PATH under ROOT, as a path written with slashes, or nil where it is not
+  under it. Neither is made canonical: a file under the stage is named through
+  the links in it, and the root is the stage, so the two are spelt alike."
+  ^String [^Path root ^Path path]
+  (let [path (.normalize (.toAbsolutePath path))]
+    (when (.startsWith path root)
+      (string/replace (str (.relativize root path)) File/separatorChar \/))))
+
+(defn rebaseline!
+  "Take the files under ROOT that UNCHANGED names as the version loaded, where
+  the version loaded was FROM's - and answer how many were taken, Clojure and
+  ClojureScript apart.
+
+  For a directory whose files were swapped for another checkout's: links under
+  a classpath root pointed at another worktree. Every file then has another
+  mtime, which is what a file being changed is read off, and nearly all of them
+  hold what they held. UNCHANGED is what whoever moved them knows to be the
+  same in both checkouts - paths relative to ROOT, as git names them - and FROM
+  is the checkout the files were read from until now.
+
+  TWO CONDITIONS, and the second is what makes the first safe. The file is one
+  of UNCHANGED, and its baseline is the mtime of the same file in FROM - so what
+  the process loaded is what FROM holds now, which is what the new file is the
+  same as. A file edited in FROM and not loaded since fails it and stays
+  changed, and so does one the process read before FROM moved on.
+
+  The ClojureScript model only where its compiler has been loaded: one that has
+  not been has compiled nothing, and loading it to say so costs seconds."
+  [root from unchanged]
+  (let [root (.normalize (.toAbsolutePath (Paths/get (str root) (make-array String 0))))
+        from (.toFile (Paths/get (str from) (make-array String 0)))
+        unchanged (set unchanged)
+        same? (fn [^File f t]
+                (when-let [rel (relative root (.toPath f))]
+                  (and (contains? unchanged rel)
+                       (= t (.lastModified (io/file from rel))))))
+        take! (fn [sym]
+                (if-let [f (and (find-ns (symbol (namespace sym))) (resolve sym))]
+                  (count (f same?))
+                  0))]
+    {:clojure (take! 'clojure.analysis/rebaseline!)
+     :clojurescript (take! 'clojure.cljs.analysis/rebaseline!)}))
+
 (defn stale
   "What would be loaded if this process were asked to load what changed.
 
