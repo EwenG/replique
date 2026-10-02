@@ -8,6 +8,7 @@
             [replique.cljs :as cljs]
             [replique.completion :as completion]
             [replique.css :as css]
+            [replique.deps-plan :as deps-plan]
             [replique.hooks :as hooks]
             [replique.lint :as lint]
             [replique.names :as names]
@@ -588,6 +589,42 @@
 (defmethod protocol/handle :sync-deps [_ msg]
   (let [under (aliases msg)]
     (added (with-basis #(if (seq under) (deps/sync-deps :aliases under) (deps/sync-deps))))))
+
+;; Whether the reading of the classpath is still the classpath, and whether
+;; the classpath is still the one the process was started on - the two
+;; questions about it that cost no resolving, and so the two a client can ask
+;; before every reload. See `replique.classpath/reading-due?' and
+;; `replique.classpath/frozen'.
+(defmethod protocol/handle :classpath-status [_ _]
+  {:reading-due (classpath/reading-due?)
+   :frozen (classpath/frozen)})
+
+(defn- configuration-asked
+  "What MSG says the process would be started with now, checked: the
+  :aliases and the :extra of a `:classpath-plan', where it gives them."
+  [msg]
+  (when (and (contains? msg :extra) (some? (:extra msg)) (not (string? (:extra msg))))
+    (throw (ex-info (str "The :extra of a classpath plan is the text of the deps -Sdeps "
+                         "would be given, got: " (pr-str (:extra msg)))
+                    {:replique/error :invalid-message})))
+  (cond-> (select-keys msg [:extra])
+    (contains? msg :aliases) (assoc :aliases (or (aliases msg) []))))
+
+;; What the deps files make of the classpath now, against what the process
+;; is running with, and whether the difference is one a running process can
+;; take. Answered by the deps tool and not worked out here, so it costs what
+;; :sync-deps costs - a second, and the network where something is not
+;; downloaded yet. See replique.deps-plan.
+(defmethod protocol/handle :classpath-plan [_ msg]
+  (let [asked (configuration-asked msg)]
+    (with-basis #(deps-plan/plan asked))))
+
+;; And putting it on the classpath, where it is only additions. Planned again
+;; by the op rather than taken from the client, and refused with what the plan
+;; says where it has become a restart since.
+(defmethod protocol/handle :sync-classpath [_ msg]
+  (let [asked (configuration-asked msg)]
+    (added (with-basis #(deps-plan/apply! asked)))))
 
 ;; Stopping an evaluation that went wrong. The client names the repl
 ;; connection it wants interrupted - it knows the id, the handshake reply of

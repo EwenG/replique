@@ -234,22 +234,26 @@
   (when (= "file" (.getProtocol url))
     (try (Paths/get (.toURI url)) (catch Exception _ nil))))
 
-(defn- entries
-  "The entries of the classpath, each of them once.
+(defn- property-entries
+  "The entries java.class.path names, made absolute.
 
-  A relative entry is made absolute: it is relative to the directory the
-  process was started in, and nothing here is walked from there."
+  A relative entry is relative to the directory the process was started in,
+  and nothing here is walked from there."
   []
-  (let [property (or (System/getProperty "java.class.path") "")
-        named (into [] (comp (remove string/blank?)
-                             (map (fn [^String entry]
-                                    (try (.toAbsolutePath (Paths/get entry (make-array String 0)))
-                                         (catch Exception _ nil))))
-                             (remove nil?))
-                    (string/split property (re-pattern (java.util.regex.Pattern/quote File/pathSeparator))))
-        loaded (into [] (comp (map url->path) (remove nil?) (map #(.toAbsolutePath ^Path %)))
+  (let [property (or (System/getProperty "java.class.path") "")]
+    (into [] (comp (remove string/blank?)
+                   (map (fn [^String entry]
+                          (try (.normalize (.toAbsolutePath (Paths/get entry (make-array String 0))))
+                               (catch Exception _ nil))))
+                   (remove nil?))
+          (string/split property (re-pattern (java.util.regex.Pattern/quote File/pathSeparator))))))
+
+(defn- entries
+  "The entries of the classpath, each of them once."
+  []
+  (let [loaded (into [] (comp (map url->path) (remove nil?) (map #(.toAbsolutePath ^Path %)))
                      (loader-urls))]
-    (into [] (comp (map #(.normalize ^Path %)) (distinct)) (concat named loaded))))
+    (into [] (comp (map #(.normalize ^Path %)) (distinct)) (concat (property-entries) loaded))))
 
 ;;; Reading
 
@@ -283,6 +287,32 @@
   the file really is - hands to a load."
   ^Path [^Path path]
   (try (.toRealPath path (make-array LinkOption 0)) (catch Exception _ nil)))
+
+(defn- links-under
+  "The links directly under DIRECTORY, each with where it leads now.
+
+  A map of the name of the link to the real path behind it - nil where it
+  leads nowhere - and nothing for what is not a link. What is kept of a
+  reading to say later whether that reading is still the classpath: a link
+  below an entry is followed on every lookup, so re-pointing one changes what
+  the process loads without changing anything the reading would notice by
+  itself. See `reading-due?'.
+
+  ONE LEVEL DOWN AND NO FURTHER, which is where a tree swapped under a running
+  process puts its links - a stage holds each root for real and links what is
+  inside it. A link deeper than that is still followed by the walk, and still
+  read right by the next reading; it is only not what says one is due. Asking
+  every directory of every tree would be the walk again."
+  [^Path directory]
+  (try
+    (with-open [children (Files/newDirectoryStream directory)]
+      (into (sorted-map)
+            (comp (filter #(Files/isSymbolicLink ^Path %))
+                  (map (fn [^Path link]
+                         [(str (.getFileName link))
+                          (some-> (real-path link) str)])))
+            children))
+    (catch Exception _ {})))
 
 (defn- directory-resources
   "The resources under ROOT, and the anchors the walk crossed to reach them.
@@ -365,7 +395,8 @@
                                                (directory-resources path)]
                                            (assoc (collect resources)
                                                   :directory path
-                                                  :anchors anchors))
+                                                  :anchors anchors
+                                                  :links (links-under path)))
         (Files/isRegularFile path options) (collect (jar-resources path))))
     (catch Exception _ nil)))
 
@@ -391,7 +422,10 @@
      :naming-anchors (into (vec (for [{:keys [directory]} scans :when directory]
                                   [directory ""]))
                            (mapcat :anchors)
-                           scans)}))
+                           scans)
+     ;; What `reading-due?' holds the disk up against
+     :links (into {} (for [{:keys [directory links]} scans :when directory]
+                       [(str directory) links]))}))
 
 ;; Read here, which is process startup: replique.control loads the ops and the
 ;; ops load this. A first completion would otherwise wait a fifth of a second
@@ -465,6 +499,77 @@
   `replique.analysis/reachable-as?'."
   []
   (:naming-anchors (scan)))
+
+(defn- current-links
+  "What `links-under' says of every directory on the classpath now."
+  []
+  (into {} (for [^Path path (entries)
+                 :when (Files/isDirectory path (make-array LinkOption 0))]
+             [(str path) (links-under path)])))
+
+(defn reading-due?
+  "Whether the classpath has moved since it was last read.
+
+  An entry that is a directory and was not one when it was read, and a link
+  directly under one that leads somewhere else now, or was made or removed
+  since - the way a worktree is swapped under a running process, which is
+  every name under it moving at once and the reading still naming the files
+  where they were. See `naming-anchors' for what that costs until it is read
+  again.
+
+  A file written below an entry is not one of them, so this is not the answer
+  to every reading that is due: a namespace somebody has just created is
+  found by reading again, and is not something this can see without walking
+  the tree it is in. It answers the one kind that nothing on the editor's side
+  can see either, because the editor is not where the links were moved.
+
+  A directory per entry and a link per child, which is cheap enough to ask
+  before every reload."
+  []
+  (not= (current-links) (:links (scan))))
+
+;; The directories the process was started with, each with where it really was
+;; then. Read when this namespace is loaded, which is process startup, and
+;; which is as close as anything here can get to what the jvm itself resolved:
+;; the application loader is handed each entry of java.class.path made
+;; canonical, once, before main runs, and keeps that.
+(defonce ^:private started-directories
+  (into [] (keep (fn [^Path path]
+                   (when (Files/isDirectory path (make-array LinkOption 0))
+                     (when-let [real (real-path path)]
+                       [path real]))))
+        (property-entries)))
+
+(defn frozen
+  "The directories the process was started with that are somewhere else now.
+
+  THE ONE MOVE A RUNNING PROCESS CANNOT FOLLOW. The jvm resolves each
+  directory of java.class.path once, when it starts, so an entry that is a
+  link - or that is below one - goes on being read where it led that day,
+  whatever it leads to since. The process is reading another tree than the one
+  its classpath names, and nothing short of a restart moves it: adding the new
+  place would put it behind the old one, and the old one is what every lookup
+  finds first.
+
+  Each as {:entry :was :now}, :now nil where the entry leads nowhere at all
+  any more. A directory added later is not one of these - a loader holds what
+  is added as it was spelt, and follows it on every lookup."
+  []
+  (into [] (keep (fn [[^Path path ^Path was]]
+                   (let [now (real-path path)]
+                     (when (not= now was)
+                       {:entry (str path) :was (str was) :now (some-> now str)}))))
+        started-directories))
+
+(defn entry-names
+  "The namespaces the classpath entry at PATH provides, Clojure and
+  ClojureScript, or nil when it provides nothing it can be read for.
+
+  For a question about what adding an entry would do, which is asked before
+  anything is added: see `replique.deps-plan'."
+  [path]
+  (when-let [scan (entry-scan (.normalize (.toAbsolutePath (Paths/get (str path) (make-array String 0)))))]
+    (select-keys scan [:namespaces :cljs-namespaces])))
 
 (defn rescan!
   "Read the classpath again, and return what is on it now.
