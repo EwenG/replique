@@ -215,6 +215,12 @@
     (testing "where nothing aliases it, the class is what it was all along"
       (is (= "java.lang.String" (:class (written "String/valueOf")))))))
 
+(deftest a-private-var-under-a-scope-is-answered-all-the-same
+  (testing "from another namespace, where calling it is an error and reading it is not"
+    (is (= {:ns "replique.symbol-test" :name "shadowing"}
+           (select-keys (written "replique.symbol-test/shadowing" :ns "user")
+                        [:ns :name])))))
+
 ;;; Keywords
 
 (deftest a-keyword-written-with-two-colons-is-read-against-the-namespace

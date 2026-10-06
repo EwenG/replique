@@ -510,10 +510,16 @@
   A namespace or an alias of one first, and a class second, which is the
   order the compiler reads a name in: what stands before the slash is a
   namespace where the namespace has one of that name, and a class only where
-  it does not."
+  it does not.
+
+  A private var as well as a public one. Calling it from another namespace is
+  an error, and the lint says so; but it is that var the name means, and the
+  one place to go to read why it is private - or, after a defn- was edited
+  into a defn and not reloaded yet, to see that it is not any more. A #'
+  names it legitimately besides."
   [ns ^String scope ^String named]
   (or (when-let [found (names/resolve-scope ns scope)]
-        (when-let [var (get (ns-publics found) (symbol named))]
+        (when-let [var (get (ns-interns found) (symbol named))]
           (of-var var)))
       ;; a ClojureScript macro, which the namespace of that name does not hold
       ;; - see `names/resolve-macro'
