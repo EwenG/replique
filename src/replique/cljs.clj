@@ -403,7 +403,7 @@
 (def option-keys
   "The compiler options a project can set. See `set-option!'.
 
-  THE WHOLE OF THEM, and there are three. This compiler reads six keys from an
+  THE WHOLE OF THEM, and there are four. This compiler reads seven keys from an
   options map, and the other three are not a project's to choose:
 
     :out-dir       the environment's own - a temporary directory per target,
@@ -431,8 +431,15 @@
                       :root, :esbuild, :dev. See `clojure.cljs.npm'
     :static-dispatch  compile a call to a var of known shape as a call to the
                       arity that answers it. Faster, and it does not survive a
-                      redefinition that drops that arity"
-  #{:closure-library :npm :static-dispatch})
+                      redefinition that drops that arity
+    :defines          {name value} over goog.define's defaults - ClojureScript's
+                      :closure-defines. A name is Closure's own string
+                      (\"goog.DEBUG\") or the qualified symbol of a goog-define
+                      var. Written out by the next compilation and read when a
+                      module evaluates, so a change lands with any compile and a
+                      page reload, and recompiles nothing. See
+                      `clojure.cljs.output/define-name'"
+  #{:closure-library :npm :static-dispatch :defines})
 
 (defonce ^{:doc
            "What this process compiles with, over the compiler's own defaults.
