@@ -18,6 +18,7 @@
             [clojure.string :as string]
             [replique.analysis :as analysis]
             [replique.cljs-repl :as cljs-repl]
+            [replique.debug :as debug]
             [replique.directives :as directives]
             [replique.hooks :as hooks]
             [replique.inspect :as inspect]
@@ -27,6 +28,7 @@
   (:import [clojure.lang LineNumberingPushbackReader]
            [java.io File IOException Reader Writer]
            [java.util.jar JarFile]
+           [replique.debug Instrumented]
            [replique.directives LoadDirective NsDirective ReloadDirective
             SourceDirective]))
 
@@ -224,9 +226,14 @@
                               (protocol/write-frame! conn (prompt-frame conn)))
                             (recur))
             :stream-end request-exit
-            (let [{:keys [file line]} @pending
-                  input (clojure.main/renumbering-read {:read-cond :allow} *in*
-                                                       (or line 1))]
+            (let [{:keys [file line instrument column entry]} @pending
+                  ;; to be stepped through, which is read with the span of
+                  ;; every form, from where it was written - see replique.debug
+                  input (if instrument
+                          (debug/read-instrumented *in* (or line 1) (or column 1) entry)
+                          (clojure.main/renumbering-read {:read-cond :allow} *in* (or line 1)))
+                  instrumented (when (instance? Instrumented input) input)
+                  input (if instrumented (:form input) input)]
               (clojure.main/skip-if-eol *in*)
               (cond
                 (instance? SourceDirective input)
@@ -277,7 +284,7 @@
                     (set! *source-path* (if file
                                           (.getName (java.io.File. ^String file))
                                           default-source))
-                    input)))))
+                    (or instrumented input))))))
         ;; The connection is gone. End the repl rather than let
         ;; clojure.main/repl report the failure and read again, forever.
         (catch IOException _ request-exit)))))
@@ -389,7 +396,11 @@
          ;; Inside `interruptible', so that a hook is part of the evaluation it
          ;; follows: its output is this connection's and a hook that will not
          ;; come back can be interrupted like anything else.
-         :eval (fn [form] (interruptible conn #(hooks/around* (fn [] (eval form)))))
+         :eval (fn [form]
+                 (interruptible conn #(hooks/around*
+                                       (fn [] (if (instance? Instrumented form)
+                                                (debug/eval-instrumented form)
+                                                (eval form))))))
          ;; The frame is built before the output is flushed: printing a
          ;; value may itself print - a print-method warning about what it was
          ;; handed - and that output belongs before the result, not after it.

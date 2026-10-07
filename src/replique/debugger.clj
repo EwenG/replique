@@ -321,13 +321,13 @@
     (calling t made "replique.debug" "keep-locals!" thread frame array)
     {:kept true}))
 
-(defmethod handle :eval [_ {:keys [thread frame code]}]
+(defmethod handle :eval [_ {:keys [thread frame code read]}]
   (let [t (the-thread thread)
-        ;; Frame 0 is the one that asked to stop, and asked with its locals
-        ;; already in hand - written there by the compiler, unmunged and with
-        ;; what it closed over - so only another frame has its read here
-        [array made] (if (zero? frame) [nil []] (locals-array t frame))
-        ns (when-not (zero? frame) (frame-ns t frame))]
+        ;; A frame that stopped at break! asked with its locals already in
+        ;; hand - written there by the compiler, unmunged and with what it
+        ;; closed over - so only the others, READ, have theirs read here
+        [array made] (if read (locals-array t frame) [nil []])
+        ns (when read (frame-ns t frame))]
     {:printed (string-of (calling t made "replique.debug" "eval-in!" thread code ns array))}))
 
 (defmethod handle :resume [_ {:keys [thread]}]

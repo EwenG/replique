@@ -11,8 +11,7 @@
             [replique.state :as state])
   (:import [java.io BufferedWriter InputStreamReader IOException OutputStreamWriter]
            [java.net InetAddress ServerSocket Socket SocketException]
-           [java.nio.charset StandardCharsets]
-           [java.util.concurrent.atomic AtomicLong]))
+           [java.nio.charset StandardCharsets]))
 
 (defn- accept-hello! [{:keys [process-id] :as conn} msg]
   (if-not (map? msg)
@@ -177,7 +176,7 @@
                 :socket socket
                 :process-id process-id
                 :connections (atom {})}
-        counter (AtomicLong. 0)
+        counter (atom 0)
         accept-loop
         (fn []
           (loop []
@@ -198,7 +197,7 @@
                   (try
                     (.setTcpNoDelay conn-socket true)
                     (accept-connection! server conn-socket
-                                        (str "c" (.incrementAndGet counter)))
+                                        (str "c" (swap! counter inc)))
                     (catch Throwable _
                       (try (.close conn-socket) (catch Exception _)))))
                 (recur)))))]

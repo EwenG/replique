@@ -34,7 +34,12 @@
 ;; The directive applies to the next form only. In band rather than a process
 ;; wide atom set by another connection: it cannot race with another repl, and
 ;; it stays in order with the code it describes.
-(defrecord SourceDirective [file line])
+;;
+;; With :instrument true the form is compiled to be stepped through - see
+;; `replique.debug/eval-instrumented' - and :column says where on its first
+;; line it starts, which a step shows the place of a form by. With :entry
+;; false it does not stop on entry, but at the breakpoints it is given.
+(defrecord SourceDirective [file line instrument column entry])
 
 (defn source-directive [m]
   (let [bad (fn [message]
@@ -64,7 +69,20 @@
       (bad (str "#replique/src :line must be an integer between 1 and "
                 Integer/MAX_VALUE ", got: " (pr-str (:line m))))
 
-      :else (->SourceDirective (:file m) (:line m)))))
+      (not (or (nil? (:instrument m)) (boolean? (:instrument m))))
+      (bad (str "#replique/src :instrument must be true or false, got: "
+                (pr-str (:instrument m))))
+
+      (not (or (nil? (:column m))
+               (and (integer? (:column m)) (<= 1 (:column m) Integer/MAX_VALUE))))
+      (bad (str "#replique/src :column must be an integer between 1 and "
+                Integer/MAX_VALUE ", got: " (pr-str (:column m))))
+
+      (not (or (nil? (:entry m)) (boolean? (:entry m))))
+      (bad (str "#replique/src :entry must be true or false, got: " (pr-str (:entry m))))
+
+      :else (->SourceDirective (:file m) (:line m) (boolean (:instrument m)) (:column m)
+                               (not (false? (:entry m)))))))
 
 ;;; The namespace
 

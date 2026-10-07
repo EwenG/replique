@@ -15,6 +15,9 @@
     {:debug {:thread id :frame n}}
                        the locals of a frame of a thread stopped by
                        `replique.debug/break!'
+    {:debug {:thread id :value true}}
+                       what the form a thread stepping through code stopped
+                       after evaluated to
 
   A source that is a reference is WATCHED: the client is told that the view
   changed, by an `inspect-changed' event, and asks for it again. The event
@@ -41,14 +44,14 @@
             [replique.names :as names]
             [replique.protocol :as protocol]
             [replique.state :as state])
-  (:import [java.util.concurrent.atomic AtomicBoolean AtomicLong]))
+  (:import [java.util.concurrent.atomic AtomicBoolean]))
 
 (defonce ^:private views
   ;; id -> {:id :conn :dialect, and :session for a Clojure view, :target :page
   ;; for a ClojureScript one}
   (atom {}))
 
-(defonce ^:private ids (AtomicLong. 0))
+(defonce ^:private ids (atom 0))
 
 (defn- refuse [kind & message]
   (throw (ex-info (apply str message) {:replique/error kind})))
@@ -95,13 +98,13 @@
 
 (defonce ^:private taps (atom (sorted-map)))
 
-(defonce ^:private tap-count (AtomicLong. 0))
+(defonce ^:private tap-count (atom 0))
 
 (defonce ^:private tapping
   ;; From the moment the process is up: the value somebody tapped before
   ;; opening the view is the one they open it for
   (let [f (fn [x]
-            (let [n (.incrementAndGet tap-count)]
+            (let [n (swap! tap-count inc)]
               (swap! taps (fn [m]
                             (let [m (assoc m n x)]
                               (if (> (count m) taps-kept)
@@ -134,11 +137,13 @@
     ;; refresh, since the same frame of the same thread is another frame each
     ;; time the thread stops - and what changed since the last stop is what
     ;; a refresh shows
-    (:debug source) (let [{:keys [thread frame]} (:debug source)]
+    (:debug source) (let [{:keys [thread frame value]} (:debug source)]
                       (when-not (integer? thread)
                         (refuse :invalid-message "A view of a frame names its :thread, got: "
                                 (pr-str (:debug source))))
-                      #(debug/frame-value (long thread) (long (or frame 0))))
+                      (if value
+                        #(debug/stop-value (long thread))
+                        #(debug/frame-value (long thread) (long (or frame 0)))))
     :else (refuse :invalid-message
                   "A view is opened on a :var, on the :results of a repl"
                   " connection, on the :taps or on a frame of a stopped thread"
@@ -298,7 +303,7 @@
 
 (defmethod protocol/handle :inspect [conn msg]
   (names/with-dialect msg
-    (let [id (.incrementAndGet ids)
+    (let [id (swap! ids inc)
           source (:source msg)
           history (when (nat-int? (:history msg)) (:history msg))
           base {:id id :conn conn :source source :told (AtomicBoolean. false)}]
