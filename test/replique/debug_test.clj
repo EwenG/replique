@@ -422,3 +422,108 @@
             (testing "nor has a unit that is not stepped through"
               (is (= "unknown-unit" (:error (break! 123456 41 11 nil 11))))))
           (finally (disconnect r) (disconnect c) (.delete file)))))))
+
+;;; Recording - which needs the compiler of replique-clj, and not the debugger
+
+(defn- recorded
+  "What the call CALL of the unit UNIT recorded - the last one, CALL nil - by
+  the [line column] of each form, as [value times]."
+  [c unit call id]
+  (let [said (ask! c (cond-> {:op :debug-recorded :unit unit :id id} call (assoc :call call)))]
+    (assoc said :by-place (into {} (map (fn [v] [[(:line v) (:column v)] [(:value v) (:times v)]]))
+                                (:values said)))))
+
+(deftest what-a-function-recorded-is-kept-call-by-call
+  (if-not (debug/instrumenting?)
+    (println "replique.debug-test: no compiler to record with - run with :analysis")
+    (client/with-process [info nil]
+      (let [r (client/repl-client info nil 60000)
+            c (control info)
+            file (java.io.File/createTempFile "recorded" ".clj")
+            record (fn [line code]
+                     (ret r (str "#replique/src {:file " (pr-str (str file)) " :line " line
+                                 " :instrument true :entry false :record true}\n" code)))]
+        (try
+          (record 1 "(defn rf [m]
+  (let [x (inc (:a m))]
+    (mapv (fn [y] (* x y)) (range 3))))")
+          (let [told (await-event c "debug-instrumented")
+                unit (:unit told)]
+            (testing "a definition evaluated to record is told about as recording"
+              (is (true? (:record told)))
+              (is (true? (:breaks-only told))))
+            (testing "and stops nothing, without the debugger"
+              (is (false? (debug/available?)))
+              (is (= "[0 2 4]" (ret r "(rf {:a 1})"))))
+            (testing "clients are told it recorded"
+              (is (= {:unit unit :calls 1} (select-keys (await-event c "debug-recorded")
+                                                         [:unit :calls]))))
+            (let [{:keys [calls call by-place]} (recorded c unit nil 1)]
+              (testing "what each form evaluated to in the call, and how many times"
+                (is (= 1 (count calls)))
+                (is (= call (:call (first calls))))
+                (is (string? (:thread (first calls))))
+                (is (= {[2 16] ["1" 1]
+                        [2 11] ["2" 1]
+                        [3 19] ["4" 3]
+                        [3 28] ["(0 1 2)" 1]
+                        [3 5] ["[0 2 4]" 1]
+                        [2 3] ["[0 2 4]" 1]}
+                       (dissoc by-place [3 11]))))
+              (testing "call by call"
+                (ret r "(rf {:a 2})")
+                (let [again (recorded c unit nil 2)]
+                  (is (= 2 (count (:calls again))))
+                  (is (= ["3" 1] (get-in again [:by-place [2 11]])))
+                  (is (= ["2" 1] (get-in (recorded c unit call 3) [:by-place [2 11]])))))
+              (testing "each value is one to browse"
+                (let [site (:site (first (filter #(= [2 11] [(:line %) (:column %)])
+                                                 (:values (recorded c unit call 4)))))]
+                  (is (= "2" (get-in (ask! c {:op :inspect :id 5
+                                               :source {:debug {:site site :call call}}})
+                                     [:root :value])))
+                  (testing "and so are the values of a form, one per call"
+                    (is (= "[2 3]" (get-in (ask! c {:op :inspect :id 6
+                                                     :source {:debug {:site site}}})
+                                           [:root :value]))))))
+              (testing "of the last calls only"
+                (dotimes [i 12] (ret r (str "(rf {:a " i "})")))
+                (is (= 10 (count (:calls (recorded c unit nil 7)))))
+                (is (= "unknown-call" (:error (ask! c {:op :debug-recorded :unit unit :call call
+                                                       :id 8})))))))
+          (testing "a call is its own, recursive or not"
+            (record 10 "(defn rr [n]
+  (if (pos? n)
+    (+ n (rr (dec n)))
+    0))")
+            (let [unit (:unit (await-event c "debug-instrumented"))]
+              (is (= "3" (ret r "(rr 2)")))
+              (let [{:keys [calls]} (recorded c unit nil 9)
+                    [outer inner innermost] (map #(:by-place (recorded c unit (:call %) 10)) calls)]
+                (is (= 3 (count calls)))
+                (is (= {[11 3] ["3" 1] [12 5] ["3" 1] [12 10] ["1" 1]}
+                       (select-keys outer [[11 3] [12 5] [12 10]])))
+                (is (= {[11 3] ["1" 1] [12 10] ["0" 1]} (select-keys inner [[11 3] [12 10]])))
+                (is (= {[11 3] ["0" 1] [11 7] ["false" 1]} innermost)))))
+          (testing "and one thrown out of is over"
+            (record 20 "(defn rt [n]
+  (if (pos? n)
+    (inc (try (rt (dec n)) (catch Exception _ 1)))
+    (throw (ex-info \"none\" {}))))")
+            (let [unit (:unit (await-event c "debug-instrumented"))]
+              (is (= "2" (ret r "(rt 1)")))
+              (let [[outer _] (map #(:by-place (recorded c unit (:call %) 11))
+                                   (:calls (recorded c unit nil 12)))]
+                (is (= ["2" 1] (get outer [21 3]))))))
+          (testing "anything else recorded is recorded as it is evaluated"
+            (record 30 "(let [a (inc 1)] (* a 2))")
+            (let [unit (:unit (await-event c "debug-instrumented"))]
+              ;; the form evaluated is the repl's to show
+              (is (= {[30 9] ["2" 1] [30 18] ["4" 1]}
+                     (:by-place (recorded c unit nil 13))))))
+          (testing "what is let go of is forgotten"
+            (let [{:keys [uninstrumented]} (ask! c {:op :debug-uninstrument :id 14})]
+              (is (seq uninstrumented))
+              (is (= "unknown-unit" (:error (ask! c {:op :debug-recorded
+                                                     :unit (first uninstrumented) :id 15}))))))
+          (finally (disconnect r) (disconnect c) (.delete file)))))))

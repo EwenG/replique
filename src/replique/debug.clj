@@ -251,32 +251,42 @@
   "X as it is printed without realizing what of its lazy seqs is not
   realized yet: that part is left out, and said to be. Down to LEVEL, which
   is as far as printing goes - and as many things of a collection as
-  printing shows, and one more for it to say there are more.
+  printing shows, LENGTH, and one more for it to say there are more.
 
   Printing a value is not what the code it came from did with it: a seq
   realized here runs code - side effects and all - on another thread than
   the one it was written for, before the code got to it, or where it never
   would have."
-  [x level]
-  (letfn [(some-of [coll] (take (inc print-length) coll))]
-    (cond
-      (unrealized-seq? x) (Unrealized. (.getSimpleName (class x)))
-      (zero? level) x
-      (seq? x) (loop [s x, n 0, acc []]
-                 (cond
-                   (unrealized-seq? s) (apply list (conj acc (Unrealized. nil)))
-                   (> n print-length) (apply list acc)
-                   ;; realized, which `seq' and `rest' leave as it is
-                   :else (if-let [s (seq s)]
-                           (recur (rest s) (inc n) (conj acc (unforced (first s) (dec level))))
-                           (apply list acc))))
-      (map-entry? x) (clojure.lang.MapEntry/create (unforced (key x) (dec level))
-                                                   (unforced (val x) (dec level)))
-      ;; a record keeps its type, and its fields
-      (record? x) (reduce-kv (fn [m k v] (assoc m k (unforced v (dec level)))) x x)
-      (map? x) (into (empty x) (map (fn [[k v]] [k (unforced v (dec level))])) (some-of x))
-      (or (vector? x) (set? x)) (into (empty x) (map #(unforced % (dec level))) (some-of x))
-      :else x)))
+  ([x level] (unforced x level print-length))
+  ([x level length]
+   (letfn [(some-of [coll] (take (inc length) coll))
+           (inner [x] (unforced x (dec level) length))]
+     (cond
+       (unrealized-seq? x) (Unrealized. (.getSimpleName (class x)))
+       (zero? level) x
+       (seq? x) (loop [s x, n 0, acc []]
+                  (cond
+                    (unrealized-seq? s) (apply list (conj acc (Unrealized. nil)))
+                    (> n length) (apply list acc)
+                    ;; realized, which `seq' and `rest' leave as it is
+                    :else (if-let [s (seq s)]
+                            (recur (rest s) (inc n) (conj acc (inner (first s))))
+                            (apply list acc))))
+       (map-entry? x) (clojure.lang.MapEntry/create (inner (key x)) (inner (val x)))
+       ;; a record keeps its type, and its fields
+       (record? x) (reduce-kv (fn [m k v] (assoc m k (inner v))) x x)
+       (map? x) (into (empty x) (map (fn [[k v]] [k (inner v)])) (some-of x))
+       (or (vector? x) (set? x)) (into (empty x) (map inner) (some-of x))
+       :else x))))
+
+(defn- printed-briefly
+  "X printed for a client to show after the form it is the value of: its
+  beginning, which is what fits there - the rest is to browse."
+  [x]
+  (let [length 10, level 3, up-to 1000
+        s (binding [*print-length* length *print-level* level]
+            (pr-str (unforced x level length)))]
+    (if (> (count s) up-to) (str (subs s 0 up-to) "...") s)))
 
 (defn- described
   "A pause as a client is told about it."
@@ -444,17 +454,21 @@
 ;; way, or until it is told to stop being stepped through - and from a stop it
 ;; goes on to the next form, into a call, or out of the one it is in. Unless
 ;; it was evaluated to stop at its breakpoints only: then a thread stops after
-;; a form a breakpoint is on, where its condition holds - see `breaks'.
+;; a form a breakpoint is on, where its condition holds - see `breaks'. Or to
+;; record: then nothing stops, and what every form evaluated to is kept - see
+;; "Recording".
 ;;
 ;; What was evaluated is a unit, and its sites go with it: code of a unit that
 ;; is gone may still run - it is still compiled to call `hook' - and nothing
 ;; stops it. A definition is a unit for as long as it is what its var holds,
-;; and anything else for as long as it is being evaluated.
+;; and anything else for as long as it is being evaluated - or, recorded, for
+;; as long as it is not let go of: what it recorded is what it is there for.
 
 (defonce ^:private units
   ;; number -> {:ns :file :line :column :end-line :end-column :var :shown
-  ;;            :entry}: what was evaluated to be stepped through, :shown once
-  ;; clients were told, and whether :entry to it stops a thread
+  ;;            :entry :record :definition}: what was evaluated to be stepped
+  ;; through, :shown once clients were told, whether :entry to it stops a
+  ;; thread, and whether it records
   (atom {}))
 
 (defonce ^:private unit-numbers (atom 0))
@@ -476,6 +490,11 @@
   ;; deep, inside the call :floor - see `still-in?'
   (atom {}))
 
+(defonce ^:private recording
+  ;; site number -> {:unit :starts}: the sites of the units that record, and
+  ;; whether entering there :starts a call - see "Recording"
+  (atom {}))
+
 (defn- compiler-var
   "The Var of Compiler named NAME, which only the compiler of replique-clj has
   - or nil."
@@ -491,10 +510,15 @@
   (let [n (swap! site-numbers inc)
         ;; an arity the source did not write, as a single arity defn's is,
         ;; is where the form that was evaluated is
-        where (if (:line site) site evaluated)]
+        where (if (:line site) site evaluated)
+        {:keys [record definition]} (get @units unit)]
     (swap! sites assoc n (merge {:ns ns :file file :unit unit}
                                 (select-keys site [:kind :outermost])
                                 (select-keys where [:line :column :end-line :end-column])))
+    (when record
+      (swap! recording assoc n {:unit unit
+                                :starts (boolean (and definition (:outermost site)
+                                                      (= :enter (:kind site))))}))
     n))
 
 (defn- step-stop!
@@ -571,22 +595,217 @@
                           (:floor going))
                         (when (and break (not stepped)) break))))))))
 
+;;; Recording
+
+;; A unit evaluated to record stops nothing: what each of its forms evaluates
+;; to is kept instead, call by call - of the last `calls-kept' calls, the last
+;; `values-kept' values of each form, a form in a loop being evaluated many
+;; times in one call. Which is what makes the data that went through a
+;; function something to look at once it ran, written over the code it went
+;; through: an example of everything it was handed and made.
+;;
+;; A call starts on entering the outermost fn of a definition, and ends once
+;; the last form of that fn has its value - the value it returns - or once the
+;; thread is found out of it, having thrown out of it. A form evaluated on a
+;; thread in no call of its unit - in a fn the call made, called once it
+;; returned, or a lazy seq it made, realized then - is the last call's: that
+;; is the call that made it. Anything else is recorded in one call, its
+;; evaluation.
+;;
+;; The values are kept as they are, and printed when a client asks: what
+;; changed since of a mutable one is shown changed, and what was realized
+;; since of a lazy one, realized.
+
+(def ^:private calls-kept
+  "How many calls of a unit are kept, the last ones."
+  10)
+
+(def ^:private values-kept
+  "How many values of a form are kept in a call, the last ones."
+  10)
+
+(def ^:private tell-every
+  "How often clients are told that a unit recorded, at most, in ms."
+  200)
+
+(defonce ^:private calls
+  ;; call number -> {:unit :thread :at :values {site {:times :values}}}: what
+  ;; the thread named :thread did from :at, in ms - each site evaluated
+  ;; :times times, its last :values
+  (atom {}))
+
+(defonce ^:private call-numbers (atom 0))
+
+(defonce ^:private recorded
+  ;; unit number -> [call number ...]: the calls of it kept, the last one last
+  (atom {}))
+
+(defonce ^:private in-calls
+  ;; java thread id -> [{:call :unit :depth :class :return} ...]: the calls the
+  ;; thread is in, the innermost last - each :depth frames deep, in a frame of
+  ;; :class, and over once the site :return has its value
+  (atom {}))
+
+(defonce ^:private returns
+  ;; site number of an entry -> the site of the last form of its fn, or nil
+  (atom {}))
+
+(defonce ^:private telling
+  ;; the units clients are about to be told recorded
+  (atom #{}))
+
+(defn- changed!
+  "Tell clients that the unit UNIT recorded - once every `tell-every' ms at
+  most: a function called in a loop must not cost the editor a message a
+  call."
+  [unit]
+  (let [[before _] (swap-vals! telling conj unit)]
+    (when-not (contains? before unit)
+      (-> (Thread/ofVirtual)
+          (.name "replique-debug-recorded")
+          (.start ^Runnable
+                  (fn []
+                    (Thread/sleep (long tell-every))
+                    (swap! telling disj unit)
+                    (let [kept (get @recorded unit)]
+                      (when (and (seq kept) (:shown (get @units unit)))
+                        (output/broadcast-event!
+                         (protocol/event "debug-recorded"
+                                         {:unit unit :call (peek kept) :calls (count kept)}))))))))))
+
+(defn- return-of
+  "The site of the last form of the fn whose entry is the site ENTER - the
+  form whose value it returns, which is the one that ends last inside it -
+  or nil."
+  [enter]
+  (if-let [[_ found] (find @returns enter)]
+    found
+    (let [{:keys [unit line column end-line end-column]} (get @sites enter)
+          inside? (fn [s]
+                    (and (= unit (:unit s)) (= :value (:kind s)) (:end-line s) (:end-column s)
+                         (not (neg? (compare [(:line s) (:column s)] [line column])))
+                         (neg? (compare [(:end-line s) (:end-column s)] [end-line end-column]))))
+          found (when (and end-line end-column)
+                  (->> @sites
+                       (filter (comp inside? val))
+                       ;; of the forms that end there, the outermost: it has
+                       ;; its value last
+                       (sort-by (fn [[_ s]] [(- (:end-line s)) (- (:end-column s))
+                                             (:line s) (:column s)]))
+                       ffirst))]
+      (swap! returns assoc enter found)
+      found)))
+
+(defn- still-in-calls
+  "Of IN, the calls a thread was in, the ones it is still in, its frames being
+  FRAMES - entering another HERE frames deep, which none as deep is."
+  [in frames here]
+  (filterv #(and (< (:depth %) here) (still-in? frames {:at (:depth %) :class (:class %)})) in))
+
+(defn- call-started!
+  "Start a call of the unit UNIT on this thread, over once the site RETURN
+  has its value - or never, without one: see `call-ended!'. Returns its
+  number."
+  [unit return]
+  (let [thread (Thread/currentThread)
+        id (.threadId thread)
+        frames (frames-here)
+        here (count frames)
+        c (swap! call-numbers inc)]
+    (swap! calls assoc c {:unit unit :thread (.getName thread)
+                          :at (System/currentTimeMillis) :values {}})
+    (swap! in-calls update id #(conj (still-in-calls % frames here)
+                                     {:call c :unit unit :depth here :class (first frames)
+                                      :return return}))
+    (let [[before after] (swap-vals! recorded update unit
+                                     #(vec (take-last calls-kept (conj (or % []) c))))
+          kept (set (get after unit))]
+      (swap! calls #(apply dissoc % (remove kept (get before unit)))))
+    (changed! unit)
+    c))
+
+(defn- call-ended!
+  "The call C of the unit UNIT, which this thread is in, is over - and the
+  calls it is in are not."
+  [unit c]
+  (let [id (.threadId (Thread/currentThread))]
+    (swap! in-calls (fn [m]
+                      (let [in (filterv #(not= c (:call %)) (get m id))]
+                        (if (seq in) (assoc m id in) (dissoc m id))))))
+  (changed! unit))
+
+(defn- record!
+  "The site N of the unit UNIT has VALUE, which the call the thread is in
+  keeps. Where it is the last form of a call, the call is over - and so are
+  the calls the thread threw out of, which are found out here: it is not as
+  deep in as they were any more, or not in the same frames."
+  [unit n value]
+  (let [id (.threadId (Thread/currentThread))
+        in (get @in-calls id [])
+        in (if (some #(and (= unit (:unit %)) (= n (:return %))) in)
+             (let [frames (frames-here)
+                   here (count frames)
+                   still (filterv #(and (<= (:depth %) here)
+                                        (still-in? frames {:at (:depth %) :class (:class %)}))
+                                  in)]
+               (swap! in-calls #(if (seq still) (assoc % id still) (dissoc % id)))
+               still)
+             in)
+        call (some #(when (= unit (:unit %)) %) (rseq in))
+        c (or (:call call) (peek (get @recorded unit)))]
+    (when c
+      (swap! calls (fn [m]
+                     (if (contains? m c)
+                       (update-in m [c :values n]
+                                  (fn [{:keys [times values]}]
+                                    (let [values (conj (or values []) value)]
+                                      {:times (inc (or times 0))
+                                       ;; a vector of its own rather than a
+                                       ;; subvec, which holds on to all of it
+                                       :values (if (> (count values) values-kept)
+                                                 (vec (rest values))
+                                                 values)})))
+                       m)))
+      (when (and call (= n (:return call)))
+        (call-ended! unit c)))))
+
+(defn recorded-value
+  "What a view of what the site SITE evaluated to in the call CALL shows: the
+  last value, where it was evaluated more than once - or, without CALL, the
+  last value of each call kept, one per call, the last call last. And
+  :not-recorded where nothing is kept."
+  [site call]
+  (let [all @calls]
+    (if call
+      (if-let [values (get-in all [call :values site :values])]
+        (peek values)
+        :not-recorded)
+      (let [unit (:unit (get @sites site))
+            values (vec (keep #(peek (get-in all [% :values site :values]))
+                              (get @recorded unit)))]
+        (if (seq values) values :not-recorded)))))
+
 (defn hook
   "What code compiled to be stepped through calls: (hook n) on entering a fn,
   (hook n value) once a form has its value. As cheap as can be where no thread
-  steps, since it is called for every form."
+  steps and nothing records, since it is called for every form."
   ([n]
    (when-not *in-frame*
+     (when-let [{:keys [starts unit]} (get @recording n)]
+       (when starts (call-started! unit (return-of n))))
      (reached! n nil))
    nil)
   ([n value]
+   (when-let [{:keys [unit]} (get @recording n)]
+     (when-not *in-frame*
+       (record! unit n value)))
    ;; count rather than empty?, which would make a seq of a map that is not
    (when (and (or (pos? (count @stepping)) (contains? @breaks n))
               (not *in-frame*))
      (reached! n value))
    nil))
 
-(defrecord Instrumented [form entry])
+(defrecord Instrumented [form entry record])
 
 (defn instrumenting?
   "Whether this process can compile code to be stepped through - which it can
@@ -598,11 +817,11 @@
   "Read a form from READER, as if it started at LINE and COLUMN, recording
   where every form inside it starts and ends - which is where a step shows it
   is - and answer it, to be evaluated with `eval-instrumented': to stop on
-  ENTRY, or at its breakpoints only.
+  ENTRY, or at its breakpoints only - and to RECORD, or not.
 
   Read twice, as `clojure.main/renumbering-read' does: once to have its text,
   and again from the text, from where it was written."
-  [reader line column entry]
+  [reader line column entry record]
   (let [[_ text] (read+string {:read-cond :allow} reader)
         again (doto (LineNumberingPushbackReader.
                      (StringReader. (str (apply str (repeat (dec column) \space)) text)))
@@ -611,11 +830,12 @@
     (->Instrumented (if-let [^clojure.lang.Var positions (compiler-var "RECORD_POSITIONS")]
                       (with-bindings {positions true} (read))
                       (read))
-                    entry)))
+                    entry
+                    record)))
 
 (defn- unit-described
   "The unit numbered N as a client is told about it."
-  [n {:keys [ns file line column end-line end-column entry]}]
+  [n {:keys [ns file line column end-line end-column entry record]}]
   (merge {:unit n :ns ns}
          (sym/source-of file)
          (cond-> {}
@@ -624,17 +844,29 @@
            end-line (assoc :end-line end-line)
            end-column (assoc :end-column end-column)
            ;; :entry is a file's, inside a jar
-           (false? entry) (assoc :breaks-only true))))
+           (false? entry) (assoc :breaks-only true)
+           record (assoc :record true))))
 
 (defn- uninstrument!
-  "Stop stepping through the unit numbered N, saying so to the clients that
-  were told about it. Whether there was one to stop."
+  "Stop stepping through the unit numbered N, and forget what it recorded,
+  saying so to the clients that were told about it. Whether there was one to
+  stop."
   [n]
   (let [[before _] (swap-vals! units dissoc n)]
     (when-let [{:keys [var shown]} (get before n)]
       (let [[sites-before _] (swap-vals! sites #(into {} (remove (fn [[_ site]] (= n (:unit site))))
-                                                      %))]
-        (swap! breaks #(apply dissoc % (for [[k site] sites-before :when (= n (:unit site))] k))))
+                                                      %))
+            gone (vec (for [[k site] sites-before :when (= n (:unit site))] k))]
+        (swap! breaks #(apply dissoc % gone))
+        (swap! recording #(apply dissoc % gone))
+        (swap! returns #(apply dissoc % gone)))
+      (let [[before _] (swap-vals! recorded dissoc n)]
+        (swap! calls #(apply dissoc % (get before n))))
+      (swap! in-calls (fn [m]
+                        (into {} (keep (fn [[id in]]
+                                         (let [in (filterv #(not= n (:unit %)) in)]
+                                           (when (seq in) [id in]))))
+                              m)))
       (when var (remove-watch var [::unit n]))
       (when shown
         (output/broadcast-event! (protocol/event "debug-uninstrumented" {:unit n})))
@@ -650,25 +882,31 @@
   "Evaluate the form of INSTRUMENTED, compiled to be stepped through: the
   thread that calls what it defines stops on entering it, and the one that
   evaluates anything else stops before it does - see `hook' - unless it is
-  not to stop on :entry, but at its breakpoints only. Compiled to keep its
-  locals, which a step shows and a restart needs.
+  not to stop on :entry, but at its breakpoints only. Or to :record, see
+  \"Recording\" - which is all it does where the process was not started with
+  the debugger. Compiled to keep its locals, which a step shows and a restart
+  needs.
 
   A definition stays stepped through until it is uninstrumented, or what its
-  var holds is no longer what was evaluated here, and clients are told so -
-  by `debug-instrumented' and `debug-uninstrumented' events."
-  [{:keys [form entry]}]
+  var holds is no longer what was evaluated here - and anything recorded,
+  until it is uninstrumented - and clients are told so, by
+  `debug-instrumented' and `debug-uninstrumented' events."
+  [{:keys [form entry record]}]
   (let [^clojure.lang.Var instrument (compiler-var "INSTRUMENT")]
     (cond
       (nil? instrument)
       (refuse :unavailable "Stepping through code needs the compiler of replique-clj,"
               " which this process does not run")
-      (not (available?))
+      (not (or (available?) (and record (not entry))))
       (refuse :unavailable "Stepping through code needs the process to be started with the"
               " debugger - see replique.debug")
       :else
       (let [n (swap! unit-numbers inc)
             where (meta form)
-            _ (swap! units assoc n {:entry entry})
+            definition (definition? form)
+            _ (swap! units assoc n {:entry entry :record record :definition definition})
+            ;; what is evaluated outside of the calls of what it defines
+            evaluation (when record (call-started! n nil))
             v (try (with-bindings {instrument {:site (partial site! (str *ns*) *file* n where)
                                                :hook #'hook}
                                    #'*compiler-options* (assoc *compiler-options*
@@ -676,12 +914,20 @@
                      (eval form))
                    (catch Throwable t
                      (uninstrument! n)
-                     (throw t)))]
-        (if-not (definition? form)
+                     (throw t))
+                   (finally
+                     (when evaluation (call-ended! n evaluation))))]
+        (if-not (or definition record)
           (uninstrument! n)
-          (let [unit (merge {:ns (str *ns*) :file *file* :shown true :entry entry}
+          (let [unit (merge {:ns (str *ns*) :file *file* :shown true :entry entry
+                             :record record :definition definition}
                             (select-keys where [:line :column :end-line :end-column])
                             (when (var? v) {:var v}))]
+            ;; the evaluation of a function is not one of its calls, which are
+            ;; what is looked at
+            (when (and evaluation (var? v) (fn? @v))
+              (swap! recorded update n #(vec (remove #{evaluation} %)))
+              (swap! calls dissoc evaluation))
             (swap! units assoc n unit)
             ;; defined again, the ordinary way or not: the code it holds is
             ;; not this unit's any more
@@ -870,6 +1116,33 @@
       (refuse :invalid-message "A breakpoint is named by its :site, got: " (pr-str site)))
     (let [[before _] (swap-vals! breaks dissoc site)]
       {:unbroken (contains? before site)})))
+
+;; What the unit :unit recorded: the calls of it kept, and what each form
+;; evaluated to in the call :call - the last call, without it - printed to be
+;; shown after the form: its last value in the call, and how many times it was
+;; evaluated in it
+(defmethod protocol/handle :debug-recorded [_ msg]
+  (let [{:keys [unit call]} msg]
+    (when-not (integer? unit)
+      (refuse :invalid-message "A unit is named by its number, got: " (pr-str unit)))
+    (when-not (or (nil? call) (integer? call))
+      (refuse :invalid-message "A call is named by its number, got: " (pr-str call)))
+    (when-not (:record (get @units unit))
+      (refuse :unknown-unit "Unit " unit " does not record"))
+    (let [kept (get @recorded unit [])
+          all @calls
+          c (if call (long call) (peek kept))]
+      (when (and call (not (some #{c} kept)))
+        (refuse :unknown-call "Call " call " is not kept any more"))
+      (cond-> {:calls (mapv (fn [k] (let [{:keys [thread at]} (get all k)]
+                                      {:call k :thread thread :at at}))
+                            kept)
+               :values (vec (for [[site {:keys [times values]}] (sort-by key (:values (get all c)))]
+                              (merge {:site site :times times
+                                      :value (printed-briefly (peek values))}
+                                     (select-keys (get @sites site)
+                                                  [:line :column :end-line :end-column]))))}
+        c (assoc :call c)))))
 
 (defmethod protocol/handle :debug-restart [_ msg]
   (let [id (thread-of msg)

@@ -18,6 +18,10 @@
     {:debug {:thread id :value true}}
                        what the form a thread stepping through code stopped
                        after evaluated to
+    {:debug {:site n :call c}}
+                       what the form numbered N of code recorded evaluated to
+                       in the call C - the last value of each call, without
+                       :call
 
   A source that is a reference is WATCHED: the client is told that the view
   changed, by an `inspect-changed' event, and asks for it again. The event
@@ -137,13 +141,16 @@
     ;; refresh, since the same frame of the same thread is another frame each
     ;; time the thread stops - and what changed since the last stop is what
     ;; a refresh shows
-    (:debug source) (let [{:keys [thread frame value]} (:debug source)]
-                      (when-not (integer? thread)
-                        (refuse :invalid-message "A view of a frame names its :thread, got: "
+    (:debug source) (let [{:keys [thread frame value site call]} (:debug source)]
+                      (when-not (and (or (integer? thread) (integer? site))
+                                     (or (nil? call) (integer? call)))
+                        (refuse :invalid-message "A view of a frame names its :thread, and"
+                                " one of a form recorded its :site and :call, got: "
                                 (pr-str (:debug source))))
-                      (if value
-                        #(debug/stop-value (long thread))
-                        #(debug/frame-value (long thread) (long (or frame 0)))))
+                      (cond
+                        site #(debug/recorded-value (long site) (some-> call long))
+                        value #(debug/stop-value (long thread))
+                        :else #(debug/frame-value (long thread) (long (or frame 0)))))
     :else (refuse :invalid-message
                   "A view is opened on a :var, on the :results of a repl"
                   " connection, on the :taps or on a frame of a stopped thread"

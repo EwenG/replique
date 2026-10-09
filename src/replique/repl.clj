@@ -226,11 +226,11 @@
                               (protocol/write-frame! conn (prompt-frame conn)))
                             (recur))
             :stream-end request-exit
-            (let [{:keys [file line instrument column entry]} @pending
+            (let [{:keys [file line instrument column entry record]} @pending
                   ;; to be stepped through, which is read with the span of
                   ;; every form, from where it was written - see replique.debug
                   input (if instrument
-                          (debug/read-instrumented *in* (or line 1) (or column 1) entry)
+                          (debug/read-instrumented *in* (or line 1) (or column 1) entry record)
                           (clojure.main/renumbering-read {:read-cond :allow} *in* (or line 1)))
                   instrumented (when (instance? Instrumented input) input)
                   input (if instrumented (:form input) input)]

@@ -38,8 +38,10 @@
 ;; With :instrument true the form is compiled to be stepped through - see
 ;; `replique.debug/eval-instrumented' - and :column says where on its first
 ;; line it starts, which a step shows the place of a form by. With :entry
-;; false it does not stop on entry, but at the breakpoints it is given.
-(defrecord SourceDirective [file line instrument column entry])
+;; false it does not stop on entry, but at the breakpoints it is given. With
+;; :record true what its forms evaluate to is kept - see "Recording" in
+;; replique.debug.
+(defrecord SourceDirective [file line instrument column entry record])
 
 (defn source-directive [m]
   (let [bad (fn [message]
@@ -81,8 +83,11 @@
       (not (or (nil? (:entry m)) (boolean? (:entry m))))
       (bad (str "#replique/src :entry must be true or false, got: " (pr-str (:entry m))))
 
+      (not (or (nil? (:record m)) (boolean? (:record m))))
+      (bad (str "#replique/src :record must be true or false, got: " (pr-str (:record m))))
+
       :else (->SourceDirective (:file m) (:line m) (boolean (:instrument m)) (:column m)
-                               (not (false? (:entry m)))))))
+                               (not (false? (:entry m))) (boolean (:record m))))))
 
 ;;; The namespace
 
