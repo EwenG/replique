@@ -43,7 +43,7 @@
             [replique.state :as state])
   (:import [clojure.lang LineNumberingPushbackReader]
            [java.io IOException Writer]
-           [replique.directives LoadDirective NsDirective ReloadDirective
+           [replique.directives FrameDirective LoadDirective NsDirective ReloadDirective
             SourceDirective]))
 
 (def ^:private start-ns
@@ -321,6 +321,11 @@
 
             ;; the way a socket repl is ended, as in any clojure socket repl
             (identical? :repl/quit form) ::eof
+
+            ;; no debugger stops a page either
+            (instance? FrameDirective form)
+            (do (vreset! moved false)
+                (refused "A ClojureScript repl evaluates in no frame: #replique/frame is for a Clojure repl."))
 
             ;; Recorded, and nothing else: there is no debugger to stop a
             ;; page with

@@ -386,6 +386,33 @@
               form (assoc :code (binding [*print-length* nil *print-level* nil]
                                   (pr-str form))))))))))
 
+;; Define the var :name, in the namespace :ns, to what the node :node of the
+;; view :view holds: a value looked at, kept to work with at the repl - a local
+;; of a stopped thread in particular, which is gone once the thread goes on.
+;; Without :ns, a view of the locals of a frame defines it in the namespace of
+;; that frame's code. A Clojure view only: a ClojureScript value is in a
+;; runtime, and its vars are not this process's
+(defmethod protocol/handle :inspect-def [_ msg]
+  (with-view msg
+    (fn [{:keys [id dialect session source]}]
+      (let [node (node-of msg)
+            name (:name msg)
+            {:keys [thread frame]} (:debug source)
+            ns (cond
+                 (some? (:ns msg)) (some-> (:ns msg) protocol/as-name symbol find-ns)
+                 thread (debug/frame-ns (long thread) (long (or frame 0))))]
+        (when (= :cljs dialect)
+          (refuse :invalid-message "A value of a ClojureScript runtime is not defined in this process"))
+        (when-not (and (string? name) (simple-symbol? (symbol name)))
+          (refuse :invalid-message "A var is defined by its :name, unqualified, got: " (pr-str name)))
+        (when-not ns
+          (refuse :unknown-ns "No namespace to define " name " in"
+                  (if (:ns msg) (str " - " (:ns msg) " is not one") "")))
+        (let [v (inspector/value (:model session) node)]
+          (when (= inspector/gone v)
+            (refuse :node-gone "What was there is no longer there"))
+          {:var (str (symbol (intern ns (symbol name) v)))})))))
+
 (defmethod protocol/handle :inspect-close [_ msg]
   (close! (:view msg))
   {:closed true})

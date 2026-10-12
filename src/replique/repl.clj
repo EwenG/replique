@@ -29,7 +29,7 @@
            [java.io File IOException Reader Writer]
            [java.util.jar JarFile]
            [replique.debug Instrumented]
-           [replique.directives LoadDirective NsDirective ReloadDirective
+           [replique.directives FrameDirective LoadDirective NsDirective ReloadDirective
             SourceDirective]))
 
 (def ^:private default-file "NO_SOURCE_PATH")
@@ -167,8 +167,8 @@
   (locking clojure.lang.RT/REQUIRE_LOCK
     (analysis/telling* analysis/reload!)))
 
-;; Written from the read step, which is above the frames it writes
-(declare prompt-frame)
+;; Called from the read step, which is above them
+(declare prompt-frame point-at-frame!)
 
 (defn- make-repl-read
   "The :read step: clojure.main/repl-read, plus the directives.
@@ -189,8 +189,11 @@
   One sent with no form after it is answered with a prompt, and one sent with
   a form is not: the form's own prompt says where the repl is, and two prompts
   for one evaluation is what the client cannot read - see the :line-start
-  branch."
-  [conn]
+  branch.
+
+  #replique/frame is done too, and the same way: it points the repl at the
+  frame IN-FRAME holds, and moves it to the namespace of that frame's code."
+  [conn in-frame]
   (let [pending (volatile! nil)
         ;; A namespace directive has been read and nothing has been read
         ;; since. What acknowledges it is the blank line after it - see the
@@ -223,7 +226,7 @@
             ;; prompt that says it happened.
             :line-start (do (when @moved
                               (vreset! moved false)
-                              (protocol/write-frame! conn (prompt-frame conn)))
+                              (protocol/write-frame! conn (prompt-frame conn in-frame)))
                             (recur))
             :stream-end request-exit
             (let [{:keys [file line instrument column entry record]} @pending
@@ -244,6 +247,10 @@
                 ;; is not that form
                 (instance? NsDirective input)
                 (do (enter-ns! (:ns input)) (vreset! moved true) (recur))
+
+                ;; pending left alone, as for a namespace
+                (instance? FrameDirective input)
+                (do (point-at-frame! in-frame input) (vreset! moved true) (recur))
 
                 ;; Answered with a form rather than done here, so that loading
                 ;; a file is evaluated the way everything else is: its output
@@ -293,11 +300,13 @@
 
 (defn- repl-ns [] (str (ns-name *ns*)))
 
-(defn- prompt-frame [conn]
+(defn- prompt-frame [conn in-frame]
   (protocol/frame
    {:tag "prompt"
     :connection (:id conn)
     :ns (repl-ns)
+    ;; the frame what is read is evaluated in, where the repl is pointed at one
+    :frame (some-> @in-frame (select-keys [:thread :frame]))
     ;; What the editor needs to describe the repl without asking: the
     ;; namespace the next form will be read in, and the printing the last
     ;; result went through.
@@ -362,17 +371,46 @@
   (when (contains? params :warn-on-reflection)
     (set! *warn-on-reflection* (boolean (:warn-on-reflection params)))))
 
+(defn- point-at-frame!
+  "Point the repl at the frame a #replique/frame directive, or a handshake,
+  names - FRAME, a FrameDirective - or at none, where it names none. IN-FRAME
+  is where the repl keeps it.
+
+  To the namespace of the frame too, which is what its code was read in -
+  where the thread is stopped already. Where it is not, the repl says so when
+  it is asked to evaluate something - see `replique.debug/eval-in-frame'."
+  [in-frame frame]
+  (if (:thread frame)
+    (do (vreset! in-frame {:thread (:thread frame) :frame (:frame frame)})
+        (when-let [ns (try (debug/frame-ns (:thread frame) (:frame frame))
+                           (catch Exception _ nil))]
+          (in-ns (ns-name ns))))
+    (vreset! in-frame nil)))
+
+(defn- evaluated-in-frame?
+  "Whether FORM, read by a repl pointed at a frame, is evaluated there.
+
+  What a client asks the repl to do, rather than to evaluate, is done where
+  the repl is: a definition to step through or record is compiled, and a file
+  loaded, as anywhere else."
+  [form]
+  (not (or (instance? Instrumented form)
+           (and (seq? form) (#{`load! `reload!} (first form))))))
+
 (defn repl
   "Run a repl on conn until the client disconnects.
 
   params are set before the first prompt, which reports them - see
-  `set-params!'."
-  [conn params]
+  `set-params!'. With FRAME, a FrameDirective, the repl starts pointed at
+  that frame - see `replique.directives/frame-directive'."
+  [conn params frame]
   (let [out (frame-writer conn "out")
         err (frame-writer conn "err")
         ;; Output is flushed before every frame that concludes something, so
         ;; that a result never comes out before what the form printed.
-        flush-output! (fn [] (.flush out) (.flush err))]
+        flush-output! (fn [] (.flush out) (.flush err))
+        ;; nil, or the {:thread :frame} what is read is evaluated in
+        in-frame (volatile! nil)]
     (binding [*in* (:in conn)
               *out* out
               *err* err
@@ -386,8 +424,9 @@
                  ;; project being worked on must keep working
                  (set! *data-readers* (merge *data-readers*
                                              directives/data-readers))
-                 (set-params! params))
-         :read (make-repl-read conn)
+                 (set-params! params)
+                 (when frame (point-at-frame! in-frame frame)))
+         :read (make-repl-read conn in-frame)
          ;; ROUND THE EVALUATION AND NOT ROUND A DIRECTIVE, because what defines
          ;; something is not only a load: a `defn' typed here, a `require', a
          ;; `#replique/reload' of forty files, and a `load-file' somebody wrote
@@ -398,9 +437,14 @@
          ;; come back can be interrupted like anything else.
          :eval (fn [form]
                  (interruptible conn #(hooks/around*
-                                       (fn [] (if (instance? Instrumented form)
+                                       (fn [] (cond
+                                                (and @in-frame (evaluated-in-frame? form))
+                                                (debug/eval-in-frame @in-frame form)
+
+                                                (instance? Instrumented form)
                                                 (debug/eval-instrumented form)
-                                                (eval form))))))
+
+                                                :else (eval form))))))
          ;; The frame is built before the output is flushed: printing a
          ;; value may itself print - a print-method warning about what it was
          ;; handed - and that output belongs before the result, not after it.
@@ -424,7 +468,7 @@
          :need-prompt (constantly true)
          :prompt (fn []
                    (flush-output!)
-                   (protocol/write-frame! conn (prompt-frame conn)))
+                   (protocol/write-frame! conn (prompt-frame conn in-frame)))
          :flush flush-output!)
         (finally (flush-output!))))))
 
@@ -433,13 +477,19 @@
   [conn hello]
   (if-let [why (protocol/invalid-params param-kinds (:params hello))]
     (protocol/write-frame! conn (protocol/params-error hello param-kinds why))
-    (do
-      (protocol/write-frame! conn (protocol/reply hello (assoc (state/info)
-                                                               :role "repl"
-                                                               :connection (:id conn))))
-      ;; after the reply, as for a control connection
-      (server/set-role! conn :repl)
-      (repl conn (:params hello)))))
+    ;; :frame, the frame of a stopped thread the repl starts pointed at - as
+    ;; #replique/frame would point it, and before its first prompt
+    (let [frame (try (some-> (:frame hello) directives/frame-directive)
+                     (catch clojure.lang.ExceptionInfo e e))]
+      (if (instance? Throwable frame)
+        (protocol/write-frame! conn (protocol/error hello :invalid-frame (.getMessage ^Throwable frame)))
+        (do
+          (protocol/write-frame! conn (protocol/reply hello (assoc (state/info)
+                                                                   :role "repl"
+                                                                   :connection (:id conn))))
+          ;; after the reply, as for a control connection
+          (server/set-role! conn :repl)
+          (repl conn (:params hello) frame))))))
 
 (defmethod protocol/accept-role :repl [conn hello]
   ;; ONE ROLE AND TWO DIALECTS, rather than two roles. A repl connection is one

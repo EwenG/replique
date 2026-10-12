@@ -1146,29 +1146,116 @@
   "The locals code run in a frame sees, while it runs."
   nil)
 
+(defn- frame-locals
+  "The locals of a frame of the stopped thread ID: the ones `break!' was given
+  where PAIRS is nil, and PAIRS - read off the frame by the debugger -
+  otherwise."
+  [id pairs]
+  (if pairs
+    (locals-of pairs)
+    (:locals (get @pauses id))))
+
+(defn- eval-with
+  "Evaluate FORM with LOCALS bound, as code run in a frame: it stops nowhere."
+  [locals form]
+  (let [bound (vec (mapcat (fn [s] [s `(get *bound* '~s)]) (keys locals)))]
+    (binding [*in-frame* true
+              *bound* locals]
+      (eval `(let ~bound ~form)))))
+
 (defn eval-in!
   "Evaluate CODE on the stopped thread ID, which is the thread calling this,
-  with the locals of a frame bound: the ones `break!' was given where PAIRS is
-  nil, and PAIRS - read off the frame by the debugger - otherwise. In the
-  namespace NS, or the one the thread stopped in for a frame that has none.
+  with the locals of a frame bound - see `frame-locals'. In the namespace NS,
+  or the one the thread stopped in for a frame that has none.
 
   Answers what came of it as EDN, {:value printed} or {:exception data}: what
   the debugger can hand back is a string."
   [id code ns pairs]
   (pr-str
    (try
-     (let [{:keys [where locals]} (get @pauses id)
+     (let [{:keys [where]} (get @pauses id)
            ;; a frame of Java code has no namespace, and locals of its own
-           locals (if pairs (locals-of pairs) locals)
            ns (or (find-ns (symbol (or ns (:ns where)))) *ns*)
-           form (binding [*ns* ns] (read-string code))
-           bound (vec (mapcat (fn [s] [s `(get *bound* '~s)]) (keys locals)))]
-       (binding [*ns* ns
-                 *in-frame* true
-                 *bound* locals]
-         {:value (printed (eval `(let ~bound ~form)))}))
+           form (binding [*ns* ns] (read-string code))]
+       (binding [*ns* ns]
+         {:value (printed (eval-with (frame-locals id pairs) form))}))
      (catch Throwable t
        {:exception (protocol/exception->data t)}))))
+
+;;; A repl evaluating in a frame
+
+(defonce ^:private handed
+  ;; number -> {:form :ns :out :err :results :said}: a form a repl pointed at
+  ;; a frame hands the thread that stopped - see `eval-in-frame'
+  (atom {}))
+
+(defonce ^:private handed-numbers (atom 0))
+
+(defn eval-handed!
+  "Evaluate the form handed over as N on the stopped thread ID, which is the
+  thread calling this, with the locals of a frame bound - see `frame-locals'.
+
+  As the repl that handed it would have: in its namespace, printing to it, and
+  with its *1, *2, *3 and *e. What came of it is delivered to the repl rather
+  than answered, as it is - a value, or what was thrown - which the debugger
+  could only have handed back printed."
+  [id n _ns pairs]
+  ;; gone where the repl stopped waiting for it
+  (when-let [{:keys [form ns ^java.io.Writer out ^java.io.Writer err results said]}
+             (get @handed n)]
+    (let [[one two three e] results]
+      (deliver said (try
+                      (binding [*ns* ns, *out* out, *err* err
+                                *1 one, *2 two, *3 three, *e e]
+                        {:value (eval-with (frame-locals id pairs) form)})
+                      (catch Throwable t {:thrown t})
+                      (finally (.flush out) (.flush err))))))
+  nil)
+
+(defn frame-ns
+  "The namespace the code of the frame INDEX of the stopped thread ID was read
+  in - or nil, for a frame of Java code, or a thread that is not stopped."
+  [id index]
+  (let [{:keys [where] :as pause} (get @pauses id)]
+    (when (:stopped pause)
+      (or (when (zero? index) (some-> (:ns where) symbol find-ns))
+          (some-> (nth (:frames (ask! {:op :frames :thread id})) index nil)
+                  :fn symbol namespace symbol find-ns)))))
+
+(defn eval-in-frame
+  "Evaluate FORM, read by a repl pointed at the frame FRAME of the thread
+  THREAD - see `#replique/frame' - on that thread, which has to be stopped,
+  with the locals of the frame bound.
+
+  Its value is answered and what it threw thrown, as the eval of the repl
+  would: what is done with them is the repl's. Interrupting the repl
+  interrupts the thread running the code, and waits for it to come back -
+  which interrupting again does not."
+  [{:keys [thread frame]} form]
+  (let [pause (get @pauses thread)]
+    (when-not (:stopped pause)
+      (throw (ex-info (str "Thread " thread " is not stopped - this repl evaluates in its frame "
+                           frame " once it stops, and here after #replique/frame nil")
+                      {:replique/error :not-paused})))
+    (let [n (swap! handed-numbers inc)
+          said (promise)]
+      (swap! handed assoc n {:form form :ns *ns* :out *out* :err *err*
+                             :results [*1 *2 *3 *e] :said said})
+      (try
+        (try (ask! {:op :eval :thread thread :frame frame :handed n
+                    ;; read off the frame, where break! did not hand them over
+                    :read (not (and (zero? frame) (:locals pause)))}
+                   Long/MAX_VALUE)
+             (catch InterruptedException _
+               (.interrupt ^Thread (:thread pause))
+               @said))
+        (let [{:keys [value thrown] :as done} (deref said 0 nil)]
+          (cond
+            (nil? done) (throw (ex-info "The debugger did not run the code"
+                                        {:replique/error :debugger}))
+            thrown (throw thrown)
+            :else value))
+        (finally (swap! handed dissoc n))))))
 
 ;;; What a client sees
 

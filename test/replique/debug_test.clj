@@ -208,6 +208,95 @@
           (is (= "22" (:value (client/frame-tagged frames "ret")))))
         (finally (disconnect r))))))
 
+(deftest a-repl-evaluates-in-a-frame
+  (with-debuggable [info]
+    (let [r (client/repl-client info nil 60000)
+          c (control info)]
+      (try
+        ;; a frame further out is read off by the debugger, which needs them
+        (ask! c {:op :locals-clearing :clear false :id 40})
+        (ret r program)
+        (send! r "(h {:n 1})")
+        (let [paused (await-event c "debug-paused")
+              thread (:thread paused)
+              f (client/repl-client info {:frame {:thread thread :frame 0}} 60000)
+              point! (fn [directive]
+                       (send! f (str directive "\n"))
+                       (recv-until f "prompt"))]
+          (try
+            (testing "a repl opened on a frame says so, from its first prompt"
+              (is (= {:thread thread :frame 0} (:frame (:prompt f))))
+              (is (= "user" (:ns (:prompt f)))))
+            (testing "what it reads is evaluated with the locals of the frame"
+              (is (= "1022" (ret f "(+ a b 1000)"))))
+            (testing "on the thread that stopped"
+              (is (= (pr-str (:name paused)) (ret f "(.getName (Thread/currentThread))"))))
+            (testing "printing to the repl, which keeps its results"
+              (let [frames (eval! f "(do (println :printed) a)")]
+                (is (= ":printed\n" (client/printed frames "out")))
+                (is (= "2" (:value (client/frame-tagged frames "ret")))))
+              (is (= "2" (ret f "*1"))))
+            (testing "what it throws is the repl's exception"
+              (is (re-find #"Divide by zero"
+                           (:message (client/frame-tagged (eval! f "(/ 1 0)") "exception")))))
+            (testing "interrupting the repl interrupts the code on the thread"
+              (send! f "(Thread/sleep 60000)")
+              (Thread/sleep 500)
+              (is (true? (:interrupted (ask! c {:op :interrupt :id 30
+                                                :connection (get-in f [:hello :connection])}))))
+              (is (client/frame-tagged (recv-until f "prompt") "exception"))
+              (is (= "2" (ret f "a"))))
+            (testing "a directive points it at another frame, and at its namespace"
+              (point! "#replique/ns elsewhere")
+              (let [prompt (last (point! (str "#replique/frame {:thread " thread " :frame 1}")))]
+                (is (= {:thread thread :frame 1} (:frame prompt)))
+                (is (= "user" (:ns prompt))))
+              (is (= "{:n 1}" (ret f "m"))))
+            (testing "and at none: it evaluates on its own thread again"
+              (let [prompt (last (point! "#replique/frame nil"))]
+                (is (nil? (:frame prompt))))
+              (is (= "3" (ret f "(+ 1 2)")))
+              (is (client/frame-tagged (eval! f "m") "exception")))
+            (testing "a thread that runs is not evaluated in"
+              (point! (str "#replique/frame {:thread " thread "}"))
+              (ask! c {:op :debug-continue :thread thread :id 31})
+              (recv-until r "prompt")
+              (is (re-find #"is not stopped"
+                           (:message (client/frame-tagged (eval! f "a") "exception")))))
+            (finally (disconnect f))))
+        (finally (disconnect r) (disconnect c))))))
+
+(deftest a-local-is-kept-as-a-var
+  (with-debuggable [info]
+    (let [r (client/repl-client info nil 60000)
+          c (control info)]
+      (try
+        ;; a frame further out is read off by the debugger, which needs them
+        (ask! c {:op :locals-clearing :clear false :id 40})
+        (ret r program)
+        (send! r "(h {:n 1})")
+        (let [thread (:thread (await-event c "debug-paused"))
+              o (ask! c {:op :inspect :source {:debug {:thread thread :frame 1}} :id 1})
+              node (:node (first (filter #(= "m" (:key %)) (:children o))))]
+          (testing "in the namespace of the frame"
+            (is (= {:var "user/kept"}
+                   (select-keys (ask! c {:op :inspect-def :view (:view o) :node node
+                                         :name "kept" :id 2})
+                                [:var]))))
+          (testing "or the one named"
+            (is (= {:var "clojure.core/kept-too"}
+                   (select-keys (ask! c {:op :inspect-def :view (:view o) :node node
+                                         :name "kept-too" :ns "clojure.core" :id 3})
+                                [:var]))))
+          (testing "and refused without a name"
+            (is (= "invalid-message" (:error (ask! c {:op :inspect-def :view (:view o)
+                                                      :node node :name "a/b" :id 4})))))
+          (ask! c {:op :debug-continue :thread thread :id 5})
+          (recv-until r "prompt")
+          (testing "which stays once the thread went on"
+            (is (= "{:n 1}" (ret r "kept")))))
+        (finally (disconnect r) (disconnect c))))))
+
 (deftest asking-about-a-thread-that-is-not-stopped
   (with-debuggable [info]
     (let [c (control info)]

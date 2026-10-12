@@ -11,6 +11,7 @@
     #replique/ns     the namespace to read in, from here on
     #replique/load   load a file rather than evaluate a form
     #replique/reload load everything that changed
+    #replique/frame  evaluate in a frame of a stopped thread, from here on
 
   IN BAND rather than as ops on the control connection, and rather than as a
   process wide atom another connection could set: a directive cannot race with
@@ -237,6 +238,47 @@
                   " milliseconds, got: " (pr-str timeout)))))
     (->ReloadDirective (:timeout m))))
 
+;;; Evaluating in a frame
+
+;; A thread stopped by the debugger has locals, and the code around them is
+;; what somebody wants to try things against. A repl can be pointed at one of
+;; its frames, from here on - the way #replique/ns points it at a namespace:
+;;
+;;   #replique/frame {:thread 42 :frame 0}
+;;
+;; and what it reads after that is evaluated on that thread, with the locals of
+;; that frame bound - see `replique.debug/eval-in-frame'. The frame is counted
+;; from where the thread stopped, which is where it is stopped now: a thread
+;; stepped on is evaluated in where it got to. It moves the repl to the
+;; namespace of the frame too, which is the one its code was read in.
+;;
+;;   #replique/frame nil
+;;
+;; points it back at nothing: the repl evaluates on its own thread again. Its
+;; own repl rather than the one the thread was started from, which is usually
+;; waiting for the thread to come back.
+(defrecord FrameDirective [thread frame])
+
+(defn frame-directive [m]
+  (let [bad (fn [message]
+              (throw (ex-info message {:replique/error :invalid-frame-directive})))]
+    (cond
+      ;; a record either way: a reader function that answers nil has read nil,
+      ;; which is a form
+      (nil? m) (->FrameDirective nil nil)
+
+      (not (map? m))
+      (bad (str "#replique/frame takes a map, or nil, got: " (pr-str m)))
+
+      (not (integer? (:thread m)))
+      (bad (str "#replique/frame takes the id of the :thread, got: " (pr-str (:thread m))))
+
+      (not (or (nil? (:frame m)) (nat-int? (:frame m))))
+      (bad (str "#replique/frame takes the index of the :frame, from 0, got: "
+                (pr-str (:frame m))))
+
+      :else (->FrameDirective (long (:thread m)) (long (or (:frame m) 0))))))
+
 (def data-readers
   "The tags a repl reads on top of whatever the code it is reading uses.
 
@@ -247,4 +289,5 @@
   {'replique/src    #'source-directive
    'replique/ns     #'ns-directive
    'replique/load   #'load-directive
-   'replique/reload #'reload-directive})
+   'replique/reload #'reload-directive
+   'replique/frame  #'frame-directive})
