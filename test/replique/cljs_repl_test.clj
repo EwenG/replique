@@ -21,7 +21,9 @@
   point is that it needs no page: the two tests of it on the browser are the
   ones at the bottom of this file, and they start the two servers and never open
   anything."
-  (:require [clojure.java.io :as io]
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
+            [replique.json :as json]
             [clojure.string :as string]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [replique.cljs :as cljs]
@@ -996,4 +998,219 @@
                   (pr-str frames)))
             (testing "and the repl goes on"
               (is (= "3" (:value (frame-tagged (eval! r "(+ 1 2)") "ret")))))))
+        (finally (client/delete-recursively dir))))))
+
+;;; What code compiled to be recorded keeps, in the runtime
+
+(defn- recorded!
+  "Evaluate TEXT in NS on node compiled to be recorded as the unit UNIT, a
+  DEFINITION or not, numbering its sites from (inc @SITES) on - into SITES,
+  {n site}. What `replique.debug' does for a repl that records, without the
+  repl: the runtime's half is what is tested here."
+  [ns text unit definition sites]
+  (binding [cljs/*target* :node]
+    (cljs/with-target-lock* #(cljs/compile-namespace! 'replique.debug))
+    (cljs/with-ns* ns
+      (fn []
+        (let [[form] (cljs/read-form (cljs/reader text) ::eof)
+              site (fn [s]
+                     (let [n (inc (count @sites))]
+                       (swap! sites assoc n (dissoc s :form))
+                       n))]
+          (with-bindings {(requiring-resolve 'clojure.cljs.emitter/*instrument*)
+                          {:site site
+                           :hook (str "(await $CLJS.require(\"replique.debug\"),"
+                                      " $CLJS.namespaces.get(\"replique.debug\")"
+                                      ".unit(" unit ", " definition "))")}}
+            (cljs/eval-form form {:text text})))))))
+
+(defn- debug-op
+  "Ask the runtime's replique.debug MSG, and answer what it said."
+  [msg]
+  (binding [cljs/*target* :node]
+    (let [{:keys [status value]}
+          (cljs/eval-js-here (str "$CLJS.namespaces.get(\"replique.debug\").op("
+                                  (json/write-str (json/write-str msg)) ")")
+                             5000)]
+      (is (= :success status) value)
+      (edn/read-string (edn/read-string value)))))
+
+(defn- site-at
+  "The number of the site of SITES that starts at LINE and COLUMN."
+  [sites line column]
+  (some (fn [[n s]] (when (and (= line (:line s)) (= column (:column s))) n)) sites))
+
+(deftest test-what-a-recorded-function-evaluated-to-is-kept-call-by-call
+  (when (compiling?)
+    (with-repl [r]
+      (eval! r "#replique/ns rec.node\n(def x 1)")
+      (let [sites (atom {})
+            unit 9001]
+        (is (= :success (:status (recorded! 'rec.node "(defn twice [x]\n  (let [y (* 2 x)]\n    (inc y)))"
+                                            unit true sites))))
+        (is (= "5" (:value (frame-tagged (eval! r "(rec.node/twice 2)") "ret"))))
+        (is (= "7" (:value (frame-tagged (eval! r "(rec.node/twice 3)") "ret"))))
+        (let [{:keys [calls call values]} (debug-op {:op "recorded" :unit unit})
+              by-site (into {} (map (juxt :site (juxt :value :times))) values)]
+          (is (= 2 (count calls)))
+          (is (= call (:call (peek calls))))
+          (testing "the last call, a form at a time"
+            (is (= ["6" 1] (by-site (site-at @sites 2 11))))
+            (is (= ["7" 1] (by-site (site-at @sites 3 5))))
+            (is (= ["7" 1] (by-site (site-at @sites 2 3)))))
+          (testing "and the one before it, asked for"
+            (let [first-call (:call (first calls))
+                  {:keys [values]} (debug-op {:op "recorded" :unit unit :call first-call})]
+              (is (= #{"4" "5"} (set (map :value values))))))
+          (testing "and a call that is not kept is said not to be"
+            (is (= "unknown-call" (:kind (debug-op {:op "recorded" :unit unit :call 123456}))))))
+        (testing "what a form evaluated to is a view, in the runtime"
+          (let [c (client/control-client @the-process)]
+            (try
+              (let [o (request! c {:op :inspect :dialect :cljs :target :node
+                                   :source {:debug {:site (site-at @sites 3 5)}} :id 1})]
+                (is (= "reply" (:tag o)) (pr-str o))
+                (is (= ["5" "7"] (mapv :value (:children o)))))
+              (finally (disconnect c)))))
+        (testing "and forgotten, nothing is kept"
+          (is (= {:forgotten [unit]} (debug-op {:op "forget" :unit unit})))
+          (is (= "unknown-unit" (:kind (debug-op {:op "recorded" :unit unit}))))
+          (eval! r "(rec.node/twice 4)")
+          (is (= "unknown-unit" (:kind (debug-op {:op "recorded" :unit unit})))))))))
+
+(deftest test-a-fn-made-in-a-call-records-in-that-call
+  (when (compiling?)
+    (with-repl [r]
+      (eval! r "#replique/ns rec.later\n(def x 1)")
+      (let [sites (atom {})
+            unit 9002]
+        (recorded! 'rec.later "(defn later [x]\n  (fn [] (inc x)))" unit true sites)
+        (eval! r "(def f (rec.later/later 1))")
+        (eval! r "(rec.later/later 10)")
+        (testing "called once that call and another are over"
+          (is (= "2" (:value (frame-tagged (eval! r "(f)") "ret"))))
+          (let [{:keys [calls]} (debug-op {:op "recorded" :unit unit})
+                first-call (:call (first calls))]
+            (is (= 2 (count calls)))
+            (is (= ["2"] (map :value (:values (debug-op {:op "recorded" :unit unit
+                                                         :call first-call})))))
+            (is (= [] (:values (debug-op {:op "recorded" :unit unit}))))))))))
+
+(deftest test-what-a-recorded-form-evaluated-to-is-printed-without-realizing-it
+  (when (compiling?)
+    (with-repl [r]
+      (eval! r "#replique/ns rec.lazy\n(def x 1)")
+      (let [sites (atom {})
+            unit 9003
+            ;; s is never realized, by the form or by what prints its value
+            text "(let [s (map inc (range 50))] (count (vec (range 30))))"]
+        (testing "a form that is no definition is recorded in one call, its evaluation"
+          (is (= :success (:status (recorded! 'rec.lazy text unit false sites))))
+          (let [{:keys [calls values]} (debug-op {:op "recorded" :unit unit})
+                by-site (into {} (map (juxt :site :value)) values)
+                at #(site-at @sites 1 (inc (string/index-of text %)))]
+            (is (= 1 (count calls)))
+            (is (= "#<unrealized LazySeq>" (by-site (at "(map inc"))))
+            (is (= "(0 1 2 3 4 5 6 7 8 9 ...)" (by-site (at "(range 30)"))))))))))
+
+;;; Recording at a ClojureScript repl
+
+(defn- ask!
+  "Send MSG on the control connection C, and answer its reply, past any event."
+  [c msg]
+  (send! c msg)
+  (loop []
+    (let [f (recv c)]
+      (if (= "event" (:tag f)) (recur) f))))
+
+(defn- await-event
+  "Read C until the event NAME, and answer it."
+  [c name]
+  (loop []
+    (let [f (recv c)]
+      (cond
+        (= :eof f) (throw (ex-info "The connection closed" {}))
+        (and (= "event" (:tag f)) (= name (:event f))) f
+        :else (recur)))))
+
+(defn- recorded-by-place
+  "What the call CALL of the unit UNIT recorded - the last one, CALL nil - with
+  :by-place, {[line column] [value times]}."
+  [c unit call id]
+  (let [said (ask! c (cond-> {:op :debug-recorded :unit unit :id id} call (assoc :call call)))]
+    (assoc said :by-place (into {} (map (fn [v] [[(:line v) (:column v)] [(:value v) (:times v)]]))
+                                (:values said)))))
+
+(defn- record-src
+  "CODE, under the directive that has a repl record it, written at LINE and
+  COLUMN."
+  [line column code]
+  (str "#replique/src {:file \"/tmp/recorded.cljs\" :line " line " :column " column
+       " :instrument true :entry false :record true}\n" code))
+
+(deftest test-a-recorded-clojurescript-definition-is-a-unit-like-a-clojure-one
+  (when (compiling?)
+    (with-repl [r]
+      (let [c (client/control-client @the-process)]
+        (try
+          (eval! r "#replique/ns rec.e2e\n(def x 1)")
+          (is (= "ret" (:tag (frame-tagged (eval! r (record-src 1 1 "(defn twice [x]\n  (let [y (* 2 x)]\n    (inc y)))")) "ret"))))
+          (let [told (await-event c "debug-instrumented")
+                unit (:unit told)]
+            (testing "told about as recording, in the runtime it is in"
+              (is (true? (:record told)))
+              (is (= ["cljs" "node"] [(:dialect told) (:target told)]))
+              (is (= [1 1] [(:line told) (:column told)])))
+            (is (= "5" (:value (frame-tagged (eval! r "(twice 2)") "ret"))))
+            (testing "clients are told it recorded"
+              (is (= {:unit unit :calls 1}
+                     (select-keys (await-event c "debug-recorded") [:unit :calls]))))
+            (testing "and asked, the runtime answers, placed where its forms are"
+              (let [{:keys [calls by-place]} (recorded-by-place c unit nil 1)]
+                (is (= 1 (count calls)))
+                (is (= "node" (:thread (first calls))))
+                (is (= {[2 11] ["4" 1] [3 5] ["5" 1] [2 3] ["5" 1]} by-place))))
+            (testing "call by call"
+              (eval! r "(twice 3)")
+              (let [{:keys [calls]} (recorded-by-place c unit nil 2)]
+                (is (= 2 (count calls)))
+                (is (= ["4" 1] (get-in (recorded-by-place c unit (:call (first calls)) 3)
+                                       [:by-place [2 11]])))))
+            (testing "defined again the ordinary way, it is let go of"
+              (eval! r "(defn twice [x] x)")
+              (is (= unit (:unit (await-event c "debug-uninstrumented"))))
+              (is (= "unknown-unit" (:error (ask! c {:op :debug-recorded :unit unit :id 4}))))))
+          (testing "a form written further along its line is placed there"
+            (eval! r (record-src 7 3 "(defn other [] (inc 1))"))
+            (let [unit (:unit (await-event c "debug-instrumented"))]
+              (eval! r "(other)")
+              (is (= {[7 18] ["2" 1]} (:by-place (recorded-by-place c unit nil 5))))
+              (testing "and recorded again, the unit before it is let go of"
+                (eval! r (record-src 7 3 "(defn other [] (inc 2))"))
+                ;; the new one is told first: it is what said the old one is
+                ;; replaced
+                (let [again (:unit (await-event c "debug-instrumented"))]
+                  (is (= unit (:unit (await-event c "debug-uninstrumented"))))
+                  (is (not= unit again))
+                  (eval! r "(other)")
+                  (is (= {[7 18] ["3" 1]} (:by-place (recorded-by-place c again nil 6))))))))
+          (testing "stepping through is refused, saying why"
+            (let [frames (eval! r (str "#replique/src {:line 1 :instrument true}\n(+ 1 2)"))]
+              (is (string/includes? (:message (frame-tagged frames "exception")) "recorded"))))
+          (finally (disconnect c)))))))
+
+(deftest test-a-recorded-clojurescript-definition-is-let-go-of-when-its-file-loads
+  (when (compiling?)
+    (let [dir (client/temp-dir)]
+      (try
+        (with-repl [r]
+          (let [c (client/control-client @the-process)]
+            (try
+              (eval! r (a-file dir 'rec.loaded "(defn f [x] (inc x))"))
+              (eval! r "#replique/ns rec.loaded\n(def y 1)")
+              (eval! r (record-src 2 1 "(defn f [x] (inc x))"))
+              (let [unit (:unit (await-event c "debug-instrumented"))]
+                (eval! r (a-file dir 'rec.loaded "(defn f [x] (dec x))"))
+                (is (= unit (:unit (await-event c "debug-uninstrumented")))))
+              (finally (disconnect c)))))
         (finally (client/delete-recursively dir))))))

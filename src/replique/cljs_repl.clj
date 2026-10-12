@@ -34,6 +34,7 @@
             [replique.analysis :as analysis]
             [replique.cljs :as cljs]
             [replique.cljs-analysis :as cljs-analysis]
+            [replique.debug :as debug]
             [replique.hooks :as hooks]
             [replique.inspect :as inspect]
             [replique.lint :as lint]
@@ -263,9 +264,21 @@
                           (protocol/write-frame! conn (prompt-frame conn)))
                         (recur))
         :stream-end ::eof
-        (let [{:keys [file line]} @pending
+        (let [{:keys [file line instrument column entry record]} @pending
               _ (when line (.setLineNumber rdr (int line)))
-              [form text] (cljs/read-form rdr eof)]
+              [form text] (cljs/read-form rdr eof)
+              ;; to be recorded, which places every form by its span: read
+              ;; again from where it was written, as replique.debug reads a
+              ;; Clojure form to be stepped through, the columns of its first
+              ;; line included
+              [form text] (if (and instrument text (not (identical? form eof))
+                                   (> (or column 1) 1))
+                            (let [again (cljs/reader (str (apply str (repeat (dec column) \space))
+                                                          text))]
+                              (.setLineNumber ^LineNumberingPushbackReader again
+                                              (int (or line 1)))
+                              [(first (cljs/read-form again eof)) text])
+                            [form text])]
           (clojure.main/skip-if-eol rdr)
           (cond
             (identical? form eof) ::eof
@@ -309,12 +322,21 @@
             ;; the way a socket repl is ended, as in any clojure socket repl
             (identical? :repl/quit form) ::eof
 
+            ;; Recorded, and nothing else: there is no debugger to stop a
+            ;; page with
+            (and instrument (or entry (not record)))
+            (do (vreset! pending nil) (vreset! moved false)
+                (refused (str "ClojureScript code can be recorded, and not stepped"
+                              " through: #replique/src :instrument needs :record"
+                              " true and :entry false here.")))
+
             :else
             (do (vreset! pending nil)
                 ;; the form is what the directive above it was about, and its
                 ;; own prompt is the one that follows
                 (vreset! moved false)
-                [form {:text text :file file}])))))))
+                [form (cond-> {:text text :file file}
+                        instrument (assoc :record true))])))))))
 
 ;;; The repl
 
@@ -522,13 +544,22 @@
                                          ;; from now on
                                          (inspect/prepare-page!)
                                          (let [evaluate (fn []
-                                                          (cljs/eval-form form opts))]
-                                           (hooks/around*
-                                            (fn [r] (not= :error (:status r)))
-                                            (fn []
-                                              (if (:reload opts)
-                                                (analysis/telling* evaluate)
-                                                (evaluate)))))))
+                                                          (if (:record opts)
+                                                            (debug/eval-cljs-recorded form opts)
+                                                            (cljs/eval-form form opts)))
+                                               defined (volatile! [])
+                                               r (hooks/around*
+                                                  (fn [r] (not= :error (:status r)))
+                                                  (fn [e] (vswap! defined conj e))
+                                                  (fn []
+                                                    (if (:reload opts)
+                                                      (analysis/telling* evaluate)
+                                                      (evaluate))))]
+                                           ;; what it defined again is not
+                                           ;; what was recorded any more
+                                           (debug/cljs-evaluated!
+                                            @defined (:replique.debug/unit r))
+                                           r)))
                                     ;; The flag is left CLEARED, which is what
                                     ;; `done-evaluating!' just did and what a
                                     ;; repl about to block on a socket read

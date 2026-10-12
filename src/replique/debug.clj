@@ -45,6 +45,8 @@
   The debugger is started the first time a thread asks to stop, and runs as
   long as the process does."
   (:require [clojure.edn :as edn]
+            [replique.cljs :as cljs]
+            [replique.json :as json]
             [replique.output :as output]
             [replique.protocol :as protocol]
             [replique.state :as state]
@@ -511,11 +513,13 @@
         ;; an arity the source did not write, as a single arity defn's is,
         ;; is where the form that was evaluated is
         where (if (:line site) site evaluated)
-        {:keys [record definition]} (get @units unit)]
+        {:keys [record definition dialect]} (get @units unit)]
     (swap! sites assoc n (merge {:ns ns :file file :unit unit}
                                 (select-keys site [:kind :outermost])
                                 (select-keys where [:line :column :end-line :end-column])))
-    (when record
+    ;; a ClojureScript site is recorded where its code runs - see "Recording
+    ;; ClojureScript"
+    (when (and record (not= :cljs dialect))
       (swap! recording assoc n {:unit unit
                                 :starts (boolean (and definition (:outermost site)
                                                       (= :enter (:kind site))))}))
@@ -835,8 +839,10 @@
 
 (defn- unit-described
   "The unit numbered N as a client is told about it."
-  [n {:keys [ns file line column end-line end-column entry record]}]
+  [n {:keys [ns file line column end-line end-column entry record dialect target]}]
   (merge {:unit n :ns ns}
+         ;; which runtime its code is in, where it is not this one
+         (when (= :cljs dialect) {:dialect "cljs" :target (name target)})
          (sym/source-of file)
          (cond-> {}
            line (assoc :line line)
@@ -847,13 +853,15 @@
            (false? entry) (assoc :breaks-only true)
            record (assoc :record true))))
 
+(declare cljs-forget! cljs-recorded)
+
 (defn- uninstrument!
   "Stop stepping through the unit numbered N, and forget what it recorded,
   saying so to the clients that were told about it. Whether there was one to
   stop."
   [n]
   (let [[before _] (swap-vals! units dissoc n)]
-    (when-let [{:keys [var shown]} (get before n)]
+    (when-let [{:keys [var shown dialect] :as unit} (get before n)]
       (let [[sites-before _] (swap-vals! sites #(into {} (remove (fn [[_ site]] (= n (:unit site))))
                                                       %))
             gone (vec (for [[k site] sites-before :when (= n (:unit site))] k))]
@@ -867,7 +875,8 @@
                                          (let [in (filterv #(not= n (:unit %)) in)]
                                            (when (seq in) [id in]))))
                               m)))
-      (when var (remove-watch var [::unit n]))
+      (when (var? var) (remove-watch var [::unit n]))
+      (when (= :cljs dialect) (cljs-forget! n unit))
       (when shown
         (output/broadcast-event! (protocol/event "debug-uninstrumented" {:unit n})))
       true)))
@@ -936,6 +945,170 @@
             (output/broadcast-event! (protocol/event "debug-instrumented"
                                                      (unit-described n unit)))))
         v))))
+
+;;; Recording ClojureScript
+
+;; ClojureScript is recorded, and nothing else: there is no debugger to stop
+;; a page with. A form is compiled to be recorded by the compiler's own
+;; emitter (clojure.cljs.emitter/*instrument*), numbering its sites here as a
+;; Clojure form's are, and what its code records is kept where it runs - see
+;; replique/debug.cljs, the runtime's half, which is compiled into the
+;; program the first time a form is recorded in it. What is kept here is the
+;; unit and its sites, which is what a client is told about and what places
+;; a value; what a unit recorded is asked of the runtime.
+;;
+;; A unit is a definition for as long as nothing defines its var again: a
+;; ClojureScript var has no watch, so what says so is the compiler, which
+;; says what every evaluation defined - a def, or a file compiled whole - see
+;; `cljs-evaluated!'. And for as long as the page it was evaluated in is
+;; there: a page that reloads runs the program off disk, recorded nowhere.
+
+(def ^:private cljs-within
+  "How long a runtime is given to answer about what it recorded, in ms."
+  5000)
+
+(defonce ^:private cljs-compiled
+  ;; the output directories replique.debug has been compiled into
+  (atom #{}))
+
+(defn- cljs-runtime-half!
+  "Compile replique.debug into `cljs/*target*''s program, once."
+  []
+  (let [dir (str (:out-dir (cljs/environment)))]
+    (when-not (contains? @cljs-compiled dir)
+      (cljs/with-target-lock* #(cljs/compile-namespace! 'replique.debug))
+      (swap! cljs-compiled conj dir))))
+
+(defn- cljs-op
+  "Ask replique.debug in the runtime of `cljs/*target*' MSG, and answer what
+  it said - {:error :kind} included."
+  [msg]
+  (when-not (cljs/runtime-connected?)
+    (refuse :no-runtime "No " (name cljs/*target*) " runtime is running"))
+  (cljs-runtime-half!)
+  (let [js (str "(async () => { await $CLJS.require(\"replique.debug\");"
+                " return $CLJS.namespaces.get(\"replique.debug\").op("
+                (json/write-str (json/write-str msg)) "); })()")
+        {:keys [status value]} (cljs/eval-js-here js cljs-within)]
+    (when-not (= :success status)
+      (refuse :runtime value))
+    (edn/read-string (edn/read-string value))))
+
+(defn- cljs-forget!
+  "Tell the runtime the unit N - UNIT - was in to forget what it recorded,
+  where that page is still there. Quietly: what was to be forgotten is gone
+  either way."
+  [n {:keys [target page]}]
+  (when page
+    (try (binding [cljs/*target* target]
+           (when (= page (cljs/page))
+             (cljs/eval-js-here (str "$CLJS.namespaces.get(\"replique.debug\")?.op("
+                                     (json/write-str (json/write-str {:op "forget" :unit n}))
+                                     ")")
+                                1000)))
+         (catch Throwable _ nil))))
+
+(defn- cljs-unit-gone?
+  "Whether the page the ClojureScript unit UNIT was evaluated in is gone."
+  [{:keys [target page]}]
+  (binding [cljs/*target* target]
+    (not= page (cljs/page))))
+
+(defn- cljs-recorded
+  "What the ClojureScript unit N recorded, as `:debug-recorded' answers it -
+  asked of the runtime, which keeps it, and placed here, where its sites are."
+  [n call]
+  (let [unit (get @units n)]
+    (when (cljs-unit-gone? unit)
+      (uninstrument! n)
+      (refuse :unknown-unit "Unit " n " was recorded in a page that is gone"))
+    (let [answer (binding [cljs/*target* (:target unit)]
+                   (cljs-op (cond-> {:op "recorded" :unit n} call (assoc :call call))))
+          thread (name (:target unit))]
+      (when-let [why (:error answer)]
+        (refuse (case (:kind answer)
+                  "unknown-call" :unknown-call
+                  "unknown-unit" :unknown-unit
+                  :runtime)
+                why))
+      (-> answer
+          (update :calls (fn [cs] (mapv #(assoc % :thread thread) cs)))
+          (update :values (fn [vs]
+                            (mapv #(merge % (select-keys (get @sites (:site %))
+                                                         [:line :column :end-line :end-column]))
+                                  vs)))))))
+
+(defn- cljs-hook
+  "The JavaScript the code of the unit N calls, loading the runtime's half
+  where it is not loaded yet - evaluated once by each form of it."
+  [n definition]
+  (str "(await $CLJS.require(\"replique.debug\"),"
+       " $CLJS.namespaces.get(\"replique.debug\").unit(" n ", " (boolean definition) "))"))
+
+(defn eval-cljs-recorded
+  "Evaluate FORM in the runtime of `cljs/*target*', compiled to be recorded,
+  with OPTS as `cljs/eval-form' takes them - and answer what it answers.
+
+  A unit, as one of Clojure's is - see `eval-instrumented' - told to clients
+  by a `debug-instrumented' event saying which runtime it is in. The answer
+  carries its number, as ::unit, for `cljs-evaluated!' to tell its own
+  definition from one that replaces it."
+  [form opts]
+  (let [n (swap! unit-numbers inc)
+        where (meta form)
+        ns (str (cljs/current-ns))
+        file (:file opts)
+        definition (definition? form)
+        _ (swap! units assoc n {:dialect :cljs :record true :entry false
+                                :definition definition})
+        r (try (cljs-runtime-half!)
+               (cljs/with-instrument* {:site (partial site! ns file n where)
+                                       :hook (cljs-hook n definition)}
+                                      #(cljs/eval-form form opts))
+               (catch Throwable t
+                 (uninstrument! n)
+                 (throw t)))]
+    (if (= :error (:status r))
+      (do (uninstrument! n) r)
+      (let [unit (merge {:dialect :cljs :target cljs/*target* :page (cljs/page)
+                         :ns ns :file file :shown true :entry false :record true
+                         :definition definition}
+                        (select-keys where [:line :column :end-line :end-column])
+                        (when (and definition (symbol? (second form)))
+                          {:var (symbol ns (name (second form)))}))]
+        (swap! units assoc n unit)
+        (output/broadcast-event! (protocol/event "debug-instrumented"
+                                                 (unit-described n unit)))
+        (assoc r ::unit n)))))
+
+(defn cljs-evaluated!
+  "Let go of the ClojureScript units of `cljs/*target*' an evaluation
+  replaced the code of, the compiler having said what it defined - EVENTS,
+  as `replique.analysis/defining*' reports them - and of the ones whose page
+  is gone. Except the unit EXCEPT, which the evaluation was."
+  [events except]
+  (let [events (filter #(= :cljs (:dialect %)) events)
+        vars (set (keep #(when (#{:define :remove} (:op %)) (some-> (:var %) str)) events))
+        nss (set (keep #(when (and (= :define (:op %)) (nil? (:var %))) (str (:ns %))) events))]
+    (doseq [[n unit] @units
+            :when (and (= :cljs (:dialect unit))
+                       (= cljs/*target* (:target unit))
+                       (not= n except)
+                       (:page unit)
+                       (or (cljs-unit-gone? unit)
+                           (contains? vars (some-> (:var unit) str))
+                           (contains? nss (:ns unit))))]
+      (uninstrument! n))))
+
+(cljs/on-notify!
+ ::recorded
+ (fn [target content]
+   (doseq [{:keys [unit call calls]} (:recorded (try (edn/read-string content)
+                                                     (catch Exception _ nil)))
+           :let [u (get @units unit)]
+           :when (and u (= :cljs (:dialect u)) (= target (:target u)) (:shown u))]
+     (output/broadcast-event! (protocol/event "debug-recorded"
+                                              {:unit unit :call call :calls calls})))))
 
 (defn stop-value
   "What a view of the value the thread ID stopped after shows: the value,
@@ -1129,7 +1302,9 @@
       (refuse :invalid-message "A call is named by its number, got: " (pr-str call)))
     (when-not (:record (get @units unit))
       (refuse :unknown-unit "Unit " unit " does not record"))
-    (let [kept (get @recorded unit [])
+    (if (= :cljs (:dialect (get @units unit)))
+      (cljs-recorded unit (some-> call long))
+     (let [kept (get @recorded unit [])
           all @calls
           c (if call (long call) (peek kept))]
       (when (and call (not (some #{c} kept)))
@@ -1142,7 +1317,7 @@
                                       :value (printed-briefly (peek values))}
                                      (select-keys (get @sites site)
                                                   [:line :column :end-line :end-column]))))}
-        c (assoc :call c)))))
+        c (assoc :call c))))))
 
 (defmethod protocol/handle :debug-restart [_ msg]
   (let [id (thread-of msg)

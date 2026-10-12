@@ -274,6 +274,7 @@
     (when (= :cljs (:dialect view)) view)))
 
 (cljs/on-notify!
+ ::views
  (fn [target content]
    (doseq [id (:changed (try (edn/read-string content) (catch Exception _ nil)))
            :let [view (cljs-view id)]

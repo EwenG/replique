@@ -180,15 +180,17 @@
   what it prints comes out beside what the form printed, and the target's output
   is still this connection's."
   ([f] (around* (constantly true) f))
-  ([worked? f]
+  ([worked? f] (around* worked? nil f))
+  ([worked? report f]
    ;; AND THE CLIENTS SHOWING LINTS ARE TOLD, whether or not anything listens
    ;; here: what they show is read from the model this evaluation may have just
    ;; rewritten - see `replique.lint/watching*'. Which collects what F defines
    ;; itself, and hands it on: a second `replique.analysis/defining*' under it would be a
-   ;; binding hiding what F defines from it.
+   ;; binding hiding what F defines from it - which is why REPORT, told every
+   ;; definition too where given, is handed in rather than bound round F.
    (if-not (listening?)
-     (lint/watching* f)
+     (lint/watching* report f)
      (let [seen (volatile! [])
-           r    (lint/watching* #(vswap! seen conj %) f)]
+           r    (lint/watching* (fn [e] (vswap! seen conj e) (when report (report e))) f)]
        (when (worked? r) (fired! @seen))
        r))))

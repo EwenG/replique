@@ -115,6 +115,7 @@
             out   (partial named 'clojure.cljs.output)
             rpl   (partial named 'clojure.cljs.repl)
             rdr   (partial named 'clojure.cljs.reader)
+            emt   (partial named 'clojure.cljs.emitter)
             mx    (partial named 'clojure.cljs.macroexpand)
             nms   (partial named 'clojure.cljs.names)
             goog  (partial named 'clojure.cljs.goog)]
@@ -182,7 +183,10 @@
          :host-data-readers (rdr '*host-data-readers*)
          ;; the file a definition records, which a repl knows only because its
          ;; client said so - see `eval-form'. A var rather than a value, again
-         :source-file   (ana '*source-file*)})
+         :source-file   (ana '*source-file*)
+         ;; what a form is compiled to be recorded with - see
+         ;; `with-instrument*'. A var, again
+         :instrument    (emt '*instrument*)})
       (catch Throwable t t))))
 
 (defn- compiler
@@ -699,16 +703,20 @@
 ;; that is told. One listener, and not a list of them, because one is what
 ;; there is.
 
-(defonce ^:private listener (atom nil))
+(defonce ^:private listeners
+  ;; key -> f
+  (atom {}))
 
 (defn on-notify!
   "Call F with the target and the content of everything a runtime notifies,
-  from now on."
-  [f]
-  (reset! listener f))
+  from now on - in place of what was called under KEY before. Every listener
+  hears everything, and reads what is its own out of it: replique.inspect a
+  view that changed, replique.debug a unit that recorded."
+  [key f]
+  (swap! listeners assoc key f))
 
 (defn- notified [target content]
-  (when-let [f @listener]
+  (doseq [[_ f] @listeners]
     (try (f target content) (catch Throwable _ nil))))
 
 ;; `runtime!' refreshes the main modules of the project when it starts the
@@ -1571,6 +1579,14 @@
      (if file
        (with-bindings* {(of :source-file) file} run)
        (run)))))
+
+(defn with-instrument*
+  "Call F with what is compiled under it compiled to be recorded, as
+  INSTRUMENT says - see clojure.cljs.emitter/*instrument* and
+  `replique.debug/eval-cljs-recorded'."
+  [instrument f]
+  (refuse-unless-available! "record ClojureScript")
+  (with-bindings* {(of :instrument) instrument} f))
 
 (defn eval-js
   "Evaluate the JavaScript JS in every runtime of `*target*', giving up after

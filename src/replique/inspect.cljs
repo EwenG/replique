@@ -15,7 +15,8 @@
   What changed is said with the runtime's notify, once per view until the
   view is asked for again: a watch on an atom that is swapped at every frame
   says so once, and not sixty times a second."
-  (:require [replique.inspector :as inspector]))
+  (:require [replique.debug :as debug]
+            [replique.inspector :as inspector]))
 
 (defonce ^:private views (atom {}))
 
@@ -71,7 +72,11 @@
     (:var source) (let [var (:var source)] (fn [] (var-value var)))
     (:results source) (fn [] (array-map '*1 *1 '*2 *2 '*3 *3))
     (:taps source) (constantly taps)
-    :else (throw (ex-info "A view is of a :var, the :results or the :taps"
+    ;; what a form recorded evaluated to - see replique.debug
+    (:site (:debug source)) (let [{:keys [site call]} (:debug source)]
+                              (fn [] (debug/recorded-value site call)))
+    :else (throw (ex-info (str "A view is of a :var, the :results, the :taps or"
+                               " what a form recorded evaluated to")
                           {:kind "invalid-message"}))))
 
 ;;; The ops
