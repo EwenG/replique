@@ -29,7 +29,7 @@
            [java.io File IOException Reader Writer]
            [java.util.jar JarFile]
            [replique.debug Instrumented]
-           [replique.directives FrameDirective LoadDirective NsDirective ReloadDirective
+           [replique.directives CallDirective FrameDirective LoadDirective NsDirective ReloadDirective
             SourceDirective]))
 
 (def ^:private default-file "NO_SOURCE_PATH")
@@ -168,7 +168,7 @@
     (analysis/telling* analysis/reload!)))
 
 ;; Called from the read step, which is above them
-(declare prompt-frame point-at-frame!)
+(declare prompt-frame point-at-frame! point-at-call!)
 
 (defn- make-repl-read
   "The :read step: clojure.main/repl-read, plus the directives.
@@ -192,7 +192,8 @@
   branch.
 
   #replique/frame is done too, and the same way: it points the repl at the
-  frame IN-FRAME holds, and moves it to the namespace of that frame's code."
+  frame IN-FRAME holds, and moves it to the namespace of that frame's code.
+  And #replique/call, which points it at a recorded call."
   [conn in-frame]
   (let [pending (volatile! nil)
         ;; A namespace directive has been read and nothing has been read
@@ -252,6 +253,9 @@
                 (instance? FrameDirective input)
                 (do (point-at-frame! in-frame input) (vreset! moved true) (recur))
 
+                (instance? CallDirective input)
+                (do (point-at-call! in-frame input) (vreset! moved true) (recur))
+
                 ;; Answered with a form rather than done here, so that loading
                 ;; a file is evaluated the way everything else is: its output
                 ;; framed in order, its failure this repl's exception frame,
@@ -306,7 +310,10 @@
     :connection (:id conn)
     :ns (repl-ns)
     ;; the frame what is read is evaluated in, where the repl is pointed at one
-    :frame (some-> @in-frame (select-keys [:thread :frame]))
+    :frame (when (:thread @in-frame) (select-keys @in-frame [:thread :frame]))
+    ;; or the recorded call
+    :call (when (:unit @in-frame)
+            (into {} (filter val) (select-keys @in-frame [:unit :call :line :column])))
     ;; What the editor needs to describe the repl without asking: the
     ;; namespace the next form will be read in, and the printing the last
     ;; result went through.
@@ -387,6 +394,20 @@
           (in-ns (ns-name ns))))
     (vreset! in-frame nil)))
 
+(defn- point-at-call!
+  "Point the repl at the recorded call a #replique/call directive, or a
+  handshake, names - CALL, a CallDirective - or at none, where it names none.
+  IN-FRAME is where the repl keeps it, as it keeps a frame: it is pointed at
+  one or the other.
+
+  To the namespace of the code of the call too."
+  [in-frame call]
+  (if (:unit call)
+    (do (vreset! in-frame (into {} call))
+        (when-let [ns (debug/unit-ns (:unit call))]
+          (in-ns (ns-name ns))))
+    (vreset! in-frame nil)))
+
 (defn- evaluated-in-frame?
   "Whether FORM, read by a repl pointed at a frame, is evaluated there.
 
@@ -402,14 +423,16 @@
 
   params are set before the first prompt, which reports them - see
   `set-params!'. With FRAME, a FrameDirective, the repl starts pointed at
-  that frame - see `replique.directives/frame-directive'."
+  that frame - see `replique.directives/frame-directive' - and with a
+  CallDirective, at that recorded call."
   [conn params frame]
   (let [out (frame-writer conn "out")
         err (frame-writer conn "err")
         ;; Output is flushed before every frame that concludes something, so
         ;; that a result never comes out before what the form printed.
         flush-output! (fn [] (.flush out) (.flush err))
-        ;; nil, or the {:thread :frame} what is read is evaluated in
+        ;; nil, or the {:thread :frame} what is read is evaluated in - or
+        ;; the recorded call, {:unit :call :line :column}
         in-frame (volatile! nil)]
     (binding [*in* (:in conn)
               *out* out
@@ -425,7 +448,9 @@
                  (set! *data-readers* (merge *data-readers*
                                              directives/data-readers))
                  (set-params! params)
-                 (when frame (point-at-frame! in-frame frame)))
+                 (cond
+                   (instance? CallDirective frame) (point-at-call! in-frame frame)
+                   frame (point-at-frame! in-frame frame)))
          :read (make-repl-read conn in-frame)
          ;; ROUND THE EVALUATION AND NOT ROUND A DIRECTIVE, because what defines
          ;; something is not only a load: a `defn' typed here, a `require', a
@@ -438,8 +463,11 @@
          :eval (fn [form]
                  (interruptible conn #(hooks/around*
                                        (fn [] (cond
-                                                (and @in-frame (evaluated-in-frame? form))
+                                                (and (:thread @in-frame) (evaluated-in-frame? form))
                                                 (debug/eval-in-frame @in-frame form)
+
+                                                (and (:unit @in-frame) (evaluated-in-frame? form))
+                                                (debug/eval-in-call @in-frame form)
 
                                                 (instance? Instrumented form)
                                                 (debug/eval-instrumented form)
@@ -478,8 +506,11 @@
   (if-let [why (protocol/invalid-params param-kinds (:params hello))]
     (protocol/write-frame! conn (protocol/params-error hello param-kinds why))
     ;; :frame, the frame of a stopped thread the repl starts pointed at - as
-    ;; #replique/frame would point it, and before its first prompt
-    (let [frame (try (some-> (:frame hello) directives/frame-directive)
+    ;; #replique/frame would point it, and before its first prompt - or
+    ;; :call, the recorded call, as #replique/call would
+    (let [frame (try (cond
+                       (:call hello) (directives/call-directive (:call hello))
+                       (:frame hello) (directives/frame-directive (:frame hello)))
                      (catch clojure.lang.ExceptionInfo e e))]
       (if (instance? Throwable frame)
         (protocol/write-frame! conn (protocol/error hello :invalid-frame (.getMessage ^Throwable frame)))

@@ -522,6 +522,68 @@
     (assoc said :by-place (into {} (map (fn [v] [[(:line v) (:column v)] [(:value v) (:times v)]]))
                                 (:values said)))))
 
+(deftest a-repl-evaluates-in-a-recorded-call
+  (if-not (debug/instrumenting?)
+    (println "replique.debug-test: no compiler to record with - run with :analysis")
+    (client/with-process [info nil]
+      (let [r (client/repl-client info nil 60000)
+            c (control info)
+            file (java.io.File/createTempFile "in-call" ".clj")]
+        (try
+          (ret r (str "#replique/src {:file " (pr-str (str file)) " :line 1"
+                      " :instrument true :entry false :record true}\n"
+                      "(defn ic [m {:keys [z]} & more]
+  (let [x (inc (:a m))
+        [p q] [(dec x) 7]]
+    (mapv (fn [y] (* x y)) (range 3))
+    (doseq [d more] (inc d))
+    (when-let [w (seq more)]
+      (map (fn ([a] (+ a z)) ([a b] (+ a b))) w))))"))
+          (let [unit (:unit (await-event c "debug-instrumented"))
+                _ (ret r "(doall (ic {:a 1} {:z 2} 3 4))")
+                _ (ret r "(doall (ic {:a 10} {:z 20}))")
+                [first-call] (map :call (:calls (recorded c unit nil 1)))
+                f (client/repl-client info {:call {:unit unit :call first-call :line 4 :column 21}}
+                                      60000)
+                point! (fn [directive]
+                         (send! f (str directive "\n"))
+                         (last (recv-until f "prompt")))]
+            (try
+              (testing "a repl opened on a recorded call says so, from its first prompt"
+                (is (= {:unit unit :call first-call :line 4 :column 21} (:call (:prompt f))))
+                (is (= "user" (:ns (:prompt f)))))
+              (testing "what it reads is evaluated with the locals in scope there, as they were"
+                (is (= "[{:a 1} 2 (3 4) 2 1 7 2]" (ret f "[m z more x p q y]"))))
+              (testing "recorded, not evaluated again: the function is not called"
+                (is (= "[1 7]" (ret f "[p q]")))
+                (is (= 2 (count (:calls (recorded c unit nil 2))))))
+              (testing "a local bound by a loop has no value"
+                (point! (str "#replique/call {:unit " unit " :call " first-call " :line 5 :column 22}"))
+                (is (re-find #"d has no value in this call"
+                             (:message (client/frame-tagged (eval! f "d") "exception")))))
+              (testing "nor a param of a fn not called"
+                (point! (str "#replique/call {:unit " unit " :call " first-call " :line 7 :column 34}"))
+                (is (= "(3 4)" (ret f "w")))
+                (is (re-find #"a has no value in this call"
+                             (:message (client/frame-tagged (eval! f "(+ a b)") "exception")))))
+              (testing "without a call, the last one"
+                (let [prompt (point! (str "#replique/call {:unit " unit " :line 3 :column 9}"))]
+                  (is (= {:unit unit :line 3 :column 9} (:call prompt))))
+                (is (= "[{:a 10} 20 nil 11]" (ret f "[m z more x]")))
+                (ret r "(doall (ic {:a 100} {:z 200}))")
+                (is (= "101" (ret f "x"))))
+              (testing "and at none: the ordinary way again"
+                (let [prompt (point! "#replique/call nil")]
+                  (is (nil? (:call prompt))))
+                (is (client/frame-tagged (eval! f "x") "exception")))
+              (testing "a call not kept any more is not evaluated in"
+                (point! (str "#replique/call {:unit " unit " :call " first-call " :line 3 :column 9}"))
+                (dotimes [_ 10] (ret r "(ic {:a 1} {})"))
+                (is (re-find #"not kept any more"
+                             (:message (client/frame-tagged (eval! f "x") "exception")))))
+              (finally (disconnect f))))
+          (finally (disconnect r) (disconnect c) (.delete file)))))))
+
 (deftest what-a-function-recorded-is-kept-call-by-call
   (if-not (debug/instrumenting?)
     (println "replique.debug-test: no compiler to record with - run with :analysis")

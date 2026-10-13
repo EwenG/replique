@@ -49,6 +49,7 @@
             [replique.json :as json]
             [replique.output :as output]
             [replique.protocol :as protocol]
+            [replique.scope :as scope]
             [replique.state :as state]
             [replique.symbol :as sym])
   (:import [clojure.lang LineNumberingPushbackReader]
@@ -468,9 +469,10 @@
 
 (defonce ^:private units
   ;; number -> {:ns :file :line :column :end-line :end-column :var :shown
-  ;;            :entry :record :definition}: what was evaluated to be stepped
-  ;; through, :shown once clients were told, whether :entry to it stops a
-  ;; thread, and whether it records
+  ;;            :entry :record :definition :form}: what was evaluated to be
+  ;; stepped through, :shown once clients were told, whether :entry to it
+  ;; stops a thread, and whether it records - the :form, read with its
+  ;; spans, being what says which locals a recorded call had where
   (atom {}))
 
 (defonce ^:private unit-numbers (atom 0))
@@ -478,7 +480,8 @@
 (defonce ^:private sites
   ;; number -> {:unit, :kind :value or :enter, :outermost, :ns, :file,
   ;;            :line, :column, :end-line, :end-column, and for an :enter the
-  ;;            :params of the fn, as written}
+  ;;            :params of the fn, as written, and the :marker that says
+  ;;            which arity of the source it is - see `scope/marker'}
   (atom {}))
 
 (defonce ^:private site-numbers (atom 0))
@@ -519,6 +522,10 @@
                                 (select-keys site [:kind :outermost])
                                 (when-let [params (:params site)]
                                   {:params (mapv str params)})
+                                ;; an arity is where its fn is, the one fn made
+                                ;; from it being written nowhere
+                                (when (= :enter (:kind site))
+                                  {:marker (scope/marker (:form site))})
                                 (select-keys where [:line :column :end-line :end-column])))
     ;; a ClojureScript site is recorded where its code runs - see "Recording
     ;; ClojureScript"
@@ -958,7 +965,7 @@
         (if-not (or definition record)
           (uninstrument! n)
           (let [unit (merge {:ns (str *ns*) :file *file* :shown true :entry entry
-                             :record record :definition definition}
+                             :record record :definition definition :form form}
                             (select-keys where [:line :column :end-line :end-column])
                             (when (var? v) {:var v}))]
             ;; the evaluation of a function is not one of its calls, which are
@@ -1298,6 +1305,116 @@
             thrown (throw thrown)
             :else value))
         (finally (swap! handed dissoc n))))))
+
+;;; A repl evaluating in a recorded call
+
+;; A call recorded is what a function had, form by form, and what somebody
+;; wants to try things against, the way a stopped thread's frame is - without
+;; anything stopped. A repl can be pointed at a call of a recorded unit, at a
+;; place of its code:
+;;
+;;   #replique/call {:unit 7 :call 12 :line 14 :column 9}
+;;
+;; and what it reads after that is evaluated with the locals in scope there
+;; bound to what they were in that call - or in the last call, the one kept
+;; when the form is evaluated, without a :call. On the repl's own thread, the
+;; ordinary way otherwise: a recorded function it calls records that call.
+;;
+;; A local is what the code bound it to: a param, what it was called with,
+;; and a local of a let, what the form it was bound to evaluated to, which was
+;; recorded - not evaluated again. One whose value is not known - a form that
+;; was not evaluated in that call, a name bound by something else than a let,
+;; as the element of a doseq is - is not bound. A value is the last the form
+;; had in the call, a form of a fn the call called many times having had
+;; many: what the code shows.
+
+(defn recorded-in
+  "What the site SITE evaluated to last in the call C - which code evaluated
+  in a call binds its locals to, see `eval-in-call'."
+  [c site]
+  (let [call (or (get @calls c)
+                 (throw (ex-info (str "Call " c " is not kept any more")
+                                 {:replique/error :unknown-call})))]
+    (peek (get-in call [:values site :values]))))
+
+(defn- call-bindings
+  "The bindings of a let binding the locals of the code of the unit UNIT in
+  scope at POS, [line column], to what they were in the call C - and the
+  names of the ones whose value is not known, which are not bound."
+  [unit c pos]
+  (let [{:keys [form]} (get @units unit)
+        values (:values (get @calls c))
+        had (fn [[n _]] (contains? values n))
+        mine (filter (fn [[_ site]] (= unit (:unit site))) @sites)
+        ;; the span of a form -> the site that has its value
+        value-sites (into {} (for [[n site] mine
+                                   :when (and (= :value (:kind site)) (had [n site]))]
+                               [(mapv site [:line :column :end-line :end-column]) n]))
+        ;; the span of an arity of the source -> the site of its entry
+        arities (scope/all-arities form)
+        entries (into {} (for [[n site] mine
+                               :when (and (= :enter (:kind site)) (:marker site) (had [n site]))
+                               :let [a (scope/innermost-arity arities (:marker site))]
+                               :when a]
+                           [(:span a) n]))
+        value-of (fn [span] (when-let [n (get value-sites span)]
+                              `(recorded-in ~c ~n)))]
+    ((juxt first peek)
+     (reduce (fn [[bindings names unknown] {:keys [pattern init arity arg unbound]}]
+               (let [value (cond
+                             unbound ::scope/unknown
+                             arity (if-let [n (get entries (:span arity))]
+                                     `(nth (recorded-in ~c ~n) ~arg)
+                                     ::scope/unknown)
+                             :else (scope/replayed init value-of
+                                                   #(or (contains? names %) (resolve %))))
+                     these (scope/pattern-names pattern)]
+                 (if (= ::scope/unknown value)
+                   ;; not the value of a local of the same name further out
+                   (let [shadowed (filter names these)]
+                     [(into bindings (mapcat (fn [s] [s :replique/not-recorded]) shadowed))
+                      names
+                      (into unknown these)])
+                   [(conj bindings pattern value) (into names these) (apply disj unknown these)])))
+             [[] #{} #{}]
+             (scope/locals-at form pos)))))
+
+(defn unit-ns
+  "The namespace the code of the unit N was read in - or nil, for a unit gone,
+  or a namespace removed since."
+  [n]
+  (some-> (get @units n) :ns symbol find-ns))
+
+(defn eval-in-call
+  "Evaluate FORM, read by a repl pointed at a call of the recorded unit UNIT -
+  see `#replique/call' - with the locals of its code in scope at LINE and
+  COLUMN bound to what they were in the call CALL, or in the last call kept."
+  [{:keys [unit call line column]} form]
+  (let [{:keys [record dialect]} (get @units unit)]
+    (when-not record
+      (throw (ex-info (str "Unit " unit " does not record any more - this repl evaluates in"
+                           " one of its calls, and here after #replique/call nil")
+                      {:replique/error :unknown-unit})))
+    (when (= :cljs dialect)
+      (throw (ex-info "A ClojureScript call is not evaluated in, only Clojure's"
+                      {:replique/error :unavailable})))
+    (let [c (or call (peek (get @recorded unit))
+                (throw (ex-info (str "Unit " unit " was not called yet")
+                                {:replique/error :unknown-call})))]
+      (when-not (contains? @calls c)
+        (throw (ex-info (str "Call " c " is not kept any more") {:replique/error :unknown-call})))
+      (let [[bindings unknown] (call-bindings unit c [line column])]
+        (try
+          (eval `(let ~bindings ~form))
+          (catch clojure.lang.Compiler$CompilerException e
+            ;; a local of the code, rather than a name nobody bound
+            (let [[_ s] (some->> (ex-cause e) ex-message
+                                 (re-find #"^Unable to resolve symbol: (\S+) in this context"))]
+              (if (and s (contains? unknown (symbol s)))
+                (throw (ex-info (str s " has no value in this call: what binds it was not evaluated"
+                                     " in it, or binds it to something else than a value it had")
+                                {:replique/error :not-recorded}))
+                (throw e)))))))))
 
 ;;; What a client sees
 

@@ -43,7 +43,7 @@
             [replique.state :as state])
   (:import [clojure.lang LineNumberingPushbackReader]
            [java.io IOException Writer]
-           [replique.directives FrameDirective LoadDirective NsDirective ReloadDirective
+           [replique.directives CallDirective FrameDirective LoadDirective NsDirective ReloadDirective
             SourceDirective]))
 
 (def ^:private start-ns
@@ -326,6 +326,10 @@
             (instance? FrameDirective form)
             (do (vreset! moved false)
                 (refused "A ClojureScript repl evaluates in no frame: #replique/frame is for a Clojure repl."))
+
+            (instance? CallDirective form)
+            (do (vreset! moved false)
+                (refused "A ClojureScript repl evaluates in no recorded call: #replique/call is for a Clojure repl."))
 
             ;; Recorded, and nothing else: there is no debugger to stop a
             ;; page with
