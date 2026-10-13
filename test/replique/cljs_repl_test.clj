@@ -1061,7 +1061,9 @@
           (testing "and the one before it, asked for"
             (let [first-call (:call (first calls))
                   {:keys [values]} (debug-op {:op "recorded" :unit unit :call first-call})]
-              (is (= #{"4" "5"} (set (map :value values))))))
+              (is (= #{"4" "5"} (set (map :value (remove :args values)))))
+              (testing "what it was called with, the value of its entry"
+                (is (= [["2"]] (keep :args values))))))
           (testing "and a call that is not kept is said not to be"
             (is (= "unknown-call" (:kind (debug-op {:op "recorded" :unit unit :call 123456}))))))
         (testing "what a form evaluated to is a view, in the runtime"
@@ -1092,9 +1094,9 @@
           (let [{:keys [calls]} (debug-op {:op "recorded" :unit unit})
                 first-call (:call (first calls))]
             (is (= 2 (count calls)))
-            (is (= ["2"] (map :value (:values (debug-op {:op "recorded" :unit unit
-                                                         :call first-call})))))
-            (is (= [] (:values (debug-op {:op "recorded" :unit unit}))))))))))
+            (is (= ["2"] (map :value (remove :args (:values (debug-op {:op "recorded" :unit unit
+                                                                       :call first-call}))))))
+            (is (= [] (remove :args (:values (debug-op {:op "recorded" :unit unit})))))))))))
 
 (deftest test-what-a-recorded-form-evaluated-to-is-printed-without-realizing-it
   (when (compiling?)
@@ -1169,7 +1171,8 @@
               (let [{:keys [calls by-place]} (recorded-by-place c unit nil 1)]
                 (is (= 1 (count calls)))
                 (is (= "node" (:thread (first calls))))
-                (is (= {[2 11] ["4" 1] [3 5] ["5" 1] [2 3] ["5" 1]} by-place))))
+                ;; the fn entered, with what it was called with, first
+                (is (= {[1 1] ["[2]" 1] [2 11] ["4" 1] [3 5] ["5" 1] [2 3] ["5" 1]} by-place))))
             (testing "call by call"
               (eval! r "(twice 3)")
               (let [{:keys [calls]} (recorded-by-place c unit nil 2)]
@@ -1197,6 +1200,69 @@
           (testing "stepping through is refused, saying why"
             (let [frames (eval! r (str "#replique/src {:line 1 :instrument true}\n(+ 1 2)"))]
               (is (string/includes? (:message (frame-tagged frames "exception")) "recorded"))))
+          (finally (disconnect c)))))))
+
+;;; Tracing in the runtime
+
+(deftest test-what-is-traced-in-the-runtime-is-a-tree-of-calls
+  (when (compiling?)
+    (with-repl [r]
+      (let [c (client/control-client @the-process)
+            on {:dialect :cljs :target :node}
+            ask (fn [msg] (ask! c (merge msg on)))
+            calls (fn ([] (:calls (ask {:op :trace-calls :id 9})))
+                    ([parent] (:calls (ask {:op :trace-calls :parent parent :id 9}))))
+            said (juxt :var :args #(or (:value %) (:thrown %)))]
+        (try
+          (eval! r "#replique/ns trc.node\n(def x 1)")
+          (eval! r "(defn ta [x] (inc x))")
+          (eval! r "(defn tb [m] (+ (ta (:n m)) (ta 10)))")
+          (eval! r "(defn tc [] (throw (js/Error. \"none\")))")
+          (eval! r "(defn ^:async tw [x] (+ (ta x) (await (js/Promise.resolve 1))))")
+          (let [{:keys [asked traced skipped]} (ask {:op :trace :ns "trc.node" :id 1})]
+            (is (= ["trc.node/ta" "trc.node/tb" "trc.node/tc" "trc.node/tw"] traced))
+            (is (= [["trc.node/x" "not a function"]] (map (juxt :var :why) skipped)))
+            (is (= asked (+ (count traced) (count skipped)))))
+          (is (= "13" (:value (frame-tagged (eval! r "(tb {:n 1})") "ret"))))
+          (let [[tb] (calls)]
+            (testing "a call, with what it was called with and returned, where it is written"
+              (is (= ["trc.node/tb" ["{:n 1}"] "13"] (said tb)))
+              (is (= {:state "returned" :made 2 :kept 2} (select-keys tb [:state :made :kept]))))
+            (is (= [["trc.node/ta" ["1"] "2"] ["trc.node/ta" ["10"] "11"]]
+                   (map said (calls (:call tb)))))
+            (testing "a value to browse, in the runtime"
+              (is (= "{:n 1}" (get-in (ask {:op :inspect :id 2
+                                            :source {:trace {:call (:call tb) :arg 0}}})
+                                      [:root :value]))))
+            (testing "a call made again, with what it was called with"
+              (is (= "13" (:value (frame-tagged (eval! r (str "(apply trc.node/tb (replique.trace/args-of "
+                                                              (:call tb) "))"))
+                                                "ret"))))
+              (is (= ["trc.node/tb" ["{:n 1}"] "13"] (said (last (calls)))))
+              (is (string/includes? (:message (frame-tagged (eval! r "(replique.trace/args-of 100000)")
+                                                            "exception"))
+                                    "not kept"))))
+          (testing "a call that threw"
+            (eval! r "(try (tc) (catch :default _ nil))")
+            (is (= ["trc.node/tc" [] "Error: none"] (said (last (calls))))))
+          (testing "an async call is over once its promise is"
+            (eval! r "(tw 1)")
+            (let [tw (loop [i 0]
+                       (let [tw (last (calls))]
+                         (if (or (= "returned" (:state tw)) (> i 50))
+                           tw
+                           (do (Thread/sleep 100) (recur (inc i))))))]
+              (is (= ["trc.node/tw" ["1"] "3"] (said tw)))
+              (is (= [["trc.node/ta" ["1"] "2"]] (map said (calls (:call tw)))))))
+          (testing "defined again, it is traced still"
+            (eval! r "(defn ta [x] (+ x 2))")
+            (eval! r "(ta 1)")
+            (is (= ["trc.node/ta" ["1"] "3"] (said (last (calls))))))
+          (testing "cleared, and let go of"
+            (is (pos? (:cleared (ask {:op :trace-clear :id 3}))))
+            (is (= 4 (count (:untraced (ask {:op :untrace :id 4})))))
+            (is (= "3" (:value (frame-tagged (eval! r "(ta 1)") "ret"))))
+            (is (= [] (calls))))
           (finally (disconnect c)))))))
 
 (deftest test-a-recorded-clojurescript-definition-is-let-go-of-when-its-file-loads

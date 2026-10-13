@@ -21,7 +21,13 @@
     {:debug {:site n :call c}}
                        what the form numbered N of code recorded evaluated to
                        in the call C - the last value of each call, without
-                       :call
+                       :call. With :arg i, where it is a fn's entry, what its
+                       param I was called with
+    {:trace {:call c :args true}}
+    {:trace {:call c :value true}}
+    {:trace {:call c :arg i}}
+                       what the traced call C was called with, returned or
+                       threw, or was handed as its arg I - see replique.trace
 
   A source that is a reference is WATCHED: the client is told that the view
   changed, by an `inspect-changed' event, and asks for it again. The event
@@ -141,20 +147,33 @@
     ;; refresh, since the same frame of the same thread is another frame each
     ;; time the thread stops - and what changed since the last stop is what
     ;; a refresh shows
-    (:debug source) (let [{:keys [thread frame value site call]} (:debug source)]
+    (:debug source) (let [{:keys [thread frame value site call arg]} (:debug source)]
                       (when-not (and (or (integer? thread) (integer? site))
-                                     (or (nil? call) (integer? call)))
+                                     (or (nil? call) (integer? call))
+                                     (or (nil? arg) (nat-int? arg)))
                         (refuse :invalid-message "A view of a frame names its :thread, and"
-                                " one of a form recorded its :site and :call, got: "
+                                " one of a form recorded its :site and :call - and :arg, a"
+                                " param of a fn entered - got: "
                                 (pr-str (:debug source))))
                       (cond
+                        ;; a call's args, or each call's, the last call last
+                        (and site arg) #(let [v (debug/recorded-value (long site) (some-> call long))]
+                                          (cond
+                                            (not (vector? v)) :not-recorded
+                                            call (nth v arg :not-recorded)
+                                            :else (mapv (fn [args] (nth args arg nil)) v)))
                         site #(debug/recorded-value (long site) (some-> call long))
                         value #(debug/stop-value (long thread))
                         :else #(debug/frame-value (long thread) (long (or frame 0)))))
+    (:trace source) (let [{:keys [call args value arg] :as what} (:trace source)]
+                      (when-not (and (integer? call) (or args value (nat-int? arg)))
+                        (refuse :invalid-message "A view of a traced call names its :call, and"
+                                " :args, :value or an :arg, got: " (pr-str what)))
+                      #((requiring-resolve 'replique.trace/call-value) (long call) what))
     :else (refuse :invalid-message
                   "A view is opened on a :var, on the :results of a repl"
-                  " connection, on the :taps or on a frame of a stopped thread"
-                  " - :debug - got: " (pr-str source))))
+                  " connection, on the :taps, on a frame of a stopped thread"
+                  " - :debug - or on a traced call - :trace - got: " (pr-str source))))
 
 ;;; The ops
 
@@ -390,17 +409,22 @@
 ;; view :view holds: a value looked at, kept to work with at the repl - a local
 ;; of a stopped thread in particular, which is gone once the thread goes on.
 ;; Without :ns, a view of the locals of a frame defines it in the namespace of
-;; that frame's code. A Clojure view only: a ClojureScript value is in a
+;; that frame's code, one of a form recorded in that of the form's code, and
+;; one of a traced call in that of its function - where the code it is to be
+;; tried on is evaluated. A Clojure view only: a ClojureScript value is in a
 ;; runtime, and its vars are not this process's
 (defmethod protocol/handle :inspect-def [_ msg]
   (with-view msg
     (fn [{:keys [id dialect session source]}]
       (let [node (node-of msg)
             name (:name msg)
-            {:keys [thread frame]} (:debug source)
+            {:keys [thread frame site]} (:debug source)
             ns (cond
                  (some? (:ns msg)) (some-> (:ns msg) protocol/as-name symbol find-ns)
-                 thread (debug/frame-ns (long thread) (long (or frame 0))))]
+                 thread (debug/frame-ns (long thread) (long (or frame 0)))
+                 site (debug/site-ns (long site))
+                 (:trace source) ((requiring-resolve 'replique.trace/call-ns)
+                                  (long (:call (:trace source)))))]
         (when (= :cljs dialect)
           (refuse :invalid-message "A value of a ClojureScript runtime is not defined in this process"))
         (when-not (and (string? name) (simple-symbol? (symbol name)))

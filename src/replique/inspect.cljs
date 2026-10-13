@@ -16,7 +16,8 @@
   view is asked for again: a watch on an atom that is swapped at every frame
   says so once, and not sixty times a second."
   (:require [replique.debug :as debug]
-            [replique.inspector :as inspector]))
+            [replique.inspector :as inspector]
+            [replique.trace :as trace]))
 
 (defonce ^:private views (atom {}))
 
@@ -73,10 +74,20 @@
     (:results source) (fn [] (array-map '*1 *1 '*2 *2 '*3 *3))
     (:taps source) (constantly taps)
     ;; what a form recorded evaluated to - see replique.debug
-    (:site (:debug source)) (let [{:keys [site call]} (:debug source)]
-                              (fn [] (debug/recorded-value site call)))
-    :else (throw (ex-info (str "A view is of a :var, the :results, the :taps or"
-                               " what a form recorded evaluated to")
+    ;; and with :arg, what the fn whose entry it is was called with, that param
+    (:site (:debug source)) (let [{:keys [site call arg]} (:debug source)]
+                              (if (some? arg)
+                                (fn [] (let [v (debug/recorded-value site call)]
+                                         (cond
+                                           (not (vector? v)) :not-recorded
+                                           (some? call) (nth v arg :not-recorded)
+                                           :else (mapv #(nth % arg nil) v))))
+                                (fn [] (debug/recorded-value site call))))
+    ;; what a traced call was called with, returned or threw - see replique.trace
+    (:trace source) (let [{:keys [call] :as what} (:trace source)]
+                      (fn [] (trace/call-value call what)))
+    :else (throw (ex-info (str "A view is of a :var, the :results, the :taps, what"
+                               " a form recorded evaluated to or a traced call")
                           {:kind "invalid-message"}))))
 
 ;;; The ops

@@ -13,7 +13,8 @@
             ;; loads the op implementations
             [replique.debug]
             [replique.inspect]
-            [replique.ops]))
+            [replique.ops]
+            [replique.trace]))
 
 (defn- error-frame [msg ^Throwable t]
   (let [kind (:replique/error (ex-data t))]

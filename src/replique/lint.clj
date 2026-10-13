@@ -716,3 +716,64 @@
                    (sort-by (juxt :line :column))
                    (distinct)
                    (leveled))})))
+
+;;; Who calls what
+
+(defn- own-vars
+  "Of the file SOURCE, a function answering which var's definition a place is
+  inside - see `enclosing-def' - and its uses of vars, from the model."
+  [source]
+  (let [facts (call :file-facts source)
+        own-form (form-index (:forms facts))]
+    {:inside (enclosing-def (:defs facts) own-form)
+     :usages (:usages facts)}))
+
+(defn- callees
+  "The vars of this project the definition of the var QSYM uses: what it calls,
+  and what it hands to what it calls - a fn given to `map' is called by it.
+  Read off the model, which knows what the definition wrote, not what it ran."
+  [qsym]
+  (when-let [source (:source (call :definition qsym))]
+    (let [{:keys [inside usages]} (own-vars source)]
+      (into #{} (comp (filter counts-as-use?)
+                      (remove :dead)
+                      (remove :macro)
+                      (filter #(= qsym (inside %)))
+                      (map :var)
+                      (remove #{qsym}))
+            usages))))
+
+(defn- callers
+  "The vars whose definitions use the var QSYM - of this project, since a
+  use in a jar is in no definition the model holds."
+  [qsym]
+  (let [uses (filter #(and (counts-as-use? %) (not (:dead %)))
+                     (call :find-usages qsym))]
+    (into #{}
+          (comp (mapcat (fn [[source at]]
+                          (let [{:keys [inside]} (own-vars source)]
+                            (keep inside at))))
+                (remove #{qsym}))
+          (group-by :source uses))))
+
+(defn around
+  "The vars around the var QSYM, in this thread's dialect: {:callers :callees},
+  each a set of symbols - those DEPTH calls away at most, up for the callers
+  and down for the callees. Only vars defined in this project's files on disk:
+  a library's, or clojure's, is in no file the model can tell apart from the
+  project's, and is what a trace stops at.
+
+  As the model has it, which is the code on disk as it was last compiled: a
+  definition typed at a prompt since is not in it."
+  [qsym depth]
+  (model)
+  (let [ours? (memoize (fn [q] (some? (some-> (call :definition q) :source disk-file))))
+        walk (fn [step]
+               (loop [seen #{} frontier #{qsym} n depth]
+                 (if (or (zero? n) (empty? frontier))
+                   (disj seen qsym)
+                   (let [next (into #{} (comp (mapcat step) (filter ours?) (remove seen))
+                                    frontier)]
+                     (recur (into seen next) next (dec n))))))]
+    {:callers (walk callers)
+     :callees (walk callees)}))

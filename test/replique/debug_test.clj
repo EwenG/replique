@@ -552,7 +552,9 @@
                 (is (= 1 (count calls)))
                 (is (= call (:call (first calls))))
                 (is (string? (:thread (first calls))))
-                (is (= {[2 16] ["1" 1]
+                ;; the fn entered, with what it was called with
+                (is (= {[1 1] ["[{:a 1}]" 1]
+                        [2 16] ["1" 1]
                         [2 11] ["2" 1]
                         [3 19] ["4" 3]
                         [3 28] ["(0 1 2)" 1]
@@ -568,9 +570,14 @@
               (testing "each value is one to browse"
                 (let [site (:site (first (filter #(= [2 11] [(:line %) (:column %)])
                                                  (:values (recorded c unit call 4)))))]
-                  (is (= "2" (get-in (ask! c {:op :inspect :id 5
-                                               :source {:debug {:site site :call call}}})
-                                     [:root :value])))
+                  (let [o (ask! c {:op :inspect :id 5 :source {:debug {:site site :call call}}})]
+                    (is (= "2" (get-in o [:root :value])))
+                    (testing "kept in a var of the namespace of its code"
+                      (is (= "user/recorded-kept"
+                             (:var (ask! c {:op :inspect-def :view (:view o)
+                                            :node (get-in o [:root :node])
+                                            :name "recorded-kept" :id 50}))))
+                      (is (= "2" (ret r "recorded-kept")))))
                   (testing "and so are the values of a form, one per call"
                     (is (= "[2 3]" (get-in (ask! c {:op :inspect :id 6
                                                      :source {:debug {:site site}}})
@@ -593,7 +600,7 @@
                 (is (= {[11 3] ["3" 1] [12 5] ["3" 1] [12 10] ["1" 1]}
                        (select-keys outer [[11 3] [12 5] [12 10]])))
                 (is (= {[11 3] ["1" 1] [12 10] ["0" 1]} (select-keys inner [[11 3] [12 10]])))
-                (is (= {[11 3] ["0" 1] [11 7] ["false" 1]} innermost)))))
+                (is (= {[10 1] ["[0]" 1] [11 3] ["0" 1] [11 7] ["false" 1]} innermost)))))
           (testing "and one thrown out of is over"
             (record 20 "(defn rt [n]
   (if (pos? n)
@@ -610,6 +617,17 @@
               ;; the form evaluated is the repl's to show
               (is (= {[30 9] ["2" 1] [30 18] ["4" 1]}
                      (:by-place (recorded c unit nil 13))))))
+          (testing "traced, and let go of by tracing, it records still"
+            (record 40 "(defn rk [n] (inc n))")
+            (let [unit (:unit (await-event c "debug-instrumented"))]
+              (is (= ["user/rk"] (:traced (ask! c {:op :trace :vars ["user/rk"] :id 16}))))
+              (is (= "2" (ret r "(rk 1)")))
+              (ask! c {:op :untrace :id 17})
+              (is (= "3" (ret r "(rk 2)")))
+              (is (= 2 (count (:calls (recorded c unit nil 18)))))
+              (testing "and defined again, it does not"
+                (ret r "(defn rk [n] n)")
+                (is (= unit (:unit (await-event c "debug-uninstrumented")))))))
           (testing "what is let go of is forgotten"
             (let [{:keys [uninstrumented]} (ask! c {:op :debug-uninstrument :id 14})]
               (is (seq uninstrumented))

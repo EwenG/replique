@@ -12,9 +12,10 @@
   Code compiled to be recorded (clojure.cljs.emitter/*instrument*) holds the
   `unit' of what was evaluated, and calls it:
 
-    enter(n, outer)     on entering a fn, answering the frame of the call it is
-                        in - OUTER, the frame of the fn it was made in, where
-                        it was made in one
+    enter(n, outer, args)
+                        on entering a fn, called with ARGS, answering the
+                        frame of the call it is in - OUTER, the frame of the fn
+                        it was made in, where it was made in one
     value(n, v, frame)  once the form numbered N has its value, answering V
     exit(frame)         once the call is over, returned from or thrown out of
 
@@ -51,6 +52,11 @@
   (js/Map.))
 
 (defonce ^:private call-count (atom 0))
+
+(defonce ^:private entries
+  ;; the numbers of the sites that are a fn's entry, whose value is what it
+  ;; was called with
+  (js/Set.))
 
 ;;; Saying that a unit recorded
 
@@ -108,14 +114,20 @@
 
 (deftype Unit [n definition ^:mutable gone calls]
   Object
-  (enter [this site outer]
-    (cond
-      (some? outer) (Frame. (.-of outer) false)
-      gone (Frame. nil false)
-      definition (let [c (new-call calls)]
-                   (changed! n)
-                   (Frame. c true))
-      :else (Frame. (.latest this) false)))
+  (enter [this site outer args]
+    (let [frame (cond
+                  (some? outer) (Frame. (.-of outer) false)
+                  gone (Frame. nil false)
+                  definition (let [c (new-call calls)]
+                               (changed! n)
+                               (Frame. c true))
+                  :else (Frame. (.latest this) false))]
+      ;; what it was called with is what its entry evaluated to
+      (when (and (not gone) (some? (.-of frame)) args (pos? (alength args)))
+        (keep-value! (.-of frame) site (vec args))
+        (.add entries site)
+        (.set site-units site n))
+      frame))
   (value [this site v frame]
     (when-not gone
       (when-let [c (if (some? frame) (.-of frame) (.latest this))]
@@ -188,7 +200,7 @@
       (or (vector? x) (set? x)) (into (empty x) (map inner) (some-of x))
       :else x)))
 
-(defn- printed-briefly
+(defn printed-briefly
   "X printed to be shown after the form it is the value of: its beginning,
   which is what fits there - the rest is to browse."
   [x]
@@ -222,9 +234,12 @@
     (cond-> {:calls (mapv (fn [c] {:call (.-n c) :at (.-at c)}) kept)
              :values (if c
                        (vec (for [site (sort (es6-iterator-seq (.keys (.-values c))))
-                                  :let [e (.get (.-values c) site)]]
-                              {:site site :times (.-times e)
-                               :value (printed-briefly (last-of (.-values e)))}))
+                                  :let [e (.get (.-values c) site)
+                                        v (last-of (.-values e))]]
+                              (cond-> {:site site :times (.-times e)
+                                       :value (printed-briefly v)}
+                                (and (.has entries site) (vector? v))
+                                (assoc :args (mapv printed-briefly v)))))
                        [])}
       c (assoc :call (.-n c)))))
 

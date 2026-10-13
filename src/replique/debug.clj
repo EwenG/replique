@@ -281,7 +281,7 @@
        (or (vector? x) (set? x)) (into (empty x) (map inner) (some-of x))
        :else x))))
 
-(defn- printed-briefly
+(defn printed-briefly
   "X printed for a client to show after the form it is the value of: its
   beginning, which is what fits there - the rest is to browse."
   [x]
@@ -448,9 +448,9 @@
 
 ;; Code evaluated to be stepped through is compiled by the compiler of
 ;; replique-clj to call `hook' with the value of every form the source wrote,
-;; once it has it, and with the number of every fn it enters - see
-;; clojure.lang.Compiler/INSTRUMENT. Which form a number is, is what `site!'
-;; was told while the code was compiled. A thread stops at the entry of the
+;; once it has it, and `enter' with the number of every fn it enters and what
+;; it was called with - see clojure.lang.Compiler/INSTRUMENT. Which form a
+;; number is, is what `site!' was told while the code was compiled. A thread stops at the entry of the
 ;; outermost fn of what was evaluated, every time it is called - for as long as
 ;; it is the code that runs, which is until it is evaluated again the ordinary
 ;; way, or until it is told to stop being stepped through - and from a stop it
@@ -477,7 +477,8 @@
 
 (defonce ^:private sites
   ;; number -> {:unit, :kind :value or :enter, :outermost, :ns, :file,
-  ;;            :line, :column, :end-line, :end-column}
+  ;;            :line, :column, :end-line, :end-column, and for an :enter the
+  ;;            :params of the fn, as written}
   (atom {}))
 
 (defonce ^:private site-numbers (atom 0))
@@ -516,6 +517,8 @@
         {:keys [record definition dialect]} (get @units unit)]
     (swap! sites assoc n (merge {:ns ns :file file :unit unit}
                                 (select-keys site [:kind :outermost])
+                                (when-let [params (:params site)]
+                                  {:params (mapv str params)})
                                 (select-keys where [:line :column :end-line :end-column])))
     ;; a ClojureScript site is recorded where its code runs - see "Recording
     ;; ClojureScript"
@@ -615,6 +618,9 @@
 ;; returned, or a lazy seq it made, realized then - is the last call's: that
 ;; is the call that made it. Anything else is recorded in one call, its
 ;; evaluation.
+;;
+;; What a fn was called with is what its entry evaluated to: a vector of the
+;; value of each param - see Compiler/INSTRUMENT's :enter.
 ;;
 ;; The values are kept as they are, and printed when a client asks: what
 ;; changed since of a mutable one is shown changed, and what was realized
@@ -789,15 +795,31 @@
                               (get @recorded unit)))]
         (if (seq values) values :not-recorded)))))
 
+(defn- entered!
+  "The thread entered the fn of the site N, called with ARGS - or with what
+  it does not say, ARGS nil."
+  [n args]
+  (when-not *in-frame*
+    (when-let [{:keys [starts unit]} (get @recording n)]
+      (when starts (call-started! unit (return-of n)))
+      ;; a fn of no param was called with nothing to show
+      (when (seq args) (record! unit n args)))
+    (reached! n nil)))
+
+(defn enter
+  "What code compiled to be stepped through calls on entering a fn, with what
+  it was called with: (enter n args) - see Compiler/INSTRUMENT's :enter."
+  [n args]
+  (entered! n args)
+  nil)
+
 (defn hook
   "What code compiled to be stepped through calls: (hook n) on entering a fn,
-  (hook n value) once a form has its value. As cheap as can be where no thread
-  steps and nothing records, since it is called for every form."
+  where the compiler has no :enter, (hook n value) once a form has its value.
+  As cheap as can be where no thread steps and nothing records, since it is
+  called for every form."
   ([n]
-   (when-not *in-frame*
-     (when-let [{:keys [starts unit]} (get @recording n)]
-       (when starts (call-started! unit (return-of n))))
-     (reached! n nil))
+   (entered! n nil)
    nil)
   ([n value]
    (when-let [{:keys [unit]} (get @recording n)]
@@ -881,6 +903,12 @@
         (output/broadcast-event! (protocol/event "debug-uninstrumented" {:unit n})))
       true)))
 
+(defn- underlying
+  "The function F wraps, where something holding a var for a while puts a
+  function of its own in it - see `replique.trace' - and F otherwise."
+  [f]
+  (if-let [wrapped (::wraps (meta f))] (recur wrapped) f))
+
 (defn- definition?
   "Whether FORM defines something, which is what the compiler tells by the
   name of what it calls: the fns it makes are called later, by others."
@@ -917,7 +945,8 @@
             ;; what is evaluated outside of the calls of what it defines
             evaluation (when record (call-started! n nil))
             v (try (with-bindings {instrument {:site (partial site! (str *ns*) *file* n where)
-                                               :hook #'hook}
+                                               :hook #'hook
+                                               :enter #'enter}
                                    #'*compiler-options* (assoc *compiler-options*
                                                                :disable-locals-clearing true)}
                      (eval form))
@@ -939,9 +968,12 @@
               (swap! calls dissoc evaluation))
             (swap! units assoc n unit)
             ;; defined again, the ordinary way or not: the code it holds is
-            ;; not this unit's any more
+            ;; not this unit's any more. Wrapped or let go of by tracing,
+            ;; it is still the same code
             (when (var? v)
-              (add-watch v [::unit n] (fn [_ _ _ _] (uninstrument! n))))
+              (add-watch v [::unit n] (fn [_ _ old now]
+                                        (when-not (identical? (underlying old) (underlying now))
+                                          (uninstrument! n)))))
             (output/broadcast-event! (protocol/event "debug-instrumented"
                                                      (unit-described n unit)))))
         v))))
@@ -1034,8 +1066,12 @@
       (-> answer
           (update :calls (fn [cs] (mapv #(assoc % :thread thread) cs)))
           (update :values (fn [vs]
-                            (mapv #(merge % (select-keys (get @sites (:site %))
-                                                         [:line :column :end-line :end-column]))
+                            (mapv (fn [v]
+                                    (let [site (get @sites (:site v))]
+                                      (cond-> (merge v (select-keys site [:line :column
+                                                                          :end-line :end-column]))
+                                        (:args v) (assoc :kind "enter"
+                                                         :params (:params site [])))))
                                   vs)))))))
 
 (defn- cljs-hook
@@ -1212,6 +1248,12 @@
                       (finally (.flush out) (.flush err))))))
   nil)
 
+(defn site-ns
+  "The namespace the code of the site N was read in - or nil, for a site
+  nobody numbered, or a namespace removed since."
+  [n]
+  (some-> (get @sites n) :ns symbol find-ns))
+
 (defn frame-ns
   "The namespace the code of the frame INDEX of the stopped thread ID was read
   in - or nil, for a frame of Java code, or a thread that is not stopped."
@@ -1380,7 +1422,16 @@
 ;; What the unit :unit recorded: the calls of it kept, and what each form
 ;; evaluated to in the call :call - the last call, without it - printed to be
 ;; shown after the form: its last value in the call, and how many times it was
-;; evaluated in it
+;; evaluated in it. A fn entered is said with its :params and the :args it was
+;; last called with, each printed
+(defn- entered-said
+  "SAID of the site SITE, which evaluated to V - with, where it is a fn's
+  entry, its :params and the :args V is, each printed."
+  [site said v]
+  (if (and (= :enter (:kind site)) (vector? v))
+    (assoc said :kind "enter" :params (:params site []) :args (mapv printed-briefly v))
+    said))
+
 (defmethod protocol/handle :debug-recorded [_ msg]
   (let [{:keys [unit call]} msg]
     (when-not (integer? unit)
@@ -1400,10 +1451,12 @@
                                       {:call k :thread thread :at at}))
                             kept)
                :values (vec (for [[site {:keys [times values]}] (sort-by key (:values (get all c)))]
-                              (merge {:site site :times times
-                                      :value (printed-briefly (peek values))}
-                                     (select-keys (get @sites site)
-                                                  [:line :column :end-line :end-column]))))}
+                              (entered-said (get @sites site)
+                                            (merge {:site site :times times
+                                                    :value (printed-briefly (peek values))}
+                                                   (select-keys (get @sites site)
+                                                                [:line :column :end-line :end-column]))
+                                            (peek values))))}
         c (assoc :call c))))))
 
 (defmethod protocol/handle :debug-restart [_ msg]
