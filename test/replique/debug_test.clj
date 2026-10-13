@@ -584,6 +584,30 @@
               (finally (disconnect f))))
           (finally (disconnect r) (disconnect c) (.delete file)))))))
 
+(deftest a-call-is-evaluated-in-past-the-fns-of-macros
+  (if-not (debug/instrumenting?)
+    (println "replique.debug-test: no compiler to record with - run with :analysis")
+    (client/with-process [info nil]
+      (let [r (client/repl-client info nil 60000)
+            c (control info)
+            file (java.io.File/createTempFile "in-call" ".clj")]
+        (try
+          (ret r (str "#replique/src {:file " (pr-str (str file)) " :line 1"
+                      " :instrument true :entry false :record true}\n"
+                      "(defn im [a b c]
+  (doall (for [x a :let [y (inc x)]]
+           (reduce (fn [[s t] u] [(+ s u) t]) [b c] [x y]))))"))
+          (let [unit (:unit (await-event c "debug-instrumented"))
+                _ (ret r "(im [1 2] 10 20)")
+                f (client/repl-client info {:call {:unit unit :line 3 :column 40}} 60000)]
+            (try
+              (testing "a fn a macro made is not the fn its code is in"
+                (is (= "[[1 2] 10 20]" (ret f "[a b c]"))))
+              (testing "nor the params destructured, the fn the code wrote"
+                (is (= "[[1 2] 10 20 12 20 3]" (ret f "[a b c s t u]"))))
+              (finally (disconnect f))))
+          (finally (disconnect r) (disconnect c) (.delete file)))))))
+
 (deftest what-a-function-recorded-is-kept-call-by-call
   (if-not (debug/instrumenting?)
     (println "replique.debug-test: no compiler to record with - run with :analysis")

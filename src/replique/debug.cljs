@@ -259,6 +259,16 @@
       (let [cs (filter in? calls)]
         (if (seq cs) (mapv last-in cs) :not-recorded)))))
 
+(defn recorded-in
+  "What the site SITE evaluated to last in the call CALL of the unit UNIT -
+  which code evaluated in a call binds its locals to, see `eval-cljs-in-call'
+  in replique/debug.clj."
+  [unit call site]
+  (let [c (some #(when (= call (.-n %)) %) (some-> (get @units unit) unit-calls vec))]
+    (when-not c
+      (throw (ex-info (str "Call " call " is not kept any more") {:kind "unknown-call"})))
+    (some-> (.get (.-values c) site) .-values last-of)))
+
 (defn- handle [{:keys [op unit call] :as msg}]
   (case op
     "recorded" (recorded unit call)

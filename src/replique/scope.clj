@@ -65,11 +65,11 @@
     (if (vector? (first tail))
       [{:params (first tail) :body (rest tail) :span whole}]
       (for [a tail :when (and (seq? a) (vector? (first a)))]
-        {:params (first a) :body (rest a) :span (span a)}))))
+        {:params (first a) :body (rest a) :span (span a) :own true}))))
 
 (defn arities
-  "The arities FORM writes, where it is a fn - {:params :body :span} - or
-  nil."
+  "The arities FORM writes, where it is a fn - {:params :body :span}, and
+  :own where the span is the arity's own rather than the fn's - or nil."
   [form]
   (when (and (seq? form) (symbol? (first form)))
     (let [head (first form)]
@@ -88,10 +88,16 @@
           (when (and (coll? form) (not (and (seq? form) (= 'quote (first form)))))
             (mapcat all-arities (if (map? form) (mapcat identity form) form)))))
 
-(defn innermost-arity
-  "Of ARITIES, the innermost one the place POS is inside of - or nil."
-  [arities pos]
-  (last (filter #(in-span? (:span %) pos) arities)))
+(defn entered-arity
+  "Of ARITIES, the one a fn the compiler sees whose `marker' is MARKER is -
+  or nil, for a fn a macro made, around code of the arity: its marker is
+  somewhere in that code, where an arity's own is its params, or what they
+  destructure, or the arity itself, of a fn of many."
+  [arities marker]
+  (last (filter (fn [{:keys [params span own]}]
+                  (or (inside? params marker)
+                      (and own (= marker (subvec span 0 2)))))
+                arities)))
 
 ;;; The locals at a place
 

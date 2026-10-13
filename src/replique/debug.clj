@@ -1115,7 +1115,7 @@
       (do (uninstrument! n) r)
       (let [unit (merge {:dialect :cljs :target cljs/*target* :page (cljs/page)
                          :ns ns :file file :shown true :entry false :record true
-                         :definition definition}
+                         :definition definition :form form}
                         (select-keys where [:line :column :end-line :end-column])
                         (when (and definition (symbol? (second form)))
                           {:var (symbol ns (name (second form)))}))]
@@ -1327,6 +1327,9 @@
 ;; as the element of a doseq is - is not bound. A value is the last the form
 ;; had in the call, a form of a fn the call called many times having had
 ;; many: what the code shows.
+;;
+;; A ClojureScript call is evaluated in from a ClojureScript repl, in the
+;; runtime that keeps its values - see `eval-cljs-in-call'.
 
 (defn recorded-in
   "What the site SITE evaluated to last in the call C - which code evaluated
@@ -1339,12 +1342,15 @@
 
 (defn- call-bindings
   "The bindings of a let binding the locals of the code of the unit UNIT in
-  scope at POS, [line column], to what they were in the call C - and the
-  names of the ones whose value is not known, which are not bound."
-  [unit c pos]
+  scope at POS, [line column], to what they were in a call - and the names of
+  the ones whose value is not known, which are not bound.
+
+  Of the call, HAD? says whether a site has a value in it, and VALUE answers
+  the code that has that value, of a site; KNOWN? says whether a name the code
+  has a local bound to is one there is outside of it."
+  [unit pos had? value known?]
   (let [{:keys [form]} (get @units unit)
-        values (:values (get @calls c))
-        had (fn [[n _]] (contains? values n))
+        had (fn [[n _]] (had? n))
         mine (filter (fn [[_ site]] (= unit (:unit site))) @sites)
         ;; the span of a form -> the site that has its value
         value-sites (into {} (for [[n site] mine
@@ -1354,20 +1360,19 @@
         arities (scope/all-arities form)
         entries (into {} (for [[n site] mine
                                :when (and (= :enter (:kind site)) (:marker site) (had [n site]))
-                               :let [a (scope/innermost-arity arities (:marker site))]
+                               :let [a (scope/entered-arity arities (:marker site))]
                                :when a]
                            [(:span a) n]))
-        value-of (fn [span] (when-let [n (get value-sites span)]
-                              `(recorded-in ~c ~n)))]
+        value-of (fn [span] (some-> (get value-sites span) value))]
     ((juxt first peek)
      (reduce (fn [[bindings names unknown] {:keys [pattern init arity arg unbound]}]
                (let [value (cond
                              unbound ::scope/unknown
                              arity (if-let [n (get entries (:span arity))]
-                                     `(nth (recorded-in ~c ~n) ~arg)
+                                     (list 'nth (value n) arg)
                                      ::scope/unknown)
                              :else (scope/replayed init value-of
-                                                   #(or (contains? names %) (resolve %))))
+                                                   #(or (contains? names %) (known? %))))
                      these (scope/pattern-names pattern)]
                  (if (= ::scope/unknown value)
                    ;; not the value of a local of the same name further out
@@ -1385,6 +1390,12 @@
   [n]
   (some-> (get @units n) :ns symbol find-ns))
 
+(defn unit-ns-name
+  "The name of the namespace the code of the unit N was read in, of either
+  dialect - or nil, for a unit gone."
+  [n]
+  (some-> (get @units n) :ns symbol))
+
 (defn eval-in-call
   "Evaluate FORM, read by a repl pointed at a call of the recorded unit UNIT -
   see `#replique/call' - with the locals of its code in scope at LINE and
@@ -1396,14 +1407,16 @@
                            " one of its calls, and here after #replique/call nil")
                       {:replique/error :unknown-unit})))
     (when (= :cljs dialect)
-      (throw (ex-info "A ClojureScript call is not evaluated in, only Clojure's"
+      (throw (ex-info "A ClojureScript call is evaluated in from a ClojureScript repl"
                       {:replique/error :unavailable})))
     (let [c (or call (peek (get @recorded unit))
                 (throw (ex-info (str "Unit " unit " was not called yet")
                                 {:replique/error :unknown-call})))]
       (when-not (contains? @calls c)
         (throw (ex-info (str "Call " c " is not kept any more") {:replique/error :unknown-call})))
-      (let [[bindings unknown] (call-bindings unit c [line column])]
+      (let [values (:values (get @calls c))
+            [bindings unknown] (call-bindings unit [line column] #(contains? values %)
+                                              (fn [n] `(recorded-in ~c ~n)) resolve)]
         (try
           (eval `(let ~bindings ~form))
           (catch clojure.lang.Compiler$CompilerException e
@@ -1415,6 +1428,44 @@
                                      " in it, or binds it to something else than a value it had")
                                 {:replique/error :not-recorded}))
                 (throw e)))))))))
+
+(defn eval-cljs-in-call
+  "Evaluate FORM in the runtime of `cljs/*target*', with OPTS as
+  `cljs/eval-form' takes them - read by a repl pointed at a call of the
+  recorded ClojureScript unit UNIT, as `eval-in-call' is a Clojure one's -
+  and answer what it answers.
+
+  The values are the runtime's, which keeps them: the locals are bound to
+  what replique.debug/recorded-in answers there. Which of them there are is
+  asked of the runtime too. A local whose value is not known is bound to
+  :replique/not-recorded, ClojureScript compiling a name nothing binds to
+  undefined rather than refusing it."
+  [{:keys [unit call line column]} form opts]
+  (let [{:keys [record dialect target]} (get @units unit)]
+    (when-not record
+      (throw (ex-info (str "Unit " unit " does not record any more - this repl evaluates in"
+                           " one of its calls, and here after #replique/call nil")
+                      {:replique/error :unknown-unit})))
+    (when-not (= :cljs dialect)
+      (throw (ex-info "A Clojure call is evaluated in from a Clojure repl"
+                      {:replique/error :unavailable})))
+    (when-not (= cljs/*target* target)
+      (throw (ex-info (str "Unit " unit " was recorded in the " (name target) " runtime, and this"
+                           " repl is on the " (name cljs/*target*) " one")
+                      {:replique/error :unavailable})))
+    (let [{c :call values :values} (cljs-recorded unit call)
+          _ (when-not c
+              (throw (ex-info (str "Unit " unit " was not called yet")
+                              {:replique/error :unknown-call})))
+          had (set (map :site values))
+          ns (cljs/current-ns)
+          [bindings unknown] (call-bindings unit [line column] had
+                                            (fn [n] (list 'replique.debug/recorded-in unit c n))
+                                            #(some? (cljs/resolve-var ns %)))]
+      (cljs/eval-form (list 'let (into bindings (mapcat (fn [s] [s :replique/not-recorded]))
+                                       (sort unknown))
+                            form)
+                      opts))))
 
 ;;; What a client sees
 

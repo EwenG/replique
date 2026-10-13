@@ -1202,6 +1202,51 @@
               (is (string/includes? (:message (frame-tagged frames "exception")) "recorded"))))
           (finally (disconnect c)))))))
 
+(deftest test-a-repl-evaluates-in-a-recorded-clojurescript-call
+  (when (compiling?)
+    (with-repl [r]
+      (let [c (client/control-client @the-process)
+            ret (fn [repl code] (:value (frame-tagged (eval! repl code) "ret")))]
+        (try
+          (eval! r "#replique/ns rec.incall\n(def g 1)")
+          (eval! r (record-src 1 1 (str "(defn ic [m {:keys [z]} & more]\n"
+                                        "  (let [x (inc (:a m))\n"
+                                        "        [p q] [(dec x) 7]]\n"
+                                        "    (doseq [d more] (inc d))\n"
+                                        "    (mapv (fn [y] (* x y)) (range 3))))")))
+          (let [unit (:unit (await-event c "debug-instrumented"))
+                _ (ret r "(ic {:a 1} {:z 2} 3 4)")
+                _ (ret r "(ic {:a 10} {:z 20})")
+                ;; told before the test is over, not in the middle of another
+                _ (loop [] (when-not (= {:unit unit :calls 2}
+                                        (select-keys (await-event c "debug-recorded") [:unit :calls]))
+                             (recur)))
+                [first-call] (map :call (:calls (recorded-by-place c unit nil 1)))]
+            (eval! r "#replique/ns elsewhere\n\n")
+            (with-repl [f {:dialect :cljs :target :node
+                           :call {:unit unit :call first-call :line 5 :column 21}}]
+              (testing "a repl opened on a recorded call says so, in the namespace of its code"
+                (is (= {:unit unit :call first-call :line 5 :column 21} (:call (:prompt f))))
+                (is (= "rec.incall" (:ns (:prompt f)))))
+              (testing "what it reads is evaluated with the locals in scope there, as they were"
+                (is (= "[{:a 1} 2 (3 4) 2 1 7 2]" (ret f "[m z more x p q y]"))))
+              (testing "recorded, not evaluated again: the function is not called"
+                (is (= 2 (count (:calls (recorded-by-place c unit nil 2))))))
+              (testing "a local bound by a loop has no value"
+                (eval! f (str "#replique/call {:unit " unit " :call " first-call
+                              " :line 4 :column 22}\n\n"))
+                (is (= ":replique/not-recorded" (ret f "d"))))
+              (testing "without a call, the last one"
+                (let [frames (eval! f (str "#replique/call {:unit " unit " :line 3 :column 9}\n\n"))]
+                  (is (= {:unit unit :line 3 :column 9} (:call (last frames)))))
+                (is (= "[{:a 10} 20 nil 11]" (ret f "[m z more x]"))))
+              (testing "and at none: the ordinary way again"
+                (let [frames (eval! f "#replique/call nil\n\n")]
+                  (is (nil? (:call (last frames)))))
+                (is (= "1" (ret f "g"))))))
+          (finally (disconnect c)))))))
+
+;;; Tracing in the runtime
 ;;; Tracing in the runtime
 
 (deftest test-what-is-traced-in-the-runtime-is-a-tree-of-calls
