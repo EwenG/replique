@@ -1346,10 +1346,14 @@
                      (select-keys (in unit add 2 2) [add [2 35]])))
               (is (= {double ["[3]" 1] [3 37] ["6" 1]}
                      (select-keys (in unit double 3 3) [double [3 37]])))
-              (is (= ["{:iteration 1, acc 0, x 1}" "{:iteration 2, acc 1, x 2}"
-                      "{:iteration 3, acc 3, x 3}"]
-                     (mapv :value (:children (ask! c {:op :inspect :dialect :cljs :target :node :id 4
-                                                      :source {:debug {:loop add}}}))))))
+              (let [table (ask! c {:op :inspect :dialect :cljs :target :node :id 4
+                                   :source {:debug {:loop add}}})]
+                (is (= ["{:iteration 1, acc 0, x 1}" "{:iteration 2, acc 1, x 2}"
+                        "{:iteration 3, acc 3, x 3}"]
+                       (mapv :value (:children table))))
+                (testing "a table, a column per key"
+                  (is (= [":iteration" "acc" "x"] (:columns table)))
+                  (is (= ["1" "0" "1"] (mapv :value (:cells (first (:children table)))))))))
             (testing "every call of a form is by the number of the call"
               (let [sum (:site (some #(when (= [2 35] [(:line %) (:column %)]) %)
                                      (:values (recorded-by-place c unit nil 5))))]

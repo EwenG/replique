@@ -589,9 +589,44 @@
       [(str "#" (type-name v) " " open) close]
       [open close])))
 
+(def ^:private table-columns
+  "As many keys as the maps of a table have between them, at most."
+  20)
+
+(def ^:private cell-width
+  "As many chars as the printing of a cell of a table takes, at most."
+  40)
+
+(defn- table-keys
+  "Where the children of a seq, the values of PAGE, [step raw] pairs, are
+  maps - the rows of a table, by what each holds - the keys they have between
+  them, in the order first found: its columns. Or nil, where one is not a map,
+  or they have more keys than a table shows."
+  [page]
+  (when (and (seq page) (every? (fn [[_ x]] (= :map (shape (browsed x)))) page))
+    (let [ks (into [] (comp (mapcat (fn [[_ x]] (keys (browsed x)))) (distinct)
+                            (take (inc table-columns)))
+                   page)]
+      (when (<= (count ks) table-columns) ks))))
+
+(defn- with-cells
+  "LINE, the line of a row of a table, X, with its :cells - the line of each
+  thing it holds, which is the child of the row by its key."
+  [view line x]
+  (let [b (browsed x)]
+    (assoc line :cells
+           (mapv (fn [[step v]]
+                   (let [key (:key (label step cell-width))]
+                     (describe view (:node line) b step v
+                               {:width (+ cell-width (count key) 1 margin) :column 0})))
+                 (page-of b 0 table-columns)))))
+
 (defn- children-page
   "A page of the children of the node ID of VIEW, written at COLUMN - see
-  `children' - or nil where the node is no longer there."
+  `children' - or nil where the node is no longer there.
+
+  A seq of maps is a table too: the page says its :columns, the keys of the
+  maps printed, and the line of each map its :cells - see `with-cells'."
   [view id {offset :offset limit :limit meta? :meta column :column
             :or {offset 0 limit 100 column 0} :as opts}]
   (when-let [{v :value b :browse} (current view id)]
@@ -602,10 +637,16 @@
           page (cond->> (take limit page)
                  (and meta? (zero? offset) (some? (meta v)))
                  (cons [[:meta] (meta v)]))]
-      (cond-> {:children (mapv (fn [[step x]] (describe view id b step x opts)) page)
+      (cond-> {:children (let [columns (when (= :seq (shape b)) (table-keys page))]
+                           (mapv (fn [[step x]]
+                                   (cond-> (describe view id b step x opts)
+                                     columns (as-> line (with-cells view line x))))
+                                 page))
                :more more?
                :open open
                :close close}
+        (and (= :seq (shape b)) (table-keys page))
+        (assoc :columns (mapv #(:text (summary % cell-width false)) (table-keys page)))
         (counted b) (assoc :total (counted b))
         (= :ref (shape b)) (assoc :total (if (pending-unrealized? b) 0 1))))))
 
@@ -619,8 +660,8 @@
   BASE on lines of WIDTH chars: an entry of a map a line, and so is an
   element that holds things, and what holds none filled into as few lines as
   it takes. And a line for saying there is more."
-  [{:keys [children more]} base width]
-  (+ (if (some #(or (keyed? %) (:count %)) children)
+  [{:keys [children more columns]} base width]
+  (+ (if (or columns (some #(or (keyed? %) (:count %)) children))
        (count children)
        (let [w (max 1 (- width base))]
          (quot (+ (reduce + 0 (map #(inc (count (:value %))) children)) (dec w)) w)))
@@ -648,7 +689,8 @@
   [view page column {:keys [width limit] :or {width 80 limit 100} :as opts} budget]
   (let [base (fn [page column] (+ column (count (:open page))))
         candidates (fn [page column]
-                     (for [line (:children page)
+                     ;; a row of a table is shown by its cells
+                     (for [line (when-not (:columns page) (:children page))
                            :when (and (:expandable line) (:truncated line))]
                        [line (value-column (base page column) line)]))
         opened (volatile! {})]
@@ -686,7 +728,8 @@
 
 (defn children
   "A page of the children of the node ID of VIEW: {:children [line ...]
-  :total n :more bool :open :close}, :total where it is known without walking
+  :total n :more bool :open :close}, and :columns of a seq of maps, a table -
+  see `children-page' - :total where it is known without walking
   the node, :open and :close what the node is written between once it is
   open - and {:gone true} where the node is no longer there.
 

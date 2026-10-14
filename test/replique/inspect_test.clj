@@ -309,3 +309,32 @@
         (is (= "unknown-connection" (:error (inspect! c {:results "c999"}))))
         (is (= "unknown-view" (:error (request! c {:op :inspect-refresh :view 999 :id 2}))))
         (finally (disconnect c))))))
+
+(deftest a-seq-of-maps-is-a-table
+  (with-process [info nil]
+    (let [r (repl-client info)
+          c (control-client info)]
+      (try
+        (ret r "(def rows [{:a 1 :b {:deep (vec (range 50))}} {:a 2 :c \"x\"}])")
+        (let [o (inspect! c {:var "user/rows"} :expand 40 :width 80)
+              [one two] (:children o)]
+          (testing "its columns are the keys of the maps, in the order first found"
+            (is (= [":a" ":b" ":c"] (:columns o))))
+          (testing "and each row has a cell for each key it has, a node of its own"
+            (is (= [[":a" "1"] [":b" "{:deep [0 1 2 3 4 5 6 7 ...]}"]]
+                   (mapv (juxt :key :value) (:cells one))))
+            (is (= [":a" ":c"] (mapv :key (:cells two))))
+            (let [deep (second (:cells one))]
+              (is (:expandable deep))
+              (is (= ":deep" (:key (first (:children (request! c {:op :inspect-children
+                                                                  :view (:view o)
+                                                                  :node (:node deep)
+                                                                  :id 2}))))))))
+          (testing "a row is not opened to fill the view: its cells show it"
+            (is (nil? (:page one)))))
+        (testing "nor is a seq of anything else"
+          (ret r "(def mixed [{:a 1} 2])")
+          (let [o (inspect! c {:var "user/mixed"} :id 3)]
+            (is (nil? (:columns o)))
+            (is (nil? (:cells (first (:children o)))))))
+        (finally (disconnect r) (disconnect c))))))
