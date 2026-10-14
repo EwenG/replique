@@ -557,10 +557,9 @@
               (testing "recorded, not evaluated again: the function is not called"
                 (is (= "[1 7]" (ret f "[p q]")))
                 (is (= 2 (count (:calls (recorded c unit nil 2))))))
-              (testing "a local bound by a loop has no value"
+              (testing "a local bound by a loop has the last value it was bound to"
                 (point! (str "#replique/call {:unit " unit " :call " first-call " :line 5 :column 22}"))
-                (is (re-find #"d has no value in this call"
-                             (:message (client/frame-tagged (eval! f "d") "exception")))))
+                (is (= "4" (ret f "d"))))
               (testing "nor a param of a fn not called"
                 (point! (str "#replique/call {:unit " unit " :call " first-call " :line 7 :column 34}"))
                 (is (= "(3 4)" (ret f "w")))
@@ -605,7 +604,82 @@
                 (is (= "[[1 2] 10 20]" (ret f "[a b c]"))))
               (testing "nor the params destructured, the fn the code wrote"
                 (is (= "[[1 2] 10 20 12 20 3]" (ret f "[a b c s t u]"))))
+              (testing "the locals of a for are what they were bound to last"
+                (is (= "[2 3]" (ret f "[x y]"))))
+              (testing "which is recorded where the name was written, each time it was bound"
+                (let [{:keys [by-place values]} (recorded c unit nil 1)]
+                  (is (= ["2" 2] (get by-place [2 16])))
+                  (is (= "local" (:kind (some #(when (= [2 16] [(:line %) (:column %)]) %) values))))
+                  (is (= ["3" 2] (get by-place [2 26])))
+                  (is (= ["12" 4] (get by-place [3 26])))))
               (finally (disconnect f))))
+          (finally (disconnect r) (disconnect c) (.delete file)))))))
+
+(deftest an-iteration-of-a-loop-is-what-it-evaluated
+  (if-not (debug/instrumenting?)
+    (println "replique.debug-test: no compiler to record with - run with :analysis")
+    (client/with-process [info nil]
+      (let [r (client/repl-client info nil 60000)
+            c (control info)
+            file (java.io.File/createTempFile "iterations" ".clj")
+            in (fn [unit site index id]
+                 (let [said (ask! c {:op :debug-recorded :unit unit :id id
+                                     :iteration {:site site :index index}})]
+                   (assoc said :by-place (into {} (map (fn [v] [[(:line v) (:column v)]
+                                                                (if (false? (:kept v))
+                                                                  :not-kept
+                                                                  [(:value v) (:times v)])]))
+                                               (:values said)))))]
+        (try
+          (ret r (str "#replique/src {:file " (pr-str (str file)) " :line 1"
+                      " :instrument true :entry false :record true}\n"
+                      "(defn il [xs]
+  (doseq [x xs
+          y (range x)]
+    (when (odd? x) (* x y)))
+  (loop [i 0 acc []]
+    (if (< i 25) (recur (inc i) (conj acc (* i i))) (count acc))))"))
+          (let [unit (:unit (await-event c "debug-instrumented"))
+                _ (ret r "(il [1 2 3])")
+                {:keys [loops by-place]} (recorded c unit nil 1)]
+            (testing "the loops of a call, by the name they bind each time round"
+              (is (= [{:line 2 :column 3 :iterations 3 :kept [[1 3]]}
+                      {:line 2 :column 3 :iterations 6 :kept [[1 6]]}
+                      {:line 5 :column 3 :iterations 26 :kept [[1 9] [17 26]]}]
+                     (mapv #(select-keys % [:line :column :iterations :kept]) loops)))
+              (is (= 3 (count (set (map :site loops)))))
+              (is (= ["3" 3] (get by-place [2 11]))))
+            (let [[x y i] (map :site loops)]
+              (testing "what the code a loop goes round evaluated in an iteration of it"
+                (let [{:keys [iteration by-place]} (in unit x 2 2)]
+                  (is (= {:site x :index 2} iteration))
+                  (is (= {[2 11] ["2" 1]
+                          [3 11] ["1" 2]
+                          [3 13] ["(0 1)" 1]
+                          [4 11] ["false" 2]}
+                         (select-keys by-place [[2 11] [3 11] [3 13] [4 11] [4 20]])))
+                  (testing "and the rest as in the whole call"
+                    (is (= ["[[1 2 3]]" 1] (get by-place [1 1])))
+                    (is (= ["25" 26] (get by-place [5 10]))))))
+              (testing "in a loop in another, within the iteration of that one it is in"
+                (let [{:keys [by-place]} (in unit y 5 3)]
+                  (is (= {[2 11] ["3" 1]
+                          [3 11] ["1" 1]
+                          [3 13] ["(0 1 2)" 1]
+                          [4 11] ["true" 1]
+                          [4 20] ["3" 1]}
+                         (select-keys by-place [[2 11] [3 11] [3 13] [4 11] [4 20]])))))
+              (testing "the first iterations are kept, and the last ones"
+                (is (= {[5 10] ["2" 1] [5 14] ["[0 1]" 1] [6 25] ["3" 1] [6 43] ["4" 1]}
+                       (select-keys (:by-place (in unit i 3 4)) [[5 10] [5 14] [6 25] [6 43]])))
+                (is (= {[5 10] ["19" 1] [6 43] ["361" 1]}
+                       (select-keys (:by-place (in unit i 20 5)) [[5 10] [6 43]])))
+                (is (= {[5 10] ["25" 1] [6 9] ["false" 1] [6 53] ["25" 1]}
+                       (select-keys (:by-place (in unit i 26 6)) [[5 10] [6 9] [6 53]])))
+                (is (= "unknown-iteration" (:error (ask! c {:op :debug-recorded :unit unit :id 7
+                                                            :iteration {:site i :index 12}}))))
+                (is (= "unknown-iteration" (:error (ask! c {:op :debug-recorded :unit unit :id 8
+                                                            :iteration {:site 999999 :index 1}})))))))
           (finally (disconnect r) (disconnect c) (.delete file)))))))
 
 (deftest what-a-function-recorded-is-kept-call-by-call

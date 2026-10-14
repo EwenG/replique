@@ -1206,6 +1206,51 @@
               (is (string/includes? (:message (frame-tagged frames "exception")) "recorded"))))
           (finally (disconnect c)))))))
 
+(deftest test-an-iteration-of-a-clojurescript-loop-is-what-it-evaluated
+  (when (compiling?)
+    (with-repl [r]
+      (let [c (client/control-client @the-process)
+            in (fn [unit site index id]
+                 (let [said (ask! c {:op :debug-recorded :unit unit :id id
+                                     :iteration {:site site :index index}})]
+                   (assoc said :by-place (into {} (map (fn [v] [[(:line v) (:column v)]
+                                                                [(:value v) (:times v)]]))
+                                               (:values said)))))]
+        (try
+          (eval! r "#replique/ns rec.iter\n(def g 1)")
+          (eval! r (record-src 1 1 (str "(defn il [xs]\n"
+                                        "  (doseq [x xs\n"
+                                        "          y (range x)]\n"
+                                        "    (when (odd? x) (* x y)))\n"
+                                        "  (loop [i 0 acc []]\n"
+                                        "    (if (< i 25) (recur (inc i) (conj acc (* i i))) (count acc))))")))
+          (let [unit (:unit (await-event c "debug-instrumented"))
+                _ (eval! r "(il [1 2 3])")
+                _ (loop [] (when-not (= {:unit unit :calls 1}
+                                        (select-keys (await-event c "debug-recorded") [:unit :calls]))
+                             (recur)))
+                {:keys [loops]} (recorded-by-place c unit nil 1)
+                [x y i] (map :site loops)]
+            (testing "the loops of a call, by the name they bind each time round"
+              (is (= [{:line 2 :column 3 :iterations 3 :kept [[1 3]]}
+                      {:line 2 :column 3 :iterations 6 :kept [[1 6]]}
+                      {:line 5 :column 3 :iterations 26 :kept [[1 9] [17 26]]}]
+                     (mapv #(select-keys % [:line :column :iterations :kept]) loops))))
+            (testing "what the code a loop goes round evaluated in an iteration of it"
+              (let [{:keys [iteration by-place]} (in unit x 2 2)]
+                (is (= {:site x :index 2} iteration))
+                (is (= {[2 11] ["2" 1] [3 11] ["1" 2] [3 13] ["(0 1)" 1] [4 11] ["false" 2]}
+                       (select-keys by-place [[2 11] [3 11] [3 13] [4 11] [4 20]])))))
+            (testing "in a loop in another, within the iteration of that one it is in"
+              (is (= {[2 11] ["3" 1] [3 11] ["1" 1] [4 11] ["true" 1] [4 20] ["3" 1]}
+                     (select-keys (:by-place (in unit y 5 3)) [[2 11] [3 11] [4 11] [4 20]]))))
+            (testing "the first iterations are kept, and the last ones"
+              (is (= {[5 10] ["19" 1] [6 43] ["361" 1]}
+                     (select-keys (:by-place (in unit i 20 4)) [[5 10] [6 43]])))
+              (is (= "unknown-iteration" (:error (ask! c {:op :debug-recorded :unit unit :id 5
+                                                          :iteration {:site i :index 12}}))))))
+          (finally (disconnect c)))))))
+
 (deftest test-a-repl-evaluates-in-a-recorded-clojurescript-call
   (when (compiling?)
     (with-repl [r]
@@ -1236,10 +1281,18 @@
                 (is (= "[{:a 1} 2 (3 4) 2 1 7 2]" (ret f "[m z more x p q y]"))))
               (testing "recorded, not evaluated again: the function is not called"
                 (is (= 2 (count (:calls (recorded-by-place c unit nil 2))))))
-              (testing "a local bound by a loop has no value"
+              (testing "a local bound by a loop has the last value it was bound to"
                 (eval! f (str "#replique/call {:unit " unit " :call " first-call
                               " :line 4 :column 22}\n\n"))
-                (is (= ":replique/not-recorded" (ret f "d"))))
+                (is (= "4" (ret f "d"))))
+              (testing "which is recorded where the name was written, a let's bound to a
+                form shown being that form's"
+                (let [values (:values (recorded-by-place c unit first-call 3))
+                      at (fn [line column] (some #(when (= [line column] [(:line %) (:column %)]) %)
+                                                 values))]
+                  (is (= ["local" "4" 2] ((juxt :kind :value :times) (at 4 13))))
+                  (is (= ["local" "2"] ((juxt :kind :value) (at 1 21))))
+                  (is (nil? (at 2 9)))))
               (testing "without a call, the last one"
                 (let [frames (eval! f (str "#replique/call {:unit " unit " :line 3 :column 9}\n\n"))]
                   (is (= {:unit unit :line 3 :column 9} (:call (last frames)))))

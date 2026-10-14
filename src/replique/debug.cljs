@@ -29,14 +29,16 @@
 
   Asked through `op', with what the JVM wants as JSON and what it gets back as
   EDN, as replique.inspect is. That a unit recorded is said with the
-  runtime's notify, once every `tell-every' ms at most.")
+  runtime's notify, once every `tell-every' ms at most."
+  (:require [replique.iterations :as iterations]))
 
 (def ^:private calls-kept
   "How many calls of a unit are kept, the last ones."
   10)
 
 (def ^:private values-kept
-  "How many values of a form are kept in a call, the last ones."
+  "How many values of a form are kept in a call, the first ones, and as many
+  of the last ones."
   10)
 
 (def ^:private tell-every
@@ -87,30 +89,40 @@
 
 ;;; Calls
 
-(deftype Call [n at values])
+(deftype Call [n at values ^:mutable counted])
 
 (deftype Frame [of own])
 
 (defn- new-call
   "A call numbered from now on, of the unit whose calls kept are CALLS."
   [calls]
-  (let [c (Call. (swap! call-count inc) (js/Date.now) (js/Map.))]
+  (let [c (Call. (swap! call-count inc) (js/Date.now) (js/Map.) 0)]
     (.push calls c)
     (when (> (alength calls) calls-kept) (.shift calls))
     c))
 
 (defn- keep-value!
-  "Keep V as what the site SITE evaluated to in the call C."
+  "Keep V as what the site SITE evaluated to in the call C - numbered in it,
+  see replique.iterations: the last values, numbered :numbers, and the first
+  ones, :head, [number value]s."
   [c site v]
   (let [m (.-values c)
         e (or (.get m site)
-              (let [e #js {:times 0 :values #js []}]
+              (let [e #js {:times 0 :values #js [] :numbers #js [] :head #js []}]
                 (.set m site e)
                 e))
-        vs (.-values e)]
+        i (inc (.-counted c))
+        vs (.-values e)
+        numbers (.-numbers e)]
+    (set! (.-counted c) i)
     (set! (.-times e) (inc (.-times e)))
     (.push vs v)
-    (when (> (alength vs) values-kept) (.shift vs))))
+    (.push numbers i)
+    (when (> (alength vs) values-kept)
+      (.shift vs)
+      (.shift numbers))
+    (when (< (alength (.-head e)) values-kept)
+      (.push (.-head e) #js [i v]))))
 
 (deftype Unit [n definition ^:mutable gone calls]
   Object
@@ -220,26 +232,66 @@
 
 (defn- last-of [a] (aget a (dec (alength a))))
 
+(defn- kept-in
+  "What is kept of each site of the call C, as replique.iterations takes it:
+  a fn of the site, nil where nothing is."
+  [c]
+  (fn [site]
+    (when-let [e (and c (.get (.-values c) site))]
+      {:times (.-times e)
+       :head (mapv vec (.-head e))
+       :tail (mapv vector (.-numbers e) (.-values e))})))
+
+(defn- in-iteration
+  "A fn answering, of a site, what it evaluated to in the iteration ITERATION
+  of the call C - see `iterating' in replique/debug.clj, which says it, its
+  :owners as pairs - or DEFAULT, where it is not evaluated again each time
+  round."
+  [{:keys [loop index enclosing owners]} c]
+  (let [kept-of (kept-in c)
+        owners (into {} owners)
+        ranges (or (iterations/ranges kept-of loop index enclosing)
+                   (throw (ex-info (str "Iteration " index " is not kept")
+                                   {:kind "unknown-iteration"})))]
+    (fn [site default]
+      (if-let [owner (get owners site)]
+        (iterations/value-in (kept-of site) (get ranges owner))
+        default))))
+
 (defn- recorded
   "What the unit N recorded: the calls of it kept, and what each form
   evaluated to in the call CALL - the last call, without it - printed: its
-  last value in the call, and how many times it was evaluated in it."
-  [n call]
+  last value in the call, and how many times it was evaluated in it, :times
+  also saying that of each site. Or, where ITERATION says one, in that
+  iteration of a loop of the call: see `in-iteration'."
+  [n call iteration]
   (let [kept (vec (unit-calls (the-unit n)))
         c (if (some? call)
             (or (some #(when (= call (.-n %)) %) kept)
                 (throw (ex-info (str "Call " call " is not kept any more")
                                 {:kind "unknown-call"})))
-            (peek kept))]
+            (peek kept))
+        pick (if iteration
+               (in-iteration iteration c)
+               (fn [_ default] default))]
     (cond-> {:calls (mapv (fn [c] {:call (.-n c) :at (.-at c)}) kept)
+             :times (if c
+                      (into {} (map (fn [[site e]] [site (.-times e)]))
+                            (es6-iterator-seq (.entries (.-values c))))
+                      {})
              :values (if c
                        (vec (for [site (sort (es6-iterator-seq (.keys (.-values c))))
                                   :let [e (.get (.-values c) site)
-                                        v (last-of (.-values e))]]
-                              (cond-> {:site site :times (.-times e)
-                                       :value (printed-briefly v)}
-                                (and (.has entries site) (vector? v))
-                                (assoc :args (mapv printed-briefly v)))))
+                                        picked (pick site {:times (.-times e)
+                                                           :value (last-of (.-values e))})
+                                        v (:value picked)]
+                                  :when picked]
+                              (if (= ::iterations/not-kept picked)
+                                {:site site :kept false}
+                                (cond-> {:site site :times (:times picked)
+                                         :value (printed-briefly v)}
+                                  (and (.has entries site) (vector? v))
+                                  (assoc :args (mapv printed-briefly v))))))
                        [])}
       c (assoc :call (.-n c)))))
 
@@ -271,7 +323,7 @@
 
 (defn- handle [{:keys [op unit call] :as msg}]
   (case op
-    "recorded" (recorded unit call)
+    "recorded" (recorded unit call (:iteration msg))
     "forget" {:forgotten (vec (filter forget! (if (contains? msg :unit)
                                                 [unit]
                                                 (keys @units))))}

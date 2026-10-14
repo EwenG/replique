@@ -132,7 +132,11 @@
   [form pos]
   (let [[_ bindings & body] form
         unbound (when (vector? bindings)
-                  (for [[p _] (partition 2 bindings) :when (not (keyword? p))]
+                  (for [[p v] (partition 2 bindings)
+                        ;; what a :let of a for or a doseq binds is too, and
+                        ;; a :when or a :while binds nothing
+                        p (cond (not (keyword? p)) [p]
+                                (and (= :let p) (vector? v)) (take-nth 2 v))]
                     {:pattern p :unbound true}))]
     (into (if (inside? bindings pos) [] (vec unbound))
           (some-> (child-at (if (inside? bindings pos) [bindings] body) pos) (locals-at pos)))))
@@ -175,7 +179,9 @@
     {:pattern p :arity a :arg i}  the param numbered i of the arity a - see
                                   `arities'
     {:pattern p :unbound true}    bound by a loop, a doseq, a for or a
-                                  dotimes: to another value each time round
+                                  dotimes, or a :let of one: to another value
+                                  each time round, which only what the code
+                                  recorded says
 
   Each :pattern is a name, or what destructures."
   [form pos]
@@ -190,8 +196,79 @@
     (coll? form) (or (some-> (child-at (children form) pos) (locals-at pos)) [])
     :else []))
 
+(defn plain-locals
+  "The spans of the names FORM binds by a let-like form to what a form there
+  evaluates to - a call, or a literal - and nothing else: a local whose value
+  is that form's, written right after it. Not one a loop binds, which is
+  another each time round, nor one bound to a name or a collection written,
+  which have no value of their own shown, nor what destructures."
+  [form]
+  (cond
+    (quoted? form) #{}
+    (coll? form)
+    (into (if (and (seq? form) (let-heads (first form)) (vector? (second form)))
+            (set (for [[p init] (partition 2 (second form))
+                       :when (and (symbol? p)
+                                  (or (seq? init) (not (or (symbol? init) (coll? init)))))
+                       :let [sp (span p)]
+                       :when sp]
+                   sp))
+            #{})
+          (mapcat plain-locals)
+          (children form))
+    :else #{}))
+
+(declare pattern-names)
+
+(def ^:private together-heads
+  ;; the loops whose names are all bound again each time round, together
+  '#{loop dotimes clojure.core/loop clojure.core/dotimes})
+
+(defn- after
+  "The span from the end of X, or of BEFORE where X was not written with one,
+  to the end of the span WHOLE - or nil."
+  [x before whole]
+  (when-let [[_ _ line column] (or (span x) (span before))]
+    [line column (nth whole 2) (nth whole 3)]))
+
+(defn loops
+  "The loops FORM writes, outermost first, each a loop of a loop, a dotimes, or
+  a binding of a doseq or a for - which goes round once for each value of what
+  follows it, within each time round of the ones before it:
+
+    {:names  the names bound each time round, in the order they are bound
+     :span   the span of the form of the loop
+     :spans  the spans of the code evaluated again each time round - the
+             names, and what the loop evaluates once they are bound}"
+  [form]
+  (cond
+    (quoted? form) []
+    (coll? form)
+    (into (let [[head bindings] (when (seq? form) form)
+                whole (span form)]
+            (cond
+              (not (and whole (loop-heads head) (vector? bindings))) []
+
+              (together-heads head)
+              (let [names (vec (mapcat (comp pattern-names first) (partition 2 bindings)))]
+                (if-let [rest-of (after bindings nil whole)]
+                  [{:names names :span whole :spans (conj (vec (keep span names)) rest-of)}]
+                  []))
+
+              :else
+              (vec (for [[p init] (partition 2 bindings)
+                         :when (not (keyword? p))
+                         :let [names (vec (pattern-names p))
+                               rest-of (after init p whole)]
+                         :when rest-of]
+                     {:names names :span whole :spans (conj (vec (keep span names)) rest-of)}))))
+          (mapcat loops)
+          (children form))
+    :else []))
+
 (defn pattern-names
-  "The names the binding pattern P binds."
+  "The names the binding pattern P binds - each with the metadata it was
+  written with, its span among it, where it was written as a symbol."
   [p]
   (cond
     (symbol? p) (if (= '& p) [] [p])
@@ -201,7 +278,7 @@
                          (= :as k) [v]
                          (= :or k) []
                          (and (keyword? k) (#{"keys" "syms" "strs"} (name k)))
-                         (map #(symbol (name %)) v)
+                         (map #(with-meta (symbol (name %)) (when (symbol? %) (meta %))) v)
                          :else (pattern-names k)))
                      p)
     :else []))
