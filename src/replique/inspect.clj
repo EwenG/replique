@@ -178,7 +178,7 @@
 ;;; The ops
 
 (defn- opts-of [msg]
-  (select-keys msg [:offset :limit :width :meta]))
+  (select-keys msg [:offset :limit :width :column :expand :meta]))
 
 (defn- the-view [msg]
   (let [id (:view msg)]

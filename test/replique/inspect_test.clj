@@ -201,6 +201,67 @@
                                                            :view (:view o) :id 2})))))))
         (finally (disconnect r) (disconnect c))))))
 
+(deftest a-line-reads-in-the-order-of-the-lines-it-opens-to
+  (with-process [info nil]
+    (let [r (repl-client info)
+          c (control-client info)]
+      (try
+        (ret r "(def m (zipmap (map #(keyword (str \"k\" %)) (range 12)) (range 12)))")
+        (ret r "(def nested {:m m :s (set (map #(str \"s\" %) (range 12))) :r (sorted-map-by > 1 :a 2 :b 3 :c)})")
+        (let [o (inspect! c {:var "user/nested"} :width 300)
+              children-of (fn [line]
+                            (:children (request! c {:op :inspect-children :view (:view o)
+                                                    :node (:node line) :id 2})))]
+          (testing "the keys of a map, in the order it prints them in"
+            (let [line (keyed (:children o) ":m")]
+              (is (= (re-seq #":k\d+" (:value line)) (map :key (children-of line))))
+              (is (= (map str (keys (zipmap (map #(keyword (str "k" %)) (range 12)) (range 12))))
+                     (map :key (children-of line))))))
+          (testing "the elements of a set"
+            (let [line (keyed (:children o) ":s")]
+              (is (= (re-seq #"\"s\d+\"" (:value line)) (map :value (children-of line))))))
+          (testing "a sorted map in its own order"
+            (let [line (keyed (:children o) ":r")]
+              (is (= "{3 :c, 2 :b, 1 :a}" (:value line)))
+              (is (= ["3" "2" "1"] (map :key (children-of line))))))
+          (testing "and the root as its lines"
+            (is (= (re-seq #"(?<=[{ ]):[mrs](?= )" (:value (:root o)))
+                   (map :key (:children o))))))
+        (finally (disconnect r) (disconnect c))))))
+
+(deftest a-view-is-shown-the-way-it-prints
+  (with-process [info nil]
+    (let [r (repl-client info)
+          c (control-client info)]
+      (try
+        (ret r "(defrecord Point [x y])")
+        (ret r "(def shape {:points (vec (for [i (range 50)] (->Point i {:label (apply str (repeat 40 \"x\"))})))
+                            :state (atom {:a 1})
+                            :small [1 2 3]})")
+        (let [o (inspect! c {:var "user/shape"} :width 80 :expand 12)
+              points (keyed (:children o) ":points")]
+          (testing "a node says what it is written between, once open"
+            (is (= ["{" "}"] [(:open o) (:close o)])))
+          (testing "a reference prints as its type and what it holds"
+            (is (= "#Atom {:a 1}" (:value (keyed (:children o) ":state")))))
+          (testing "what does not fit on its line is opened, as far as the lines asked for"
+            (is (= "[" (:open (:page points))))
+            (is (< 0 (count (:children (:page points))) 12))
+            (is (true? (:more (:page points))))
+            (is (nil? (:page (keyed (:children o) ":small"))) "what fits is shown whole"))
+          (testing "a record, between its type and a brace"
+            (let [point (first (:children (:page points)))
+                  page (request! c {:op :inspect-children :view (:view o) :node (:node point)
+                                    :width 80 :column 10 :id 2})]
+              (is (= ["#user.Point{" "}"] [(:open page) (:close page)]))
+              (is (= [":x" ":y"] (mapv :key (:children page))) "in the order of its fields")
+              (testing "and a line is cut to what is left of it after its column and key"
+                (is (<= (count (:value (keyed (:children page) ":y"))) (- 80 10 12 3 2))))))
+          (testing "nothing is opened that was not asked to be"
+            (is (not-any? :page (:children (request! c {:op :inspect-refresh :view (:view o)
+                                                        :width 80 :id 3}))))))
+        (finally (disconnect r) (disconnect c))))))
+
 (deftest a-view-goes-with-the-connection-that-opened-it
   (with-process [info nil]
     (let [r (repl-client info)

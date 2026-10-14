@@ -97,7 +97,7 @@
       (throw (ex-info (str "This runtime has no view " id) {:kind "unknown-view"}))))
 
 (defn- opts-of [msg]
-  (select-keys msg [:offset :limit :width :meta]))
+  (select-keys msg [:offset :limit :width :column :expand :meta]))
 
 (defn- handle [{:keys [op view node at limit meta] :as msg}]
   (case op

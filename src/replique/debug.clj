@@ -1494,13 +1494,11 @@
   frame while the thread is stopped, and :running otherwise."
   [id index]
   (if-let [pause (let [p (get @pauses id)] (when (:stopped p) p))]
-    (some-> (if (and (zero? index) (:locals pause))
-              (:locals pause)
-              (or (get-in pause [:frames index])
-                  (do (ask! {:op :locals :thread id :frame index})
-                      (get-in @pauses [id :frames index]))))
-            ;; in the order they were bound in, rather than sorted
-            (vary-meta assoc :replique.inspector/in-its-order true))
+    (if (and (zero? index) (:locals pause))
+      (:locals pause)
+      (or (get-in pause [:frames index])
+          (do (ask! {:op :locals :thread id :frame index})
+              (get-in @pauses [id :frames index]))))
     :running))
 
 (defmethod protocol/handle :debug-paused [_ _]

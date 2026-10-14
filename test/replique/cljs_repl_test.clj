@@ -527,6 +527,10 @@
                 (is (false? (:more page)))))
             (testing "a JavaScript object is browsed by its properties"
               (is (= "object" (:kind (line-keyed (:children o) ":o")))))
+            (testing "and a line reads in the order of the lines it opens to"
+              (is (= [":a" ":b" ":o"] (mapv :key (:children o))))
+              (is (= ["{" "}"] [(:open o) (:close o)]))
+              (is (re-find #"^\{:a 1, :b \[" (:value (:root o)))))
             (testing "and a swap in the runtime is said, by the runtime"
               (eval! r "(swap! state assoc :a 2)")
               (is (= 1 (count (inspect-events c 2000))))

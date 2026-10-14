@@ -41,104 +41,6 @@
   "What a node is when its path no longer leads anywhere."
   ::gone)
 
-;;; Printing, within a bound
-
-(def ^:private full
-  "What a printing that went past its bound is stopped with."
-  (ex-info "The printing went past its bound" {::full true}))
-
-(defn- full? [e]
-  (true? (::full (ex-data e))))
-
-#?(:clj
-   (defn- bounded-writer
-     "A Writer that stops the printing once SB holds more than LIMIT chars.
-
-     Stopped rather than cut afterwards: a seq that does not end prints until
-     it is stopped, and so does one whose every element costs something to
-     realize."
-     ^Writer [^StringBuilder sb limit]
-     (let [check! (fn [] (when (> (.length sb) (long limit)) (throw full)))]
-       (proxy [Writer] []
-         (write
-           ([x]
-            (cond
-              (instance? String x) (.append sb ^String x)
-              (integer? x) (.append sb (char (int x)))
-              :else (.append sb ^chars x))
-            (check!))
-           ([x off len]
-            (if (instance? String x)
-              (.append sb ^String x (int off) (int (+ (int off) (int len))))
-              (.append sb ^chars x (int off) (int len)))
-            (check!)))
-         (flush [])
-         (close [])))))
-
-#?(:cljs
-   (deftype BoundedWriter [^:mutable text limit]
-     IWriter
-     (-write [_ s]
-       (set! text (str text s))
-       (when (> (count text) limit) (throw full)))
-     (-flush [_] nil)))
-
-(defn- print-within
-  "X printed under PRINT-LENGTH and PRINT-LEVEL, and stopped past LIMIT chars:
-  [text whole?], whole? being whether nothing was left out. What was printed
-  before the bound is the text either way.
-
-  A string is cut before it is printed, which is what the bound is for when
-  the value is a log file somebody slurped."
-  [x limit print-length print-level meta?]
-  (if (and (string? x) (> (count x) limit))
-    [(subs (pr-str (subs x 0 limit)) 0 limit) false]
-    #?(:clj (let [sb (StringBuilder.)]
-              (try
-                (binding [*print-length* print-length
-                          *print-level* print-level
-                          *print-meta* meta?
-                          *print-readably* true
-                          *out* (bounded-writer sb limit)]
-                  (pr x))
-                [(str sb) true]
-                (catch Throwable e
-                  (if (full? e)
-                    [(subs (str sb) 0 limit) false]
-                    ;; A lazy seq that throws when it is realized, a toString
-                    ;; that throws: the value is still there, and the line
-                    ;; says what printing it did
-                    [(str "#<unprintable: " (or (ex-message e) (str e)) ">") true]))))
-       :cljs (let [w (BoundedWriter. "" limit)]
-               (try
-                 (binding [*print-length* print-length
-                           *print-level* print-level
-                           *print-meta* meta?]
-                   (pr-seq-writer [x] w {:flush-on-newline false
-                                         :readably true
-                                         :meta meta?
-                                         :dup false
-                                         :print-length print-length}))
-                 [(.-text w) true]
-                 (catch :default e
-                   (if (full? e)
-                     [(subs (.-text w) 0 limit) false]
-                     [(str "#<unprintable: " (or (ex-message e) (str e)) ">") true])))))))
-
-(defn- summary
-  "X as one line of at most WIDTH chars: {:text :whole}.
-
-  Printed whole where it fits, which is what a small value is: shown, and not
-  something to open. Where it does not fit, printed short - the first few of
-  everything, two levels down - so that the line says what kind of thing is
-  inside without being the thing."
-  [x width meta?]
-  (let [[text whole?] (print-within x width nil nil meta?)
-        one-line (fn [s] (string/replace s #"\s*\n\s*" " "))]
-    (if whole?
-      {:text (one-line text) :whole true}
-      {:text (one-line (first (print-within x width 8 2 meta?))) :whole false})))
-
 ;;; What a value is
 
 (defn- pending-unrealized?
@@ -265,6 +167,133 @@
   library says by putting a nav on the metadata of what it hands out."
   [b]
   (contains? (meta b) `p/nav))
+
+;;; Printing, within a bound
+
+(def ^:private full
+  "What a printing that went past its bound is stopped with."
+  (ex-info "The printing went past its bound" {::full true}))
+
+(defn- full? [e]
+  (true? (::full (ex-data e))))
+
+#?(:clj
+   (defn- bounded-writer
+     "A Writer that stops the printing once SB holds more than LIMIT chars.
+
+     Stopped rather than cut afterwards: a seq that does not end prints until
+     it is stopped, and so does one whose every element costs something to
+     realize."
+     ^Writer [^StringBuilder sb limit]
+     (let [check! (fn [] (when (> (.length sb) (long limit)) (throw full)))]
+       (proxy [Writer] []
+         (write
+           ([x]
+            (cond
+              (instance? String x) (.append sb ^String x)
+              (integer? x) (.append sb (char (int x)))
+              :else (.append sb ^chars x))
+            (check!))
+           ([x off len]
+            (if (instance? String x)
+              (.append sb ^String x (int off) (int (+ (int off) (int len))))
+              (.append sb ^chars x (int off) (int len)))
+            (check!)))
+         (flush [])
+         (close [])))))
+
+#?(:cljs
+   (deftype BoundedWriter [^:mutable text limit]
+     IWriter
+     (-write [_ s]
+       (set! text (str text s))
+       (when (> (count text) limit) (throw full)))
+     (-flush [_] nil)))
+
+(defn- print-within
+  "X printed under PRINT-LENGTH and PRINT-LEVEL, and stopped past LIMIT chars:
+  [text whole?], whole? being whether nothing was left out. What was printed
+  before the bound is the text either way.
+
+  A string is cut before it is printed, which is what the bound is for when
+  the value is a log file somebody slurped."
+  [x limit print-length print-level meta?]
+  (if (and (string? x) (> (count x) limit))
+    [(subs (pr-str (subs x 0 limit)) 0 limit) false]
+    #?(:clj (let [sb (StringBuilder.)]
+              (try
+                (binding [*print-length* print-length
+                          *print-level* print-level
+                          *print-meta* meta?
+                          *print-readably* true
+                          *out* (bounded-writer sb limit)]
+                  (pr x))
+                [(str sb) true]
+                (catch Throwable e
+                  (if (full? e)
+                    [(subs (str sb) 0 limit) false]
+                    ;; A lazy seq that throws when it is realized, a toString
+                    ;; that throws: the value is still there, and the line
+                    ;; says what printing it did
+                    [(str "#<unprintable: " (or (ex-message e) (str e)) ">") true]))))
+       :cljs (let [w (BoundedWriter. "" limit)]
+               (try
+                 (binding [*print-length* print-length
+                           *print-level* print-level
+                           *print-meta* meta?]
+                   (pr-seq-writer [x] w {:flush-on-newline false
+                                         :readably true
+                                         :meta meta?
+                                         :dup false
+                                         :print-length print-length}))
+                 [(.-text w) true]
+                 (catch :default e
+                   (if (full? e)
+                     [(subs (.-text w) 0 limit) false]
+                     [(str "#<unprintable: " (or (ex-message e) (str e)) ">") true])))))))
+
+(defn- summary*
+  "`summary', of what is not a reference."
+  [x width meta?]
+  (let [[text whole?] (if (> (or (when (shape x) (counted x)) 0) width)
+                        ;; a char each at least: it does not fit
+                        [nil false]
+                        (print-within x width nil nil meta?))
+        one-line (fn [s] (string/replace s #"\s*\n\s*" " "))]
+    (if whole?
+      {:text (one-line text) :whole true}
+      (let [fits (fn [length level]
+                   (let [[text whole?] (print-within x width length level meta?)]
+                     (when whole? (one-line text))))]
+        (if-let [text (fits 8 1)]
+          ;; one level deeper at a time, until one does not fit: a printing
+          ;; one level deeper is never shorter
+          {:text (loop [level 2 text text]
+                   (if-let [deeper (when (<= level 4) (fits 8 level))]
+                     (recur (inc level) deeper)
+                     text))
+           :whole false}
+          (or (some (fn [length] (some->> (fits length 1) (array-map :whole false :text)))
+                    [4 2 1])
+              {:text (one-line (first (print-within x width 8 1 meta?))) :whole false :cut true}))))))
+
+(defn- summary
+  "X as one line of at most WIDTH chars: {:text :whole :cut}.
+
+  Printed whole where it fits, which is what a small value is: shown, and not
+  something to open. Where it does not fit, printed short - the first eight
+  of everything, as many levels down as fit, and fewer than eight where one
+  level of eight does not, the way *print-length* and *print-level* print it -
+  so that the line says what kind of thing is inside without being the thing.
+  And where even that does not fit, cut: :cut.
+
+  A reference is printed as its type and what it holds, `#Atom {:a 1}' -
+  which is how it is shown open - rather than as its identity."
+  [x width meta?]
+  (if (and (= :ref (shape x)) (not (var? x)) (not (pending-unrealized? x)))
+    (let [tag (str "#" (type-name x) " ")]
+      (update (summary* @x (max 1 (- width (count tag))) meta?) :text #(str tag %)))
+    (summary* x width meta?)))
 
 ;;; Finding a child
 
@@ -427,26 +456,6 @@
 
 ;;; What an editor is shown
 
-(def ^:private sorted-up-to
-  "How many keys a map can have and still be shown sorted. Past that its own
-  order, which costs nothing to page through."
-  1000)
-
-(defn- in-order
-  "XS sorted where they can be compared with each other, and as they are
-  otherwise."
-  [xs]
-  (if (<= (count xs) sorted-up-to)
-    (try (sort xs) (catch #?(:clj Exception :cljs :default) _ xs))
-    xs))
-
-(defn- in-its-order?
-  "Whether the map M is shown in its own order, sorted or not: what it
-  holds was put in it in an order that is worth reading in - the locals of
-  a frame are, in the order they were bound in."
-  [m]
-  (boolean (::in-its-order (meta m))))
-
 (defn- page-of
   "The children of a node whose children are taken from B: the LIMIT of them
   from OFFSET, as [step raw] pairs, one more than asked for where there is one
@@ -454,17 +463,11 @@
   [b offset limit]
   (let [n (inc limit)]
     (case (shape b)
-      :map (if (and (<= (or (counted b) (inc sorted-up-to)) sorted-up-to)
-                    (not (in-its-order? b)))
-             (->> (in-order (keys b))
-                  (drop offset) (take n)
-                  (map (fn [k] [[:key k] (map-get b k)])))
-             (->> (seq b)
-                  (drop offset) (take n)
-                  (map (fn [e] [[:key (key e)] (val e)]))))
-      :set (->> (if (<= (or (counted b) (inc sorted-up-to)) sorted-up-to)
-                  (in-order (seq b))
-                  (seq b))
+      ;; in their own order, which is the order they print in
+      :map (->> (seq b)
+                (drop offset) (take n)
+                (map (fn [e] [[:key (key e)] (val e)])))
+      :set (->> (seq b)
                 (drop offset) (take n)
                 (map (fn [x] [[:elem x] x])))
       :seq (if (indexed-like? b)
@@ -475,16 +478,17 @@
                   (map-indexed (fn [i x] [[:index (+ offset i)] x]))))
       :ref (when (and (zero? offset) (not (pending-unrealized? b)))
              [[[:deref] @b]])
-      #?@(:cljs [:object (->> (in-order (js-keys b))
+      #?@(:cljs [:object (->> (js-keys b)
                               (drop offset) (take n)
                               (map (fn [k] [[:prop k] (unchecked-get b k)])))])
       nil)))
 
 (defn- label
-  "What the line of the child found by STEP is labelled with."
-  [[via k] width]
+  "What the line of the child found by STEP is labelled with, a key printed
+  within KEY-WIDTH chars."
+  [[via k] key-width]
   (case via
-    :key {:via "key" :key (:text (summary k (max 20 (quot width 2)) false))}
+    :key {:via "key" :key (:text (summary k key-width false))}
     :index {:via "index" :key (str k)}
     :elem {:via "elem"}
     :deref {:via "deref" :key "@"}
@@ -504,12 +508,30 @@
       (datafiable? x)
       (and (some? b) (navigable? b))))
 
+(def ^:private margin
+  "What is kept free at the end of a line, for the delimiters that close
+  after it and the comma between two entries."
+  2)
+
+(defn- value-column
+  "The column the value of a child labelled LABEL is written at, its entry
+  starting at COLUMN: after its key, where it has one."
+  [column {:keys [via key]}]
+  (+ column (case via
+              ("key" "prop") (inc (count key))
+              "meta" 1
+              0)))
+
 (defn- describe
   "The line showing X, the child of PARENT found by STEP - or the root, where
-  STEP is nil."
-  [view parent b step x {width :width meta? :meta}]
+  STEP is nil - its entry written at COLUMN on lines of WIDTH chars."
+  [view parent b step x {width :width meta? :meta column :column}]
   (let [width (or width 80)
-        {:keys [text whole]} (summary x width meta?)
+        column (or column 0)
+        label (when step (label step (max 20 (quot (- width column) 2))))
+        {:keys [text whole cut]} (summary x (max 20 (- width (value-column column label)
+                                                   (if step margin 0)))
+                                      meta?)
         ;; A node for every line and not only for the ones that open, so that
         ;; a line can say it changed whatever it holds
         id (if (nil? step) 0 (node! view parent step x))
@@ -522,10 +544,11 @@
       (type-name x) (assoc :type (type-name x))
       n (assoc :count n)
       (not whole) (assoc :truncated true)
+      cut (assoc :cut true)
       true (assoc :node id)
       expandable (assoc :expandable true)
       (:changed rec) (assoc :changed true)
-      step (merge (label step width)))))
+      label (merge label))))
 
 (defn describe-root
   "The line showing the root of VIEW, whose node is 0."
@@ -533,24 +556,148 @@
   (let [rec (get-in @view [:nodes 0])]
     (describe view nil nil nil (:value rec) opts)))
 
-(defn children
-  "A page of the children of the node ID of VIEW: {:children [line ...]
-  :total n :more bool}, :total where it is known without walking the node,
-  and {:gone true} where the node is no longer there.
+(defn- delimiters
+  "What a node holding V, whose children are taken from B, is written
+  between once it is open: [open close], the way it prints.
 
-  OPTS are :offset and :limit, the :width of a line, and :meta - which shows
-  metadata as the first child of what has some."
-  [view id {offset :offset limit :limit meta? :meta :or {offset 0 limit 100} :as opts}]
-  (if-let [{v :value b :browse} (current view id)]
-    (let [page (page-of b offset limit)
+  A reference is its type and then what it holds, and what `datafy' shows of
+  an object is shown after the object's type."
+  [v b]
+  (let [[open close]
+        (case (shape b)
+          :map (if (record? b)
+                 [(str "#" #?(:clj (.getName (class b))
+                              :cljs (string/replace (.-cljs$lang$ctorStr (type b)) "/" "."))
+                       "{")
+                  "}"]
+                 ["{" "}"])
+          :set ["#{" "}"]
+          :seq (cond
+                 (vector? b) ["[" "]"]
+                 (seq? b) ["(" ")"]
+                 #?@(:clj [(.isArray (class b)) [(str "#" (type-name b) " [") "]"]
+                           (instance? java.util.List b) ["[" "]"]]
+                     :cljs [(array? b) ["#js [" "]"]])
+                 :else [(str "#" (type-name b) " (") ")"])
+          :ref [(if (var? b) (str (pr-str b) " ") (str "#" (type-name b) " ")) ""]
+          :object ["#js {" "}"]
+          ["" ""])]
+    (if (datafiable? v)
+      [(str "#" (type-name v) " " open) close]
+      [open close])))
+
+(defn- children-page
+  "A page of the children of the node ID of VIEW, written at COLUMN - see
+  `children' - or nil where the node is no longer there."
+  [view id {offset :offset limit :limit meta? :meta column :column
+            :or {offset 0 limit 100 column 0} :as opts}]
+  (when-let [{v :value b :browse} (current view id)]
+    (let [[open close] (delimiters v b)
+          opts (assoc opts :column (+ column (count open)))
+          page (page-of b offset limit)
           more? (> (count page) limit)
           page (cond->> (take limit page)
                  (and meta? (zero? offset) (some? (meta v)))
                  (cons [[:meta] (meta v)]))]
       (cond-> {:children (mapv (fn [[step x]] (describe view id b step x opts)) page)
-               :more more?}
+               :more more?
+               :open open
+               :close close}
         (counted b) (assoc :total (counted b))
-        (= :ref (shape b)) (assoc :total (if (pending-unrealized? b) 0 1))))
+        (= :ref (shape b)) (assoc :total (if (pending-unrealized? b) 0 1))))))
+
+;;; Opened as far as a screen goes
+
+(defn- keyed? [line]
+  (contains? #{"key" "prop"} (:via line)))
+
+(defn- lines-of
+  "About how many lines PAGE takes once laid out, its entries starting at
+  BASE on lines of WIDTH chars: an entry of a map a line, and so is an
+  element that holds things, and what holds none filled into as few lines as
+  it takes. And a line for saying there is more."
+  [{:keys [children more]} base width]
+  (+ (if (some #(or (keyed? %) (:count %)) children)
+       (count children)
+       (let [w (max 1 (- width base))]
+         (quot (+ (reduce + 0 (map #(inc (count (:value %))) children)) (dec w)) w)))
+     (if more 1 0)))
+
+(defn- within
+  "PAGE cut to the first of its children that take no more than LEFT lines."
+  [page base width left]
+  (loop [page page]
+    (if (and (> (lines-of page base width) left) (> (count (:children page)) 1))
+      (recur (-> page
+                 (update :children pop)
+                 (assoc :more true)))
+      page)))
+
+(defn- expanded
+  "PAGE, the children of the node at COLUMN, with children of its own opened
+  in it, each as its :page, as long as what is shown stays within BUDGET
+  lines: what a printing shows, but bounded by how much there is to look at
+  rather than by *print-length* and *print-level*.
+
+  Breadth first, so that every first level is shown before any second one.
+  Only what does not fit on its line is opened, what does being shown whole
+  already."
+  [view page column {:keys [width limit] :or {width 80 limit 100} :as opts} budget]
+  (let [base (fn [page column] (+ column (count (:open page))))
+        candidates (fn [page column]
+                     (for [line (:children page)
+                           :when (and (:expandable line) (:truncated line))]
+                       [line (value-column (base page column) line)]))
+        opened (volatile! {})]
+    (loop [queue (into #?(:clj clojure.lang.PersistentQueue/EMPTY
+                          :cljs (.-EMPTY PersistentQueue))
+                       (candidates page column))
+           used (lines-of page (base page column) width)]
+      (let [[line col] (peek queue)
+            left (- budget used)]
+        (when (and line (> left 2))
+          (let [;; a share of what is left, so that what comes after it
+                ;; on the same level is opened too
+                left (min left (max 8 (quot left (count queue))))
+                keyed (contains? #{"map" "record" "object"} (:kind line))
+                p (children-page view (:node line)
+                                 (assoc opts :column col :offset 0
+                                        :limit (min limit (if keyed (dec left) (* 4 left)))))]
+            (let [p (some-> p (within (base p col) width (inc left)))]
+              (if (or (nil? p)
+                      ;; opened, it would show less than it does closed
+                      (and (:more p) (< (count (:children p)) 8)))
+                (recur (pop queue) used)
+                (do (vswap! opened assoc (:node line) p)
+                    (recur (into (pop queue) (candidates p col))
+                           (+ used (dec (lines-of p (base p col) width)))))))))))
+    (letfn [(assemble [page]
+              (update page :children
+                      (fn [lines]
+                        (mapv (fn [line]
+                                (if-let [p (get @opened (:node line))]
+                                  (assoc line :page (assemble p))
+                                  line))
+                              lines))))]
+      (assemble page))))
+
+(defn children
+  "A page of the children of the node ID of VIEW: {:children [line ...]
+  :total n :more bool :open :close}, :total where it is known without walking
+  the node, :open and :close what the node is written between once it is
+  open - and {:gone true} where the node is no longer there.
+
+  OPTS are :offset and :limit, :meta - which shows metadata as the first child
+  of what has some - and where the node is written: at :column, on lines of
+  :width chars, which is what a line is cut to fit in.
+
+  With :expand, the children are opened in turn as far as that many lines -
+  see `expanded'."
+  [view id {column :column budget :expand :or {column 0} :as opts}]
+  (if-let [p (children-page view id opts)]
+    (if (and budget (pos? budget))
+      (expanded view p column opts budget)
+      p)
     {:gone true}))
 
 (defn printed
