@@ -361,6 +361,13 @@
         only iterations/by-iteration)
       :not-recorded)))
 
+(defn calls-table
+  "What each call kept of the unit UNIT evaluated to, a row each - see
+  replique.iterations/calls-table, COLUMNS being said with names as strings."
+  [unit columns]
+  (iterations/calls-table (mapv kept-in (some-> (get @units unit) unit-calls vec))
+                          (mapv (fn [[name & more]] (into [(symbol name)] more)) columns)))
+
 (defn first-where
   "Of INDICES, the first iteration where (F index) is true - see
   replique.iterations/first-where."

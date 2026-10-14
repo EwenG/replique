@@ -78,6 +78,9 @@
     ;; and what each iteration of a loop of a call did, a row each
     (:loop (:debug source)) (let [{:keys [call] :as table} (:debug source)]
                               (fn [] (debug/loop-table call table)))
+    ;; and what each call did, a row each
+    (:calls (:debug source)) (let [{:keys [calls columns]} (:debug source)]
+                               (fn [] (debug/calls-table calls columns)))
     (:site (:debug source)) (let [{:keys [site call arg iteration]} (:debug source)]
                               (if (some? arg)
                                 (fn [] (let [v (debug/recorded-value site call iteration)]

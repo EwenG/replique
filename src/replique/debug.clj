@@ -1013,6 +1013,44 @@
                                 values-kept)]
      (if (:only plan) (iterations/by-iteration rows) rows))))
 
+(defn- calls-plan
+  "The columns of the table of the calls of the unit N, as
+  `iterations/calls-table' takes them: the params of each of its outermost
+  fns, by the name written, or what destructures, the arg of the entry they
+  are - and of the site FORM, where there is one and it is not an entry, a
+  column too, after them, named the code written there."
+  [n form]
+  (let [code (:form (get @units n))
+        arities (scope/all-arities code)
+        params (for [[k s] (sort-by key @sites)
+                     :when (and (= n (:unit s)) (= :enter (:kind s)) (:outermost s))
+                     :let [arity (scope/entered-arity arities (:marker s))]
+                     :when arity
+                     {:keys [pattern arg]} (scope/params arity)]
+                 [(if (symbol? pattern) (with-meta pattern nil) pattern) k arg])
+        form-site (get @sites form)]
+    (cond-> (vec params)
+      (and form-site (not= :enter (:kind form-site)))
+      (conj [(scope/form-at code (span-of form-site)) form]))))
+
+(defn calls-table
+  "What each call kept of the unit N evaluated to, a row each - see
+  `calls-plan' and `iterations/calls-table'. With FORM, a site, what it
+  evaluated to last in each call too."
+  [n form]
+  (when-not (get @units n)
+    (refuse :unknown-unit "No unit " n))
+  (let [all @calls]
+    (iterations/calls-table (mapv #(kept-in (get all %)) (get @recorded n []))
+                            (calls-plan n form))))
+
+(defn- runtime-columns
+  "COLUMNS, [name site ...]s, as the runtime takes them: each name a string."
+  [columns]
+  (mapv (fn [[name & more]]
+          (into [(if (symbol? name) (str name) (pr-str name))] more))
+        columns))
+
 (defn- for-site
   "The iteration ITERATING says - see `iterating' - as the runtime takes it
   for the site SITE alone."
@@ -1023,11 +1061,15 @@
 
 (defn for-runtime
   "The :debug source of a view of a ClojureScript value recorded, SOURCE, as
-  the runtime takes it: an :iteration, or a :loop, said with what the runtime
-  does not know - see `iterating'."
-  [{:keys [site iteration loop only] :as source}]
+  the runtime takes it: an :iteration, a :loop, or the table of the :calls of
+  a unit, said with what the runtime does not know - see `iterating' and
+  `calls-plan'."
+  [{:keys [site iteration loop only calls] :as source}]
   (let [unit (:unit (get @sites (or site loop)))]
     (cond
+      calls
+      (assoc source :columns (runtime-columns (calls-plan calls site)))
+
       (and site iteration)
       (assoc source :iteration (for-site (iterating unit iteration) site))
 
@@ -1035,10 +1077,7 @@
       (-> (loop-plan unit loop site only)
           (update-in [:iteration :owners] vec)
           (update-in [:iteration :starts] vec)
-          (update :columns (fn [cs] (mapv (fn [[name & more]]
-                                              (into [(if (symbol? name) (str name) (pr-str name))]
-                                                    more))
-                                            cs)))
+          (update :columns runtime-columns)
           (merge (select-keys source [:call]))
           (assoc :loop loop :kept values-kept))
 

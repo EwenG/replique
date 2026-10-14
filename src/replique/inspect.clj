@@ -24,6 +24,10 @@
                        :call, {n value} by the number of the call among the
                        ones kept. With :arg i, where it is a fn's entry, what
                        its param I was called with
+    {:debug {:calls n :site s}}
+                       what each call kept of the unit N did, a row each:
+                       :call, its number, and its params - and the form S,
+                       with :site
     {:trace {:call c :args true}}
     {:trace {:call c :value true}}
     {:trace {:call c :arg i}}
@@ -148,10 +152,11 @@
     ;; refresh, since the same frame of the same thread is another frame each
     ;; time the thread stops - and what changed since the last stop is what
     ;; a refresh shows
-    (:debug source) (let [{:keys [thread frame value site call arg iteration loop only]} (:debug source)
+    (:debug source) (let [{:keys [thread frame value site call arg iteration loop only calls]} (:debug source)
                           iteration (when iteration
                                       {:site (:site iteration) :index (:index iteration)})]
-                      (when-not (and (or (integer? thread) (integer? site) (integer? loop))
+                      (when-not (and (or (integer? thread) (integer? site) (integer? loop)
+                                         (integer? calls))
                                      (or (nil? call) (integer? call))
                                      (or (nil? arg) (nat-int? arg))
                                      (or (nil? iteration)
@@ -160,12 +165,15 @@
                         (refuse :invalid-message "A view of a frame names its :thread, and"
                                 " one of a form recorded its :site and :call - and :arg, a"
                                 " param of a fn entered, and :iteration, {:site :index}, an"
-                                " iteration of a loop - or of a loop recorded, its :loop,"
+                                " iteration of a loop - or of a loop recorded, its :loop, or of"
+                                " the calls of a unit, :calls,"
                                 " got: " (pr-str (:debug source))))
                       (cond
                         ;; what each iteration of a loop did, a row each - and
                         ;; the form of :site, in it, or with :only that alone
                         loop #(debug/loop-table (long loop) (some-> call long) (some-> site long) only)
+                        ;; what each call did, a row each
+                        calls #(debug/calls-table (long calls) (some-> site long))
                         ;; a call's args, or each call's, by call
                         (and site arg) #(let [v (debug/recorded-value (long site) (some-> call long)
                                                                       iteration)]

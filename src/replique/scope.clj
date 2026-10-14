@@ -141,7 +141,7 @@
     (into (if (inside? bindings pos) [] (vec unbound))
           (some-> (child-at (if (inside? bindings pos) [bindings] body) pos) (locals-at pos)))))
 
-(defn- params
+(defn params
   "The locals the params of ARITY bind: each a {:pattern :arity :arg}, the
   value of the param numbered :arg - the rest param's being the last."
   [arity]

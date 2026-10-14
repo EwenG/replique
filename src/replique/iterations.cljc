@@ -162,6 +162,22 @@
                             (when (map? v) [name (cond-> (:value v) i (nth i nil))])))
                         columns)))))
 
+(defn calls-table
+  "What each call kept of a unit evaluated to, a row each - a map of :call,
+  its number among the ones kept, from 1, and of each name of COLUMNS, as
+  `table' takes them, what its site evaluated to last in the call, where it
+  was evaluated in it. KEPT-OFS says what is kept of each call kept, oldest
+  first, as `picker' takes it."
+  [kept-ofs columns]
+  (vec (map-indexed
+        (fn [i kept-of]
+          (apply array-map :call (inc i)
+                 (mapcat (fn [[name site j]]
+                           (when-let [[_ v] (peek (:tail (kept-of site)))]
+                             [name (cond-> v j (nth j nil))]))
+                         columns)))
+        kept-ofs)))
+
 (defn first-where
   "Of INDICES, the first where (F index) is true - {:index i}, or {:index nil}
   - with the message of the first exception F threw, :error, where it threw

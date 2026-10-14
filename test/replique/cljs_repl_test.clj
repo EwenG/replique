@@ -1354,7 +1354,12 @@
               (let [sum (:site (some #(when (= [2 35] [(:line %) (:column %)]) %)
                                      (:values (recorded-by-place c unit nil 5))))]
                 (is (= "{1 6}" (:value (:root (ask! c {:op :inspect :dialect :cljs :target :node
-                                                       :id 6 :source {:debug {:site sum}}}))))))))
+                                                       :id 6 :source {:debug {:site sum}}})))))
+                (testing "and so is every call, a row each"
+                  (is (= ["{:call 1, xs [1 2 3], (+ acc x) 6}"]
+                         (mapv :value (:children (ask! c {:op :inspect :dialect :cljs :target :node
+                                                          :id 7
+                                                          :source {:debug {:calls unit :site sum}}})))))))))
           (finally (disconnect c)))))))
 
 (deftest test-a-repl-evaluates-in-a-recorded-clojurescript-call

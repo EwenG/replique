@@ -835,7 +835,15 @@
               (let [sum (:site (some #(when (= [2 35] [(:line %) (:column %)]) %)
                                      (:values (recorded c unit (:call (first calls)) 7))))]
                 (is (= "{1 6, 2 30}" (get-in (ask! c {:op :inspect :id 8 :source {:debug {:site sum}}})
-                                             [:root :value]))))))
+                                             [:root :value])))
+                (testing "and so is every call, a row each, of its params and the form"
+                  (is (= ["{:call 1, xs [1 2 3], (+ acc x) 6}" "{:call 2, xs [10 20], (+ acc x) 30}"
+                          "{:call 3, xs []}"]
+                         (mapv :value (:children (ask! c {:op :inspect :id 9
+                                                          :source {:debug {:calls unit :site sum}}})))))
+                  (is (= ["{:call 1, xs [1 2 3]}" "{:call 2, xs [10 20]}" "{:call 3, xs []}"]
+                         (mapv :value (:children (ask! c {:op :inspect :id 10
+                                                          :source {:debug {:calls unit}}})))))))))
           (finally (disconnect r) (disconnect c) (.delete file)))))))
 
 (deftest what-a-function-recorded-is-kept-call-by-call
