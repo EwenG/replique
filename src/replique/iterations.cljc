@@ -148,7 +148,8 @@
   "What the iterations kept of a loop of a call evaluated to, as rows - a map
   each, of :iteration, the index, and of each name of COLUMNS, [name site]
   pairs, what its site evaluated to then, where it was evaluated then and
-  that is kept. ITERATION says the loop, as `picker' takes it, without an
+  that is kept - or [name site i], the Ith of it, of the params a fn was
+  called with. ITERATION says the loop, as `picker' takes it, without an
   :index; KEPT-OF what is kept of the call, as many values of a form as KEPT
   being kept first and as many last."
   [kept-of iteration columns kept]
@@ -156,9 +157,9 @@
              :let [pick (picker kept-of (assoc iteration :index index))]
              :when pick]
          (apply array-map :iteration index
-                (mapcat (fn [[name site]]
+                (mapcat (fn [[name site i]]
                           (let [v (pick site nil)]
-                            (when (map? v) [name (:value v)])))
+                            (when (map? v) [name (cond-> (:value v) i (nth i nil))])))
                         columns)))))
 
 (defn first-where

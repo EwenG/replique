@@ -21,8 +21,9 @@
     {:debug {:site n :call c}}
                        what the form numbered N of code recorded evaluated to
                        in the call C - the last value of each call, without
-                       :call. With :arg i, where it is a fn's entry, what its
-                       param I was called with
+                       :call, {n value} by the number of the call among the
+                       ones kept. With :arg i, where it is a fn's entry, what
+                       its param I was called with
     {:trace {:call c :args true}}
     {:trace {:call c :value true}}
     {:trace {:call c :arg i}}
@@ -165,13 +166,16 @@
                         ;; what each iteration of a loop did, a row each - and
                         ;; the form of :site, in it, or with :only that alone
                         loop #(debug/loop-table (long loop) (some-> call long) (some-> site long) only)
-                        ;; a call's args, or each call's, the last call last
+                        ;; a call's args, or each call's, by call
                         (and site arg) #(let [v (debug/recorded-value (long site) (some-> call long)
                                                                       iteration)]
                                           (cond
+                                            (and (map? v) (not (or call iteration)))
+                                            (into (sorted-map)
+                                                  (map (fn [[n args]] [n (nth args arg nil)]))
+                                                  v)
                                             (not (vector? v)) :not-recorded
-                                            (or call iteration) (nth v arg :not-recorded)
-                                            :else (mapv (fn [args] (nth args arg nil)) v)))
+                                            :else (nth v arg :not-recorded)))
                         site #(debug/recorded-value (long site) (some-> call long) iteration)
                         value #(debug/stop-value (long thread))
                         :else #(debug/frame-value (long thread) (long (or frame 0)))))

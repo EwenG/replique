@@ -300,7 +300,8 @@
 (defn recorded-value
   "What a view of what the site SITE evaluated to in the call CALL shows: the
   last value, where it was evaluated more than once - or, without CALL, the
-  last value of each call kept, one per call, the last call last. And
+  last value of each call kept it was evaluated in, {n value} by the number
+  of the call among the ones kept, from 1, as a loop's are by iteration. And
   :not-recorded where nothing is kept.
 
   With ITERATION, what it evaluated to last in that iteration of a loop of
@@ -322,8 +323,10 @@
          :not-recorded)
 
        :else
-       (let [cs (filter in? calls)]
-         (if (seq cs) (mapv last-in cs) :not-recorded))))))
+       (let [values (into (sorted-map)
+                          (keep-indexed (fn [i c] (when (in? c) [(inc i) (last-in c)])))
+                          calls)]
+         (if (seq values) values :not-recorded))))))
 
 (defn recorded-in
   "What the site SITE evaluated to last in the call CALL of the unit UNIT -
@@ -354,7 +357,7 @@
         c (if (some? call) (some #(when (= call (.-n %)) %) calls) (peek calls))]
     (if c
       (cond-> (iterations/table (kept-in c) iteration
-                                (mapv (fn [[name site]] [(symbol name) site]) columns) kept)
+                                (mapv (fn [[name & more]] (into [(symbol name)] more)) columns) kept)
         only iterations/by-iteration)
       :not-recorded)))
 

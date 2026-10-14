@@ -840,27 +840,40 @@
 (defn- loops-of
   "The loops of the code of the unit N - see `scope/loops' - whose first name
   bound each time round is a site, outermost first: each {:site :span
-  :spans}, and :sites, the sites of all its names."
+  :spans}, and :sites, the sites of all its names. An arity of a fn is one
+  too, with :fn and its :args, its first site being its entry - which records
+  what each call of it was called with, the names of its params among it. Not
+  a fn of a definition in no other, a call of which is a call of the unit."
   [n]
-  (let [{:keys [form]} (get @units n)
-        local-sites (into {} (for [[k s] @sites
-                                   :when (and (= n (:unit s)) (= :local (:kind s)))]
-                               [(span-of s) k]))]
-    (vec (for [{:keys [names] :as l} (scope/loops form)
-               :let [sites (vec (keep #(get local-sites (scope/span %)) names))]
+  (let [{:keys [form definition]} (get @units n)
+        unit-sites (filter #(= n (:unit (val %))) @sites)
+        local-sites (into {} (for [[k s] unit-sites :when (= :local (:kind s))]
+                               [(span-of s) k]))
+        arities (scope/all-arities form)
+        entry-of (fn [l]
+                   (some (fn [[k s]]
+                           (when (and (= :enter (:kind s))
+                                      (= (:span l) (:span (scope/entered-arity arities (:marker s)))))
+                             k))
+                         unit-sites))]
+    (vec (for [{:keys [names outermost fn] :as l} (scope/loops form)
+               :when (not (and definition outermost))
+               :let [sites (vec (keep identity (cons (when fn (entry-of l))
+                                                     (map #(get local-sites (scope/span %)) names))))]
                :when (seq sites)]
-           (-> l (dissoc :names) (assoc :site (first sites) :sites sites))))))
+           (-> l (dissoc :names :outermost) (assoc :site (first sites) :sites sites))))))
 
 (defn- loops-said
   "The loops of the code of the unit N that went round in a call, as
   `:debug-recorded' answers them - TIMES-OF answering how many times the site
   of a name was bound in it, or nil."
   [n times-of]
-  (vec (for [{:keys [site span]} (loops-of n)
+  (vec (for [{:keys [site span fn]} (loops-of n)
              :let [times (times-of site)]
              :when times]
          (merge {:site site :iterations times
                  :kept (iterations/kept-iterations times values-kept)}
+                (when fn {:fn true})
                 (zipmap [:line :column :end-line :end-column] span)))))
 
 (defn- iterating
@@ -874,15 +887,18 @@
   (let [loops (loops-of n)
         it (or (some #(when (= site (:site %)) %) loops)
                (refuse :unknown-iteration "Site " site " starts no iteration of a loop of unit " n))
-        in? (fn [l s] (and (:line s) (some #(scope/in-span? % [(:line s) (:column s)]) (:spans l))))
-        chain (filter #(in? % (get @sites site)) loops)]
+        ;; a fn's entry is where the fn is, and of each call of it
+        in? (fn [l k s] (or (some #{k} (:sites l))
+                            (and (:line s) (some #(scope/in-span? % [(:line s) (:column s)])
+                                                 (:spans l)))))
+        chain (filter #(in? % site (get @sites site)) loops)]
     {:loop site
      :index index
      :enclosing (mapv :site (remove #{it} chain))
      :starts (into {} (map (juxt :site :sites)) (cons it chain))
      :owners (into {} (for [[k s] @sites
                             :when (= n (:unit s))
-                            :let [owner (last (filter #(in? % s) chain))]
+                            :let [owner (last (filter #(in? % k s) chain))]
                             :when owner]
                         [k (:site owner)]))}))
 
@@ -912,7 +928,8 @@
 (defn recorded-value
   "What a view of what the site SITE evaluated to in the call CALL shows: the
   last value, where it was evaluated more than once - or, without CALL, the
-  last value of each call kept, one per call, the last call last. And
+  last value of each call kept it was evaluated in, {n value} by the number
+  of the call among the ones kept, from 1, as a loop's are by iteration. And
   :not-recorded where nothing is kept.
 
   With ITERATION, {:site :index}, what it evaluated to last in that iteration
@@ -926,22 +943,33 @@
        call (if-let [values (get-in all [call :values site :values])]
               (peek values)
               :not-recorded)
-       :else (let [values (vec (keep #(peek (get-in all [% :values site :values]))
-                                     (get @recorded unit)))]
+       :else (let [values (into (sorted-map)
+                                (keep-indexed (fn [i c]
+                                                (when-let [vs (get-in all [c :values site :values])]
+                                                  [(inc i) (peek vs)])))
+                                (get @recorded unit))]
                (if (seq values) values :not-recorded))))))
 
 (defn- columns-of
   "The names of the code of the unit N bound each time round of the loop
   ITERATING says - see `iterating' - and in it, in the order written: [name
-  site] pairs."
+  site] pairs - or [name site i], of a param of a fn, the Ith value of what
+  its entry, SITE, recorded."
   [n {:keys [loop owners]}]
-  (let [names (scope/names-by-span (:form (get @units n)))]
+  (let [names (scope/names-by-span (:form (get @units n)))
+        l (some #(when (= loop (:site %)) %) (loops-of n))
+        args (when (:fn l)
+               (for [[name i] (:args l)
+                     :let [[line column] (scope/span name)]
+                     :when line]
+                 [[line column] [(with-meta name nil) loop i]]))]
     (->> owners
          (keep (fn [[k owner]]
                  (let [site (get @sites k)]
                    (when (and (= loop owner) (= :local (:kind site)))
                      (when-let [name (get names (span-of site))]
                        [[(:line site) (:column site)] [name k]])))))
+         (concat args)
          (sort-by first)
          (mapv second))))
 
@@ -1007,8 +1035,9 @@
       (-> (loop-plan unit loop site only)
           (update-in [:iteration :owners] vec)
           (update-in [:iteration :starts] vec)
-          (update :columns (fn [cs] (mapv (fn [[name site]]
-                                              [(if (symbol? name) (str name) (pr-str name)) site])
+          (update :columns (fn [cs] (mapv (fn [[name & more]]
+                                              (into [(if (symbol? name) (str name) (pr-str name))]
+                                                    more))
                                             cs)))
           (merge (select-keys source [:call]))
           (assoc :loop loop :kept values-kept))

@@ -772,6 +772,72 @@
                              [:root :value])))))
           (finally (disconnect r) (disconnect c) (.delete file)))))))
 
+(deftest each-call-of-a-fn-is-a-time-round
+  (if-not (debug/instrumenting?)
+    (println "replique.debug-test: no compiler to record with - run with :analysis")
+    (client/with-process [info nil]
+      (let [r (client/repl-client info nil 60000)
+            c (control info)
+            file (java.io.File/createTempFile "fn-loops" ".clj")
+            in (fn [unit call site index id]
+                 (let [said (ask! c (cond-> {:op :debug-recorded :unit unit :id id
+                                             :iteration {:site site :index index}}
+                                      call (assoc :call call)))]
+                   ;; a fn entered by its site, the entries of the fns of a
+                   ;; definition being where it is
+                   (into {} (map (fn [v] [(if (= "enter" (:kind v)) (:site v) [(:line v) (:column v)])
+                                          [(:value v) (:times v)]]))
+                         (:values said))))]
+        (try
+          (ret r (str "#replique/src {:file " (pr-str (str file)) " :line 1"
+                      " :instrument true :entry false :record true}\n"
+                      "(defn fl [xs]
+  (let [total (reduce (fn [acc x] (+ acc x)) 0 xs)
+        doubled (doall (map (fn [x] (* 2 x)) xs))
+        f (fn self [n] (if (pos? n) (self (dec n)) n))]
+    [total doubled (f 2) (map (fn [y] (inc y)) xs)]))"))
+          (let [unit (:unit (await-event c "debug-instrumented"))
+                told (fn [calls]
+                       (loop [] (when-not (= {:unit unit :calls calls}
+                                             (select-keys (await-event c "debug-recorded")
+                                                          [:unit :calls]))
+                                  (recur))))
+                _ (ret r "(fl [1 2 3])")
+                _ (told 1)
+                {:keys [loops calls]} (recorded c unit nil 1)
+                [add double] (map :site loops)]
+            (testing "each fn the code wrote is a loop going round once for each call of it"
+              (is (= [{:line 2 :column 23 :iterations 3 :fn true}
+                      {:line 3 :column 29 :iterations 3 :fn true}
+                      {:line 5 :column 31 :iterations 3 :fn true}]
+                     (mapv #(select-keys % [:line :column :iterations :fn]) loops))))
+            (testing "a call of it is what it evaluated then"
+              (is (= {add ["[1 2]" 1] [2 35] ["3" 1]}
+                     (select-keys (in unit nil add 2 2) [add [2 35]])))
+              (is (= ["{:iteration 1, acc 0, x 1}" "{:iteration 2, acc 1, x 2}"
+                      "{:iteration 3, acc 3, x 3}"]
+                     (mapv :value (:children (ask! c {:op :inspect :id 3
+                                                      :source {:debug {:loop add}}}))))))
+            (testing "what a doall realizes in the call is of the call"
+              (ret r "(fl [10 20])")
+              (told 2)
+              (let [{:keys [loops]} (recorded c unit nil 4)
+                    first-call (:call (first calls))]
+                (is (= 2 (:iterations (some #(when (= double (:site %)) %) loops))))
+                (is (= {double ["[20]" 1] [3 37] ["40" 1]}
+                       (select-keys (in unit nil double 2 5) [double [3 37]])))
+                (is (= {double ["[3]" 1] [3 37] ["6" 1]}
+                       (select-keys (in unit first-call double 3 6) [double [3 37]])))))
+            (testing "every call of a form is by the number of the call, the ones it was not
+                      evaluated in left out"
+              (ret r "(fl [])")
+              (told 3)
+              (let [sum (:site (some #(when (= [2 35] [(:line %) (:column %)]) %)
+                                     (:values (recorded c unit (:call (first calls)) 7))))]
+                (is (= "{1 6, 2 30}" (get-in (ask! c {:op :inspect :id 8 :source {:debug {:site sum}}})
+                                             [:root :value]))))))
+          (finally (disconnect r) (disconnect c) (.delete file)))))))
+
 (deftest what-a-function-recorded-is-kept-call-by-call
   (if-not (debug/instrumenting?)
     (println "replique.debug-test: no compiler to record with - run with :analysis")
@@ -828,10 +894,17 @@
                                             :node (get-in o [:root :node])
                                             :name "recorded-kept" :id 50}))))
                       (is (= "2" (ret r "recorded-kept")))))
-                  (testing "and so are the values of a form, one per call"
-                    (is (= "[2 3]" (get-in (ask! c {:op :inspect :id 6
-                                                     :source {:debug {:site site}}})
-                                           [:root :value]))))))
+                  (testing "and so are the values of a form, by call"
+                    (is (= "{1 2, 2 3}" (get-in (ask! c {:op :inspect :id 6
+                                                          :source {:debug {:site site}}})
+                                                [:root :value])))
+                    (testing "the ones it was evaluated in, numbered still"
+                      (let [entry (:site (first (filter #(= ["m"] (:params %))
+                                                        (:values (recorded c unit call 60)))))]
+                        (is (= "{1 {:a 1}, 2 {:a 2}}"
+                               (get-in (ask! c {:op :inspect :id 61
+                                                :source {:debug {:site entry :arg 0}}})
+                                       [:root :value]))))))))
               (testing "of the last calls only"
                 (dotimes [i 12] (ret r (str "(rf {:a " i "})")))
                 (is (= 10 (count (:calls (recorded c unit nil 7)))))

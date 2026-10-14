@@ -1315,6 +1315,48 @@
                      (inspect {:loop loop-site} 4)))))
           (finally (disconnect c)))))))
 
+(deftest test-each-call-of-a-clojurescript-fn-is-a-time-round
+  (when (compiling?)
+    (with-repl [r]
+      (let [c (client/control-client @the-process)
+            in (fn [unit site index id]
+                 (into {} (map (fn [v] [(if (= "enter" (:kind v)) (:site v) [(:line v) (:column v)])
+                                        [(:value v) (:times v)]]))
+                       (:values (ask! c {:op :debug-recorded :unit unit :id id
+                                         :iteration {:site site :index index}}))))]
+        (try
+          (eval! r "#replique/ns rec.fnloops\n(def g 1)")
+          (eval! r (record-src 1 1 (str "(defn fl [xs]\n"
+                                        "  (let [total (reduce (fn [acc x] (+ acc x)) 0 xs)\n"
+                                        "        doubled (doall (map (fn [x] (* 2 x)) xs))]\n"
+                                        "    [total doubled]))")))
+          (let [unit (:unit (await-event c "debug-instrumented"))
+                _ (eval! r "(fl [1 2 3])")
+                _ (loop [] (when-not (= {:unit unit :calls 1}
+                                        (select-keys (await-event c "debug-recorded") [:unit :calls]))
+                             (recur)))
+                {:keys [loops]} (recorded-by-place c unit nil 1)
+                [add double] (map :site loops)]
+            (testing "each fn the code wrote is a loop going round once for each call of it"
+              (is (= [{:line 2 :column 23 :iterations 3 :fn true}
+                      {:line 3 :column 29 :iterations 3 :fn true}]
+                     (mapv #(select-keys % [:line :column :iterations :fn]) loops))))
+            (testing "a call of it is what it evaluated then"
+              (is (= {add ["[1 2]" 1] [2 35] ["3" 1]}
+                     (select-keys (in unit add 2 2) [add [2 35]])))
+              (is (= {double ["[3]" 1] [3 37] ["6" 1]}
+                     (select-keys (in unit double 3 3) [double [3 37]])))
+              (is (= ["{:iteration 1, acc 0, x 1}" "{:iteration 2, acc 1, x 2}"
+                      "{:iteration 3, acc 3, x 3}"]
+                     (mapv :value (:children (ask! c {:op :inspect :dialect :cljs :target :node :id 4
+                                                      :source {:debug {:loop add}}}))))))
+            (testing "every call of a form is by the number of the call"
+              (let [sum (:site (some #(when (= [2 35] [(:line %) (:column %)]) %)
+                                     (:values (recorded-by-place c unit nil 5))))]
+                (is (= "{1 6}" (:value (:root (ask! c {:op :inspect :dialect :cljs :target :node
+                                                       :id 6 :source {:debug {:site sum}}}))))))))
+          (finally (disconnect c)))))))
+
 (deftest test-a-repl-evaluates-in-a-recorded-clojurescript-call
   (when (compiling?)
     (with-repl [r]

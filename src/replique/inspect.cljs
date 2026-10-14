@@ -82,9 +82,12 @@
                               (if (some? arg)
                                 (fn [] (let [v (debug/recorded-value site call iteration)]
                                          (cond
+                                           (and (map? v) (nil? call) (nil? iteration))
+                                           (into (sorted-map)
+                                                 (map (fn [[n args]] [n (nth args arg nil)]))
+                                                 v)
                                            (not (vector? v)) :not-recorded
-                                           (or (some? call) (some? iteration)) (nth v arg :not-recorded)
-                                           :else (mapv #(nth % arg nil) v))))
+                                           :else (nth v arg :not-recorded))))
                                 (fn [] (debug/recorded-value site call iteration))))
     ;; what a traced call was called with, returned or threw - see replique.trace
     (:trace source) (let [{:keys [call] :as what} (:trace source)]
