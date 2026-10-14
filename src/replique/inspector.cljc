@@ -561,7 +561,9 @@
   between once it is open: [open close], the way it prints.
 
   A reference is its type and then what it holds, and what `datafy' shows of
-  an object is shown after the object's type."
+  an object is shown after the object's type - but not a map or a set it
+  makes into an equal one, as next.jdbc does of a row to give it a `nav':
+  its type would say it is something else than it prints."
   [v b]
   (let [[open close]
         (case (shape b)
@@ -582,7 +584,8 @@
           :ref [(if (var? b) (str (pr-str b) " ") (str "#" (type-name b) " ")) ""]
           :object ["#js {" "}"]
           ["" ""])]
-    (if (datafiable? v)
+    (if (and (datafiable? v)
+             (not (and (#{:map :set} (shape v)) (= v b))))
       [(str "#" (type-name v) " " open) close]
       [open close])))
 

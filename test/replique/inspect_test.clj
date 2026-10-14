@@ -177,6 +177,26 @@
           (is (= "\"boom\"" (:value (keyed (:children o) ":cause")))))
         (finally (disconnect r) (disconnect c))))))
 
+(deftest a-map-datafy-makes-an-equal-map-of-is-written-as-a-map
+  (with-process [info nil]
+    (let [r (repl-client info)
+          c (control-client info)]
+      (try
+        ;; what next.jdbc makes of a row: datafy gives it a nav, and nothing else
+        (ret r "(def row (with-meta {:id 1} {'clojure.core.protocols/datafy
+                                             (fn [m] (vary-meta m assoc 'clojure.core.protocols/nav
+                                                                (fn [_ _ v] v)))}))")
+        (ret r "(def shown (with-meta {:id 1} {'clojure.core.protocols/datafy
+                                               (fn [m] (assoc m :shown true))}))")
+        (let [o (inspect! c {:var "user/row"})]
+          (is (= ["{" "}"] [(:open o) (:close o)]))
+          (is (= [":id"] (mapv :key (:children o)))))
+        (testing "one datafy makes something else of is still said to be its type"
+          (let [o (inspect! c {:var "user/shown"})]
+            (is (= "#PersistentArrayMap {" (:open o)))
+            (is (= #{":id" ":shown"} (set (map :key (:children o)))))))
+        (finally (disconnect r) (disconnect c))))))
+
 (deftest what-a-repl-returned-and-what-was-tapped-are-views-too
   (with-process [info nil]
     (let [r (repl-client info)
