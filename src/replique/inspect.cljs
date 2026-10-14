@@ -75,20 +75,20 @@
     (:taps source) (constantly taps)
     ;; what a form recorded evaluated to - see replique.debug
     ;; and with :arg, what the fn whose entry it is was called with, that param
-    ;; and what each iteration of a loop of a call did, a row each
+    ;; and what each iteration of a loop of a call did, by iteration
     (:loop (:debug source)) (let [{:keys [call] :as table} (:debug source)]
                               (fn [] (debug/loop-table call table)))
-    ;; and what each call did, a row each
+    ;; and what each call did, by call
     (:calls (:debug source)) (let [{:keys [calls columns]} (:debug source)]
                                (fn [] (debug/calls-table calls columns)))
     (:site (:debug source)) (let [{:keys [site call arg iteration]} (:debug source)]
                               (if (some? arg)
                                 (fn [] (let [v (debug/recorded-value site call iteration)]
                                          (cond
-                                           (and (map? v) (nil? call) (nil? iteration))
-                                           (into (sorted-map)
-                                                 (map (fn [[n args]] [n (nth args arg nil)]))
-                                                 v)
+                                           (inspector/outline? v)
+                                           (inspector/outline
+                                            (map (fn [[n args]] [n (nth args arg nil)])
+                                                 (inspector/entries v)))
                                            (not (vector? v)) :not-recorded
                                            :else (nth v arg :not-recorded))))
                                 (fn [] (debug/recorded-value site call iteration))))
@@ -106,7 +106,7 @@
       (throw (ex-info (str "This runtime has no view " id) {:kind "unknown-view"}))))
 
 (defn- opts-of [msg]
-  (select-keys msg [:offset :limit :width :column :expand :meta]))
+  (select-keys msg [:offset :limit :width :column :expand :meta :tables]))
 
 (defn- handle [{:keys [op view node at limit meta] :as msg}]
   (case op

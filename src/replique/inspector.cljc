@@ -41,6 +41,68 @@
   "What a node is when its path no longer leads anywhere."
   ::gone)
 
+;;; What is not data
+
+(deftype Outline [entries])
+
+(defn outline
+  "What is shown as an outline rather than as data: a heading a line - its
+  label - and the value under it, browsed as any other. What a debugger has
+  to say of a value is not part of it: which iteration it is of, which call,
+  which local. ENTRIES are [label value] pairs, a label a string, said once:
+  one said again is told apart by its number, \"x (2)\"."
+  [entries]
+  (Outline.
+   (first (reduce (fn [[out seen] [label v]]
+                    (let [label (first (remove seen (cons label (map #(str label " (" % ")")
+                                                                     (iterate inc 2)))))]
+                      [(conj out [label v]) (conj seen label)]))
+                  [[] #{}]
+                  entries))))
+
+(defn outline?
+  "Whether X is an `outline'."
+  [x]
+  (instance? Outline x))
+
+(defn entries
+  "The [label value] pairs of the outline O."
+  [o]
+  (.-entries ^Outline o))
+
+(defn- outline-get [o label]
+  (if-let [[_ v] (some #(when (= label (first %)) %) (.-entries ^Outline o))]
+    v
+    gone))
+
+(defn- write-outline
+  "Write O as one line, each label and what is under it, through WRITE, a
+  fn of a string, and WRITE-VALUE, of a value - the first PRINT-LENGTH of
+  them, where there is one. Apart by two spaces, and by a dot where what is
+  under them is an outline itself."
+  [o write write-value print-length]
+  (let [entries (.-entries ^Outline o)
+        apart (if (some (fn [[_ v]] (outline? v)) entries) " · " "  ")]
+    (loop [[[label v] & more :as es] (seq entries)
+           i 0]
+      (when es
+        (if (and print-length (>= i print-length))
+          (write "...")
+          (do (write label)
+              (write " ")
+              (write-value v)
+              (when more (write apart))
+              (recur more (inc i))))))))
+
+#?(:clj
+   (defmethod print-method Outline [o ^Writer w]
+     (write-outline o #(.write w ^String %) #(print-method % w) *print-length*))
+   :cljs
+   (extend-type Outline
+     IPrintWithWriter
+     (-pr-writer [o w opts]
+       (write-outline o #(-write w %) #(pr-writer % w opts) (:print-length opts)))))
+
 ;;; What a value is
 
 (defn- pending-unrealized?
@@ -64,6 +126,7 @@
   [x]
   #?(:clj (cond
             (nil? x) nil
+            (instance? Outline x) :outline
             (or (map? x) (instance? Map x)) :map
             (or (set? x) (instance? Set x)) :set
             (or (sequential? x) (instance? Collection x) (.isArray (class x))) :seq
@@ -71,6 +134,7 @@
             :else nil)
      :cljs (cond
              (nil? x) nil
+             (instance? Outline x) :outline
              (map? x) :map
              (set? x) :set
              (or (sequential? x) (array? x) (seq? x)) :seq
@@ -101,18 +165,19 @@
                        :else "collection")
             :ref "ref"
             :object "object"
+            :outline "outline"
             (if (fn? x) "fn" "object"))))
 
 (defn type-name
   "The name of X's type, the short way, or nil for nil."
   [x]
-  #?(:clj (when (some? x)
+  #?(:clj (when (and (some? x) (not (outline? x)))
             (let [c (class x)]
               (cond
                 (record? x) (.getName c)
                 (fn? x) (clojure.lang.Compiler/demunge (.getName c))
                 :else (.getSimpleName c))))
-     :cljs (when (some? x)
+     :cljs (when (and (some? x) (not (outline? x)))
              ;; What the compiler named the constructor: cljs$core$ExceptionInfo,
              ;; or PersistentVector$fn - the part that is the type's own name
              (let [n (some-> (type x) .-name)
@@ -123,6 +188,7 @@
   "How many things X holds, where that is known without walking it."
   [x]
   #?(:clj (cond
+            (outline? x) (count (.-entries ^Outline x))
             (counted? x) (count x)
             ;; a seq is a java.util.List, and asking one its size walks it
             (or (seq? x) (instance? IPending x)) nil
@@ -130,6 +196,7 @@
             (and (some? x) (.isArray (class x))) (count x)
             :else nil)
      :cljs (cond
+             (outline? x) (count (.-entries x))
              (counted? x) (count x)
              (array? x) (alength x)
              (plain-object? x) (count (js-keys x))
@@ -340,6 +407,7 @@
     :elem (set-get b k)
     :deref (if (pending-unrealized? b) gone @b)
     :meta (if-let [m (meta v)] m gone)
+    :label (if (outline? b) (outline-get b k) gone)
     #?@(:cljs [:prop (prop-get b k)])
     gone))
 
@@ -362,6 +430,22 @@
    :index {}
    :next 1})
 
+(defn- same?
+  "Whether A is what B was, as `seen' says: a collection by identity, which
+  is what makes this cheap and what says a value was replaced. Anything else
+  by value: the 1000th of something is a long that is a new object every
+  time it is computed. And an outline by what is under each label, since it
+  is made again each time it is asked for."
+  [a b]
+  (cond
+    (outline? a) (and (outline? b)
+                      (let [ea (.-entries ^Outline a) eb (.-entries ^Outline b)]
+                        (and (= (count ea) (count eb))
+                             (every? (fn [[[la va] [lb vb]]] (and (= la lb) (same? va vb)))
+                                     (map vector ea eb)))))
+    (shape a) (identical? a b)
+    :else (= a b)))
+
 (defn- seen
   "REC, the node found by its path to hold RAW in generation GEN.
 
@@ -373,14 +457,7 @@
     (assoc rec
            :gen gen
            :raw raw
-           :changed (and (contains? rec :raw)
-                         ;; A collection by identity, which is what makes this
-                         ;; cheap and what says a value was replaced. Anything
-                         ;; else by value: the 1000th of something is a long
-                         ;; that is a new object every time it is computed
-                         (not (if (shape raw)
-                                (identical? raw (:raw rec))
-                                (= raw (:raw rec))))))))
+           :changed (and (contains? rec :raw) (not (same? raw (:raw rec)))))))
 
 (defn root!
   "Put ROOT at the root of VIEW. A root that is the one already there changes
@@ -478,6 +555,9 @@
                   (map-indexed (fn [i x] [[:index (+ offset i)] x]))))
       :ref (when (and (zero? offset) (not (pending-unrealized? b)))
              [[[:deref] @b]])
+      :outline (->> (.-entries ^Outline b)
+                    (drop offset) (take n)
+                    (map (fn [[label v]] [[:label label] v])))
       #?@(:cljs [:object (->> (js-keys b)
                               (drop offset) (take n)
                               (map (fn [k] [[:prop k] (unchecked-get b k)])))])
@@ -493,7 +573,8 @@
     :elem {:via "elem"}
     :deref {:via "deref" :key "@"}
     :meta {:via "meta" :key "^"}
-    :prop {:via "prop" :key (str k)}))
+    :prop {:via "prop" :key (str k)}
+    :label {:via "label" :key k}))
 
 (defn- expandable?
   "Whether a line holding X has more in it than it shows: what does not fit
@@ -502,7 +583,7 @@
   [x whole? b meta?]
   (or (case (shape x)
         :ref (not (pending-unrealized? x))
-        (:map :set :seq :object) (and (or (not whole?) (and meta? (some? (meta x))))
+        (:map :set :seq :object :outline) (and (or (not whole?) (and meta? (some? (meta x))))
                                       (not (zero? (or (counted x) 1))))
         false)
       (datafiable? x)
@@ -516,19 +597,22 @@
 (defn- value-column
   "The column the value of a child labelled LABEL is written at, its entry
   starting at COLUMN: after its key, where it has one."
-  [column {:keys [via key]}]
+  [column {:keys [via key pad]}]
   (+ column (case via
               ("key" "prop") (inc (count key))
+              ;; the labels of an outline are padded to the longest
+              "label" (inc (max (count key) (or pad 0)))
               "meta" 1
               0)))
 
 (defn- describe
   "The line showing X, the child of PARENT found by STEP - or the root, where
   STEP is nil - its entry written at COLUMN on lines of WIDTH chars."
-  [view parent b step x {width :width meta? :meta column :column}]
+  [view parent b step x {width :width meta? :meta column :column pad :pad}]
   (let [width (or width 80)
         column (or column 0)
-        label (when step (label step (max 20 (quot (- width column) 2))))
+        label (when step (cond-> (label step (max 20 (quot (- width column) 2)))
+                           pad (assoc :pad pad)))
         {:keys [text whole cut]} (summary x (max 20 (- width (value-column column label)
                                                    (if step margin 0)))
                                       meta?)
@@ -583,6 +667,7 @@
                  :else [(str "#" (type-name b) " (") ")"])
           :ref [(if (var? b) (str (pr-str b) " ") (str "#" (type-name b) " ")) ""]
           :object ["#js {" "}"]
+          ;; an outline is a heading a line, between nothing
           ["" ""])]
     (if (and (datafiable? v)
              (not (and (#{:map :set} (shape v)) (= v b))))
@@ -625,35 +710,40 @@
   "A page of the children of the node ID of VIEW, written at COLUMN - see
   `children' - or nil where the node is no longer there.
 
-  A seq of maps is a table too: the page says its :columns, the keys of the
-  maps printed, and the line of each map its :cells - see `with-cells'."
-  [view id {offset :offset limit :limit meta? :meta column :column
+  With :tables, a seq of maps is a table too: the page says its :columns, the
+  keys of the maps printed, and the line of each map its :cells - see
+  `with-cells'. The children of an outline are labelled, and their labels
+  padded to the longest of the page, :pad."
+  [view id {offset :offset limit :limit meta? :meta column :column tables? :tables
             :or {offset 0 limit 100 column 0} :as opts}]
   (when-let [{v :value b :browse} (current view id)]
     (let [[open close] (delimiters v b)
-          opts (assoc opts :column (+ column (count open)))
           page (page-of b offset limit)
           more? (> (count page) limit)
           page (cond->> (take limit page)
                  (and meta? (zero? offset) (some? (meta v)))
-                 (cons [[:meta] (meta v)]))]
-      (cond-> {:children (let [columns (when (= :seq (shape b)) (table-keys page))]
-                           (mapv (fn [[step x]]
-                                   (cond-> (describe view id b step x opts)
-                                     columns (as-> line (with-cells view line x))))
-                                 page))
+                 (cons [[:meta] (meta v)]))
+          columns (when (and tables? (= :seq (shape b))) (table-keys page))
+          opts (if (outline? b)
+                 (assoc opts :column column
+                        :pad (reduce max 0 (map (fn [[[_ label]]] (count label)) page)))
+                 (-> opts (assoc :column (+ column (count open))) (dissoc :pad)))]
+      (cond-> {:children (mapv (fn [[step x]]
+                                 (cond-> (describe view id b step x opts)
+                                   columns (as-> line (with-cells view line x))))
+                               page)
                :more more?
                :open open
                :close close}
-        (and (= :seq (shape b)) (table-keys page))
-        (assoc :columns (mapv #(:text (summary % cell-width false)) (table-keys page)))
+        columns
+        (assoc :columns (mapv #(:text (summary % cell-width false)) columns))
         (counted b) (assoc :total (counted b))
         (= :ref (shape b)) (assoc :total (if (pending-unrealized? b) 0 1))))))
 
 ;;; Opened as far as a screen goes
 
 (defn- keyed? [line]
-  (contains? #{"key" "prop"} (:via line)))
+  (contains? #{"key" "prop" "label"} (:via line)))
 
 (defn- lines-of
   "About how many lines PAGE takes once laid out, its entries starting at
@@ -692,7 +782,10 @@
                      ;; a row of a table is shown by its cells
                      (for [line (when-not (:columns page) (:children page))
                            :when (and (:expandable line) (:truncated line))]
-                       [line (value-column (base page column) line)]))
+                       [line (if (= "outline" (:kind line))
+                               ;; an outline in an outline is under its label
+                               (+ (base page column) 2)
+                               (value-column (base page column) line))]))
         opened (volatile! {})]
     (loop [queue (into #?(:clj clojure.lang.PersistentQueue/EMPTY
                           :cljs (.-EMPTY PersistentQueue))
@@ -704,7 +797,7 @@
           (let [;; a share of what is left, so that what comes after it
                 ;; on the same level is opened too
                 left (min left (max 8 (quot left (count queue))))
-                keyed (contains? #{"map" "record" "object"} (:kind line))
+                keyed (contains? #{"map" "record" "object" "outline"} (:kind line))
                 p (children-page view (:node line)
                                  (assoc opts :column col :offset 0
                                         :limit (min limit (if keyed (dec left) (* 4 left)))))]
@@ -728,8 +821,8 @@
 
 (defn children
   "A page of the children of the node ID of VIEW: {:children [line ...]
-  :total n :more bool :open :close}, and :columns of a seq of maps, a table -
-  see `children-page' - :total where it is known without walking
+  :total n :more bool :open :close}, and with :tables :columns of a seq of
+  maps, a table - see `children-page' - :total where it is known without walking
   the node, :open and :close what the node is written between once it is
   open - and {:gone true} where the node is no longer there.
 
@@ -794,7 +887,9 @@
                          :elem (when (readable? k) (list 'get k))
                          :deref 'deref
                          :meta 'meta
-                         :prop (list 'unchecked-get k)))
+                         :prop (list 'unchecked-get k)
+                         ;; not part of the value
+                         :label nil))
                      steps)]
       (when (and (some? base) (every? some? forms))
         (if (seq forms) (list* '-> base forms) base)))))

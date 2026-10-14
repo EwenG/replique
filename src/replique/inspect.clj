@@ -21,13 +21,13 @@
     {:debug {:site n :call c}}
                        what the form numbered N of code recorded evaluated to
                        in the call C - the last value of each call, without
-                       :call, {n value} by the number of the call among the
-                       ones kept. With :arg i, where it is a fn's entry, what
-                       its param I was called with
+                       :call, by the number of the call among the ones kept,
+                       as an outline - see `replique.inspector/outline'. With
+                       :arg i, where it is a fn's entry, what its param I was
+                       called with
     {:debug {:calls n :site s}}
-                       what each call kept of the unit N did, a row each:
-                       :call, its number, and its params - and the form S,
-                       with :site
+                       what each call kept of the unit N did, by call: its
+                       params - and the form S, with :site
     {:trace {:call c :args true}}
     {:trace {:call c :value true}}
     {:trace {:call c :arg i}}
@@ -169,19 +169,19 @@
                                 " the calls of a unit, :calls,"
                                 " got: " (pr-str (:debug source))))
                       (cond
-                        ;; what each iteration of a loop did, a row each - and
+                        ;; what each iteration of a loop did, by iteration - and
                         ;; the form of :site, in it, or with :only that alone
                         loop #(debug/loop-table (long loop) (some-> call long) (some-> site long) only)
-                        ;; what each call did, a row each
+                        ;; what each call did, by call
                         calls #(debug/calls-table (long calls) (some-> site long))
                         ;; a call's args, or each call's, by call
                         (and site arg) #(let [v (debug/recorded-value (long site) (some-> call long)
                                                                       iteration)]
                                           (cond
-                                            (and (map? v) (not (or call iteration)))
-                                            (into (sorted-map)
-                                                  (map (fn [[n args]] [n (nth args arg nil)]))
-                                                  v)
+                                            (inspector/outline? v)
+                                            (inspector/outline
+                                             (map (fn [[n args]] [n (nth args arg nil)])
+                                                  (inspector/entries v)))
                                             (not (vector? v)) :not-recorded
                                             :else (nth v arg :not-recorded)))
                         site #(debug/recorded-value (long site) (some-> call long) iteration)
@@ -200,7 +200,7 @@
 ;;; The ops
 
 (defn- opts-of [msg]
-  (select-keys msg [:offset :limit :width :column :expand :meta]))
+  (select-keys msg [:offset :limit :width :column :expand :meta :tables]))
 
 (defn- the-view [msg]
   (let [id (:view msg)]

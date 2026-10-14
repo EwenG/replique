@@ -1256,17 +1256,17 @@
                                             :source {:debug debug} :id id})))]
               (testing "a value of an iteration is one to browse"
                 (is (= "361" (:value (inspect {:site square :iteration {:site i :index 20}} 7)))))
-              (testing "and so is what each iteration kept did, a row each"
-                (is (= "[{:iteration 1, x 1, y 0} {:iteration 2, x 2, y 1} {:iteration 3, x 3, y 2}]"
+              (testing "and so is what each iteration kept did, by iteration"
+                (is (= "iteration 1 x 1  y 0 · iteration 2 x 2  y 1 · iteration 3 x 3  y 2"
                        (:value (inspect {:loop x} 8))))
-                (is (= ["{:iteration 1, x 1, y 0, (* x y) 0}" "{:iteration 2, x 2, y 1}"
-                        "{:iteration 3, x 3, y 2, (* x y) 6}"]
-                       (mapv :value (:children
+                (is (= [["iteration 1" "x 1  y 0  (* x y) 0"] ["iteration 2" "x 2  y 1"]
+                        ["iteration 3" "x 3  y 2  (* x y) 6"]]
+                       (mapv (juxt :key :value) (:children
                                      (ask! c {:op :inspect :dialect :cljs :target :node :id 8
                                               :source {:debug {:loop x
                                                                :site (:site (some #(when (= [4 20] [(:line %) (:column %)]) %)
                                                                                   (:values (recorded-by-place c unit nil 6))))}}})))))
-                (is (= "{1 0, 3 6}"
+                (is (= "iteration 1 0  iteration 3 6"
                        (:value (inspect {:loop x :only true
                                          :site (:site (some #(when (= [4 20] [(:line %) (:column %)]) %)
                                                             (:values (recorded-by-place c unit nil 6))))}
@@ -1311,7 +1311,7 @@
             (testing "the :as of a map is bound before its keys, and is of the same iteration"
               (is (= "{:a 1}" (inspect {:site m :iteration {:site loop-site :index 1}} 2)))
               (is (= "{:a 3}" (inspect {:site m :iteration {:site loop-site :index 3}} 3)))
-              (is (= "[{:iteration 1, a 1, m #} {:iteration 2, a 2, m #} {:iteration 3, a 3, m #}]"
+              (is (= "iteration 1 a 1  m {:a 1} · iteration 2 a 2  m {:a 2} · ..."
                      (inspect {:loop loop-site} 4)))))
           (finally (disconnect c)))))))
 
@@ -1348,20 +1348,20 @@
                      (select-keys (in unit double 3 3) [double [3 37]])))
               (let [table (ask! c {:op :inspect :dialect :cljs :target :node :id 4
                                    :source {:debug {:loop add}}})]
-                (is (= ["{:iteration 1, acc 0, x 1}" "{:iteration 2, acc 1, x 2}"
-                        "{:iteration 3, acc 3, x 3}"]
-                       (mapv :value (:children table))))
-                (testing "a table, a column per key"
-                  (is (= [":iteration" "acc" "x"] (:columns table)))
-                  (is (= ["1" "0" "1"] (mapv :value (:cells (first (:children table)))))))))
+                (is (= [["iteration 1" "acc 0  x 1"] ["iteration 2" "acc 1  x 2"]
+                        ["iteration 3" "acc 3  x 3"]]
+                       (mapv (juxt :key :value) (:children table))))
+                (testing "an outline, labelled"
+                  (is (= ["label" "outline"] ((juxt :via :kind) (first (:children table)))))
+                  (is (= 11 (:pad (first (:children table))))))))
             (testing "every call of a form is by the number of the call"
               (let [sum (:site (some #(when (= [2 35] [(:line %) (:column %)]) %)
                                      (:values (recorded-by-place c unit nil 5))))]
-                (is (= "{1 6}" (:value (:root (ask! c {:op :inspect :dialect :cljs :target :node
+                (is (= "call 1 6" (:value (:root (ask! c {:op :inspect :dialect :cljs :target :node
                                                        :id 6 :source {:debug {:site sum}}})))))
-                (testing "and so is every call, a row each"
-                  (is (= ["{:call 1, xs [1 2 3], (+ acc x) 6}"]
-                         (mapv :value (:children (ask! c {:op :inspect :dialect :cljs :target :node
+                (testing "and so is every call, by call"
+                  (is (= [["call 1" "xs [1 2 3]  (+ acc x) 6"]]
+                         (mapv (juxt :key :value) (:children (ask! c {:op :inspect :dialect :cljs :target :node
                                                           :id 7
                                                           :source {:debug {:calls unit :site sum}}})))))))))
           (finally (disconnect c)))))))

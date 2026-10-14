@@ -694,24 +694,24 @@
                                           :source {:debug {:site square
                                                            :iteration {:site i :index 26}}}})
                                  [:root :value]))))
-                (testing "and so is what each iteration kept did, a row each"
-                  (is (= "[{:iteration 1, x 1, y 0} {:iteration 2, x 2, y 1} {:iteration 3, x 3, y 2}]"
+                (testing "and so is what each iteration kept did, by iteration"
+                  (is (= "iteration 1 x 1  y 0 · iteration 2 x 2  y 1 · iteration 3 x 3  y 2"
                          (get-in (ask! c {:op :inspect :id 12 :source {:debug {:loop x}}})
                                  [:root :value])))
                   (testing "and of a form in it, what it evaluated to last in each"
-                    (is (= ["{:iteration 1, x 1, y 0, (* x y) 0}" "{:iteration 2, x 2, y 1}"
-                            "{:iteration 3, x 3, y 2, (* x y) 6}"]
-                           (mapv :value (:children (ask! c {:op :inspect :id 12
+                    (is (= [["iteration 1" "x 1  y 0  (* x y) 0"] ["iteration 2" "x 2  y 1"]
+                            ["iteration 3" "x 3  y 2  (* x y) 6"]]
+                           (mapv (juxt :key :value) (:children (ask! c {:op :inspect :id 12
                                                             :source {:debug {:loop x
                                                                              :site (site-at 4 20)}}})))))
-                    (is (= "{1 0, 3 6}"
+                    (is (= "iteration 1 0  iteration 3 6"
                            (get-in (ask! c {:op :inspect :id 12
                                             :source {:debug {:loop x :site (site-at 4 20)
                                                              :only true}}})
                                    [:root :value])))
                     ;; not of a form outside it
                     (is (some? (site-at 5 3)))
-                    (is (= "[{:iteration 1, x 1, y 0} {:iteration 2, x 2, y 1} {:iteration 3, x 3, y 2}]"
+                    (is (= "iteration 1 x 1  y 0 · iteration 2 x 2  y 1 · iteration 3 x 3  y 2"
                            (get-in (ask! c {:op :inspect :id 12
                                             :source {:debug {:loop x :site (site-at 5 3)
                                                              :only true}}})
@@ -767,7 +767,7 @@
             (testing "the :as of a map is bound before its keys, and is of the same iteration"
               (is (= "{:a 1}" (m-in 1 2)))
               (is (= "{:a 3}" (m-in 3 3)))
-              (is (= "[{:iteration 1, a 1, m #} {:iteration 2, a 2, m #} {:iteration 3, a 3, m #}]"
+              (is (= "iteration 1 a 1  m {:a 1} · iteration 2 a 2  m {:a 2} · ..."
                      (get-in (ask! c {:op :inspect :id 4 :source {:debug {:loop loop-site}}})
                              [:root :value])))))
           (finally (disconnect r) (disconnect c) (.delete file)))))))
@@ -814,9 +814,9 @@
             (testing "a call of it is what it evaluated then"
               (is (= {add ["[1 2]" 1] [2 35] ["3" 1]}
                      (select-keys (in unit nil add 2 2) [add [2 35]])))
-              (is (= ["{:iteration 1, acc 0, x 1}" "{:iteration 2, acc 1, x 2}"
-                      "{:iteration 3, acc 3, x 3}"]
-                     (mapv :value (:children (ask! c {:op :inspect :id 3
+              (is (= [["iteration 1" "acc 0  x 1"] ["iteration 2" "acc 1  x 2"]
+                      ["iteration 3" "acc 3  x 3"]]
+                     (mapv (juxt :key :value) (:children (ask! c {:op :inspect :id 3
                                                       :source {:debug {:loop add}}}))))))
             (testing "what a doall realizes in the call is of the call"
               (ret r "(fl [10 20])")
@@ -834,15 +834,15 @@
               (told 3)
               (let [sum (:site (some #(when (= [2 35] [(:line %) (:column %)]) %)
                                      (:values (recorded c unit (:call (first calls)) 7))))]
-                (is (= "{1 6, 2 30}" (get-in (ask! c {:op :inspect :id 8 :source {:debug {:site sum}}})
+                (is (= "call 1 6  call 2 30" (get-in (ask! c {:op :inspect :id 8 :source {:debug {:site sum}}})
                                              [:root :value])))
-                (testing "and so is every call, a row each, of its params and the form"
-                  (is (= ["{:call 1, xs [1 2 3], (+ acc x) 6}" "{:call 2, xs [10 20], (+ acc x) 30}"
-                          "{:call 3, xs []}"]
-                         (mapv :value (:children (ask! c {:op :inspect :id 9
+                (testing "and so is every call, by call, of its params and the form"
+                  (is (= [["call 1" "xs [1 2 3]  (+ acc x) 6"] ["call 2" "xs [10 20]  (+ acc x) 30"]
+                          ["call 3" "xs []"]]
+                         (mapv (juxt :key :value) (:children (ask! c {:op :inspect :id 9
                                                           :source {:debug {:calls unit :site sum}}})))))
-                  (is (= ["{:call 1, xs [1 2 3]}" "{:call 2, xs [10 20]}" "{:call 3, xs []}"]
-                         (mapv :value (:children (ask! c {:op :inspect :id 10
+                  (is (= [["call 1" "xs [1 2 3]"] ["call 2" "xs [10 20]"] ["call 3" "xs []"]]
+                         (mapv (juxt :key :value) (:children (ask! c {:op :inspect :id 10
                                                           :source {:debug {:calls unit}}})))))))))
           (finally (disconnect r) (disconnect c) (.delete file)))))))
 
@@ -903,13 +903,13 @@
                                             :name "recorded-kept" :id 50}))))
                       (is (= "2" (ret r "recorded-kept")))))
                   (testing "and so are the values of a form, by call"
-                    (is (= "{1 2, 2 3}" (get-in (ask! c {:op :inspect :id 6
+                    (is (= "call 1 2  call 2 3" (get-in (ask! c {:op :inspect :id 6
                                                           :source {:debug {:site site}}})
                                                 [:root :value])))
                     (testing "the ones it was evaluated in, numbered still"
                       (let [entry (:site (first (filter #(= ["m"] (:params %))
                                                         (:values (recorded c unit call 60)))))]
-                        (is (= "{1 {:a 1}, 2 {:a 2}}"
+                        (is (= "call 1 {:a 1}  call 2 {:a 2}"
                                (get-in (ask! c {:op :inspect :id 61
                                                 :source {:debug {:site entry :arg 0}}})
                                        [:root :value]))))))))

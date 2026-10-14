@@ -928,9 +928,9 @@
 (defn recorded-value
   "What a view of what the site SITE evaluated to in the call CALL shows: the
   last value, where it was evaluated more than once - or, without CALL, the
-  last value of each call kept it was evaluated in, {n value} by the number
-  of the call among the ones kept, from 1, as a loop's are by iteration. And
-  :not-recorded where nothing is kept.
+  last value of each call kept it was evaluated in, by the number of the call
+  among the ones kept, from 1, as a loop's are by iteration: an outline, see
+  `iterations/by-call'. And :not-recorded where nothing is kept.
 
   With ITERATION, {:site :index}, what it evaluated to last in that iteration
   of a loop of the call CALL, or of the last call - see replique.iterations."
@@ -943,12 +943,12 @@
        call (if-let [values (get-in all [call :values site :values])]
               (peek values)
               :not-recorded)
-       :else (let [values (into (sorted-map)
+       :else (let [values (into []
                                 (keep-indexed (fn [i c]
                                                 (when-let [vs (get-in all [c :values site :values])]
                                                   [(inc i) (peek vs)])))
                                 (get @recorded unit))]
-               (if (seq values) values :not-recorded))))))
+               (if (seq values) (iterations/by-call values) :not-recorded))))))
 
 (defn- columns-of
   "The names of the code of the unit N bound each time round of the loop
@@ -999,10 +999,10 @@
 
 (defn loop-table
   "What each iteration of the loop whose name is bound at the site SITE
-  evaluated to in the call CALL - the last one, without - a row each: see
+  evaluated to in the call CALL - the last one, without - by iteration: see
   `iterations/table'. The iterations kept only. With FORM, a site evaluated
   in the loop, what it evaluated to too: see `loop-plan' - and with ONLY,
-  that alone, {index value}, of the iterations it was evaluated in."
+  that alone, by iteration, of the iterations it was evaluated in."
   ([site call] (loop-table site call nil nil))
   ([site call form only]
    (let [unit (or (:unit (get @sites site))
@@ -1034,7 +1034,7 @@
       (conj [(scope/form-at code (span-of form-site)) form]))))
 
 (defn calls-table
-  "What each call kept of the unit N evaluated to, a row each - see
+  "What each call kept of the unit N evaluated to, by call - see
   `calls-plan' and `iterations/calls-table'. With FORM, a site, what it
   evaluated to last in each call too."
   [n form]

@@ -300,9 +300,9 @@
 (defn recorded-value
   "What a view of what the site SITE evaluated to in the call CALL shows: the
   last value, where it was evaluated more than once - or, without CALL, the
-  last value of each call kept it was evaluated in, {n value} by the number
-  of the call among the ones kept, from 1, as a loop's are by iteration. And
-  :not-recorded where nothing is kept.
+  last value of each call kept it was evaluated in, by the number of the call
+  among the ones kept, from 1, as a loop's are by iteration: an outline, see
+  replique.iterations/by-call. And :not-recorded where nothing is kept.
 
   With ITERATION, what it evaluated to last in that iteration of a loop of
   the call CALL, or of the last call - see `in-iteration'."
@@ -323,10 +323,10 @@
          :not-recorded)
 
        :else
-       (let [values (into (sorted-map)
+       (let [values (into []
                           (keep-indexed (fn [i c] (when (in? c) [(inc i) (last-in c)])))
                           calls)]
-         (if (seq values) values :not-recorded))))))
+         (if (seq values) (iterations/by-call values) :not-recorded))))))
 
 (defn recorded-in
   "What the site SITE evaluated to last in the call CALL of the unit UNIT -
@@ -347,11 +347,11 @@
 
 (defn loop-table
   "What each iteration kept of a loop of the call CALL - the last one,
-  without - evaluated to, a row each - see replique.iterations/table. TABLE
+  without - evaluated to, by iteration - see replique.iterations/table. TABLE
   says the loop: its :loop, the site of its name, its :iteration, as
   `in-iteration' takes it without an :index, the names bound in it,
   :columns, and how many values of a form are kept, :kept - and :only, for
-  the values of a single column, {index value}."
+  the values of a single column, by iteration."
   [call {:keys [loop iteration columns kept only]}]
   (let [calls (some-> (get @units (.get site-units loop)) unit-calls vec)
         c (if (some? call) (some #(when (= call (.-n %)) %) calls) (peek calls))]
@@ -362,7 +362,7 @@
       :not-recorded)))
 
 (defn calls-table
-  "What each call kept of the unit UNIT evaluated to, a row each - see
+  "What each call kept of the unit UNIT evaluated to, by call - see
   replique.iterations/calls-table, COLUMNS being said with names as strings."
   [unit columns]
   (iterations/calls-table (mapv kept-in (some-> (get @units unit) unit-calls vec))

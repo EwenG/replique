@@ -15,7 +15,12 @@
   values and the last, the two the same where it was evaluated as many times
   as are kept, or fewer. An iteration in between is not kept, and nor are the
   values of a form evaluated more times than are kept in it, where the ones
-  not kept may be among them.")
+  not kept may be among them.
+
+  What a view shows of them is an outline - see replique.inspector/outline:
+  the iterations and the calls, and the names in each, are what the values
+  are under, and not part of them."
+  (:require [replique.inspector :as inspector]))
 
 (defn- number [entry] (nth entry 0))
 
@@ -144,39 +149,54 @@
              i (range from (inc to))]
          i)))
 
+(defn- labelled
+  "The label of a column named NAME: the code written there."
+  [name]
+  (if (string? name) name (pr-str name)))
+
 (defn table
-  "What the iterations kept of a loop of a call evaluated to, as rows - a map
-  each, of :iteration, the index, and of each name of COLUMNS, [name site]
-  pairs, what its site evaluated to then, where it was evaluated then and
-  that is kept - or [name site i], the Ith of it, of the params a fn was
-  called with. ITERATION says the loop, as `picker' takes it, without an
+  "What the iterations kept of a loop of a call evaluated to, as an outline -
+  \"iteration i\", by index, over an outline of each name of COLUMNS, [name
+  site] pairs, and what its site evaluated to then, where it was evaluated
+  then and that is kept - or [name site i], the Ith of it, of the params a fn
+  was called with. ITERATION says the loop, as `picker' takes it, without an
   :index; KEPT-OF what is kept of the call, as many values of a form as KEPT
   being kept first and as many last."
   [kept-of iteration columns kept]
-  (vec (for [index (kept-indices kept-of (:loop iteration) kept)
-             :let [pick (picker kept-of (assoc iteration :index index))]
-             :when pick]
-         (apply array-map :iteration index
-                (mapcat (fn [[name site i]]
-                          (let [v (pick site nil)]
-                            (when (map? v) [name (cond-> (:value v) i (nth i nil))])))
-                        columns)))))
+  (inspector/outline
+   (for [index (kept-indices kept-of (:loop iteration) kept)
+         :let [pick (picker kept-of (assoc iteration :index index))]
+         :when pick]
+     [(str "iteration " index)
+      (inspector/outline
+       (keep (fn [[name site i]]
+               (let [v (pick site nil)]
+                 (when (map? v) [(labelled name) (cond-> (:value v) i (nth i nil))])))
+             columns))])))
 
 (defn calls-table
-  "What each call kept of a unit evaluated to, a row each - a map of :call,
-  its number among the ones kept, from 1, and of each name of COLUMNS, as
-  `table' takes them, what its site evaluated to last in the call, where it
-  was evaluated in it. KEPT-OFS says what is kept of each call kept, oldest
-  first, as `picker' takes it."
+  "What each call kept of a unit evaluated to, as an outline - \"call n\", by
+  its number among the ones kept, from 1, over an outline of each name of
+  COLUMNS, as `table' takes them, and what its site evaluated to last in the
+  call, where it was evaluated in it. KEPT-OFS says what is kept of each call
+  kept, oldest first, as `picker' takes it."
   [kept-ofs columns]
-  (vec (map-indexed
-        (fn [i kept-of]
-          (apply array-map :call (inc i)
-                 (mapcat (fn [[name site j]]
-                           (when-let [[_ v] (peek (:tail (kept-of site)))]
-                             [name (cond-> v j (nth j nil))]))
-                         columns)))
-        kept-ofs)))
+  (inspector/outline
+   (map-indexed
+    (fn [i kept-of]
+      [(str "call " (inc i))
+       (inspector/outline
+        (keep (fn [[name site j]]
+                (when-let [[_ v] (peek (:tail (kept-of site)))]
+                  [(labelled name) (cond-> v j (nth j nil))]))
+              columns))])
+    kept-ofs)))
+
+(defn by-call
+  "Of VALUES, [n value] pairs, the value of each call it was evaluated in by
+  the number of the call: an outline, \"call n\"."
+  [values]
+  (inspector/outline (map (fn [[n v]] [(str "call " n) v]) values)))
 
 (defn first-where
   "Of INDICES, the first where (F index) is true - {:index i}, or {:index nil}
@@ -195,10 +215,11 @@
           (recur more (or error thrown)))))))
 
 (defn by-iteration
-  "Of ROWS of a `table' of a single column, what it is in each row where it
-  is there: {index value}, by index."
-  [rows]
-  (into (sorted-map)
-        (keep (fn [row] (when-let [[_ v] (first (dissoc row :iteration))]
-                          [(:iteration row) v])))
-        rows))
+  "Of a `table' of a single column, what it is in each iteration where it is
+  there: an outline, \"iteration i\"."
+  [table]
+  (inspector/outline
+   (keep (fn [[label row]]
+           (when-let [[_ v] (first (inspector/entries row))]
+             [label v]))
+         (inspector/entries table))))

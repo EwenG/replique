@@ -1,5 +1,6 @@
 (ns replique.inspect-test
   (:require [clojure.test :refer [deftest is testing]]
+            [replique.inspector :as inspector]
             [replique.test-client :as client
              :refer [control-client disconnect eval! recv repl-client request! with-process]])
   (:import [java.net SocketTimeoutException]))
@@ -316,7 +317,11 @@
           c (control-client info)]
       (try
         (ret r "(def rows [{:a 1 :b {:deep (vec (range 50))}} {:a 2 :c \"x\"}])")
-        (let [o (inspect! c {:var "user/rows"} :expand 40 :width 80)
+        (testing "where it is asked for: the way it prints otherwise"
+          (let [o (inspect! c {:var "user/rows"} :id 4)]
+            (is (nil? (:columns o)))
+            (is (nil? (:cells (first (:children o)))))))
+        (let [o (inspect! c {:var "user/rows"} :expand 40 :width 80 :tables true)
               [one two] (:children o)]
           (testing "its columns are the keys of the maps, in the order first found"
             (is (= [":a" ":b" ":c"] (:columns o))))
@@ -334,7 +339,36 @@
             (is (nil? (:page one)))))
         (testing "nor is a seq of anything else"
           (ret r "(def mixed [{:a 1} 2])")
-          (let [o (inspect! c {:var "user/mixed"} :id 3)]
+          (let [o (inspect! c {:var "user/mixed"} :id 3 :tables true)]
             (is (nil? (:columns o)))
             (is (nil? (:cells (first (:children o)))))))
         (finally (disconnect r) (disconnect c))))))
+
+(deftest what-is-not-data-is-an-outline
+  (let [o (inspector/outline [["iteration 1" (inspector/outline [["acc" {}] ["x" 1] ["x" 2]])]
+                              ["iteration 12" (inspector/outline [["acc" {:a (vec (range 50))}]])]])
+        view (atom (inspector/view o))
+        page (inspector/children view 0 {:width 40})
+        [one twelve] (:children page)]
+    (testing "a heading a line, between nothing"
+      (is (= ["" ""] ((juxt :open :close) page)))
+      (is (= [["label" "iteration 1"] ["label" "iteration 12"]]
+             (mapv (juxt :via :key) (:children page)))))
+    (testing "its labels padded to the longest"
+      (is (= [12 12] (mapv :pad (:children page)))))
+    (testing "what is under one, said as one line, the way it prints"
+      (is (= "outline" (:kind one)))
+      (is (nil? (:type one)))
+      (is (= "acc {}  x 1  x (2) 2" (:value one))))
+    (testing "a label said again is told apart"
+      (is (= ["acc" "x" "x (2)"]
+             (mapv :key (:children (inspector/children view (:node one) {:width 40}))))))
+    (testing "what does not fit is opened, as anything is"
+      (is (:expandable twelve))
+      (is (= ["acc"] (mapv :key (:children (inspector/children view (:node twelve) {:width 40}))))))
+    (testing "a path through one is no code"
+      (is (nil? (inspector/path-form view (:node one) 'x))))
+    (testing "printed, an outline in an outline is apart by a dot"
+      (is (= "iteration 1 acc {}  x 1  x (2) 2 · iteration 12 acc {:a [0 1]}"
+             (pr-str (inspector/outline [["iteration 1" (inspector/outline [["acc" {}] ["x" 1] ["x" 2]])]
+                                         ["iteration 12" (inspector/outline [["acc" {:a [0 1]}]])]])))))))
