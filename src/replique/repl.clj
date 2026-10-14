@@ -313,7 +313,7 @@
     :frame (when (:thread @in-frame) (select-keys @in-frame [:thread :frame]))
     ;; or the recorded call
     :call (when (:unit @in-frame)
-            (into {} (filter val) (select-keys @in-frame [:unit :call :line :column])))
+            (into {} (filter val) (select-keys @in-frame [:unit :call :line :column :iteration])))
     ;; What the editor needs to describe the repl without asking: the
     ;; namespace the next form will be read in, and the printing the last
     ;; result went through.

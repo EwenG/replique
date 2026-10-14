@@ -247,16 +247,10 @@
   of the call C - see `iterating' in replique/debug.clj, which says it, its
   :owners as pairs - or DEFAULT, where it is not evaluated again each time
   round."
-  [{:keys [loop index enclosing owners]} c]
-  (let [kept-of (kept-in c)
-        owners (into {} owners)
-        ranges (or (iterations/ranges kept-of loop index enclosing)
-                   (throw (ex-info (str "Iteration " index " is not kept")
-                                   {:kind "unknown-iteration"})))]
-    (fn [site default]
-      (if-let [owner (get owners site)]
-        (iterations/value-in (kept-of site) (get ranges owner))
-        default))))
+  [iteration c]
+  (or (iterations/picker (kept-in c) iteration)
+      (throw (ex-info (str "Iteration " (:index iteration) " is not kept")
+                      {:kind "unknown-iteration"}))))
 
 (defn- recorded
   "What the unit N recorded: the calls of it kept, and what each form
@@ -287,7 +281,7 @@
                                         v (:value picked)]
                                   :when picked]
                               (if (= ::iterations/not-kept picked)
-                                {:site site :kept false}
+                                {:site site :not-kept true}
                                 (cond-> {:site site :times (:times picked)
                                          :value (printed-briefly v)}
                                   (and (.has entries site) (vector? v))
@@ -295,31 +289,80 @@
                        [])}
       c (assoc :call (.-n c)))))
 
+(defn- iteration-in
+  "What the site SITE evaluated to in the iteration ITERATION of the call C -
+  see `in-iteration' - or DEFAULT, nil or {:value v}, where it is not
+  evaluated again each time round: the value, or :not-recorded."
+  [c site iteration default]
+  (let [v ((in-iteration iteration c) site default)]
+    (if (map? v) (:value v) :not-recorded)))
+
 (defn recorded-value
   "What a view of what the site SITE evaluated to in the call CALL shows: the
   last value, where it was evaluated more than once - or, without CALL, the
   last value of each call kept, one per call, the last call last. And
-  :not-recorded where nothing is kept."
-  [site call]
-  (let [calls (some-> (get @units (.get site-units site)) unit-calls vec)
-        last-in (fn [c] (some-> (.get (.-values c) site) .-values last-of))
-        in? (fn [c] (some? (.get (.-values c) site)))]
-    (if (some? call)
-      (if-let [c (some #(when (and (= call (.-n %)) (in? %)) %) calls)]
-        (last-in c)
-        :not-recorded)
-      (let [cs (filter in? calls)]
-        (if (seq cs) (mapv last-in cs) :not-recorded)))))
+  :not-recorded where nothing is kept.
+
+  With ITERATION, what it evaluated to last in that iteration of a loop of
+  the call CALL, or of the last call - see `in-iteration'."
+  ([site call] (recorded-value site call nil))
+  ([site call iteration]
+   (let [calls (some-> (get @units (.get site-units site)) unit-calls vec)
+         last-in (fn [c] (some-> (.get (.-values c) site) .-values last-of))
+         in? (fn [c] (some? (.get (.-values c) site)))]
+     (cond
+       (some? iteration)
+       (if-let [c (if (some? call) (some #(when (= call (.-n %)) %) calls) (peek calls))]
+         (iteration-in c site iteration (when (in? c) {:value (last-in c)}))
+         :not-recorded)
+
+       (some? call)
+       (if-let [c (some #(when (and (= call (.-n %)) (in? %)) %) calls)]
+         (last-in c)
+         :not-recorded)
+
+       :else
+       (let [cs (filter in? calls)]
+         (if (seq cs) (mapv last-in cs) :not-recorded))))))
 
 (defn recorded-in
   "What the site SITE evaluated to last in the call CALL of the unit UNIT -
   which code evaluated in a call binds its locals to, see `eval-cljs-in-call'
-  in replique/debug.clj."
-  [unit call site]
-  (let [c (some #(when (= call (.-n %)) %) (some-> (get @units unit) unit-calls vec))]
-    (when-not c
-      (throw (ex-info (str "Call " call " is not kept any more") {:kind "unknown-call"})))
-    (some-> (.get (.-values c) site) .-values last-of)))
+  in replique/debug.clj - or in the iteration ITERATION of a loop of it, see
+  `in-iteration': :replique/not-recorded where it was not evaluated then."
+  ([unit call site] (recorded-in unit call site nil))
+  ([unit call site iteration]
+   (let [c (some #(when (= call (.-n %)) %) (some-> (get @units unit) unit-calls vec))]
+     (when-not c
+       (throw (ex-info (str "Call " call " is not kept any more") {:kind "unknown-call"})))
+     (let [last-value (some-> (.get (.-values c) site) .-values last-of)]
+       (if (some? iteration)
+         (let [v (iteration-in c site iteration
+                               (when (.get (.-values c) site) {:value last-value}))]
+           (if (= :not-recorded v) :replique/not-recorded v))
+         last-value)))))
+
+(defn loop-table
+  "What each iteration kept of a loop of the call CALL - the last one,
+  without - evaluated to, a row each - see replique.iterations/table. TABLE
+  says the loop: its :loop, the site of its name, its :iteration, as
+  `in-iteration' takes it without an :index, the names bound in it,
+  :columns, and how many values of a form are kept, :kept - and :only, for
+  the values of a single column, {index value}."
+  [call {:keys [loop iteration columns kept only]}]
+  (let [calls (some-> (get @units (.get site-units loop)) unit-calls vec)
+        c (if (some? call) (some #(when (= call (.-n %)) %) calls) (peek calls))]
+    (if c
+      (cond-> (iterations/table (kept-in c) iteration
+                                (mapv (fn [[name site]] [(symbol name) site]) columns) kept)
+        only iterations/by-iteration)
+      :not-recorded)))
+
+(defn first-where
+  "Of INDICES, the first iteration where (F index) is true - see
+  replique.iterations/first-where."
+  [f indices]
+  (iterations/first-where f indices))
 
 (defn- handle [{:keys [op unit call] :as msg}]
   (case op

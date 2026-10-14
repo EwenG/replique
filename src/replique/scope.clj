@@ -305,3 +305,21 @@
                     (if (= ::unknown kvs) ::unknown (apply array-map kvs)))
       (set? form) (let [xs (all form)] (if (= ::unknown xs) ::unknown (set xs)))
       :else form)))
+
+(defn names-by-span
+  "The names written in FORM, by their span: {span symbol}, each without its
+  metadata."
+  [form]
+  (cond
+    (symbol? form) (if-let [sp (span form)] {sp (with-meta form nil)} {})
+    (quoted? form) {}
+    (coll? form) (into {} (map names-by-span) (children form))
+    :else {}))
+
+(defn form-at
+  "The form written in FORM at the span AT, without its metadata - or nil."
+  [form at]
+  (cond
+    (= at (span form)) (cond-> form (instance? clojure.lang.IObj form) (with-meta nil))
+    (coll? form) (some #(form-at % at) (children form))
+    :else nil))

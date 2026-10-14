@@ -75,14 +75,17 @@
     (:taps source) (constantly taps)
     ;; what a form recorded evaluated to - see replique.debug
     ;; and with :arg, what the fn whose entry it is was called with, that param
-    (:site (:debug source)) (let [{:keys [site call arg]} (:debug source)]
+    ;; and what each iteration of a loop of a call did, a row each
+    (:loop (:debug source)) (let [{:keys [call] :as table} (:debug source)]
+                              (fn [] (debug/loop-table call table)))
+    (:site (:debug source)) (let [{:keys [site call arg iteration]} (:debug source)]
                               (if (some? arg)
-                                (fn [] (let [v (debug/recorded-value site call)]
+                                (fn [] (let [v (debug/recorded-value site call iteration)]
                                          (cond
                                            (not (vector? v)) :not-recorded
-                                           (some? call) (nth v arg :not-recorded)
+                                           (or (some? call) (some? iteration)) (nth v arg :not-recorded)
                                            :else (mapv #(nth % arg nil) v))))
-                                (fn [] (debug/recorded-value site call))))
+                                (fn [] (debug/recorded-value site call iteration))))
     ;; what a traced call was called with, returned or threw - see replique.trace
     (:trace source) (let [{:keys [call] :as what} (:trace source)]
                       (fn [] (trace/call-value call what)))

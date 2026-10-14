@@ -826,22 +826,6 @@
       (when (and call (= n (:return call)))
         (call-ended! unit c)))))
 
-(defn recorded-value
-  "What a view of what the site SITE evaluated to in the call CALL shows: the
-  last value, where it was evaluated more than once - or, without CALL, the
-  last value of each call kept, one per call, the last call last. And
-  :not-recorded where nothing is kept."
-  [site call]
-  (let [all @calls]
-    (if call
-      (if-let [values (get-in all [call :values site :values])]
-        (peek values)
-        :not-recorded)
-      (let [unit (:unit (get @sites site))
-            values (vec (keep #(peek (get-in all [% :values site :values]))
-                              (get @recorded unit)))]
-        (if (seq values) values :not-recorded)))))
-
 (defn- kept-in
   "What is kept of each site of the call CALL, as replique.iterations takes
   it: a fn of the site, nil where nothing is."
@@ -856,16 +840,16 @@
 (defn- loops-of
   "The loops of the code of the unit N - see `scope/loops' - whose first name
   bound each time round is a site, outermost first: each {:site :span
-  :spans}."
+  :spans}, and :sites, the sites of all its names."
   [n]
   (let [{:keys [form]} (get @units n)
         local-sites (into {} (for [[k s] @sites
                                    :when (and (= n (:unit s)) (= :local (:kind s)))]
                                [(span-of s) k]))]
     (vec (for [{:keys [names] :as l} (scope/loops form)
-               :let [site (some #(get local-sites (scope/span %)) names)]
-               :when site]
-           (-> l (dissoc :names) (assoc :site site))))))
+               :let [sites (vec (keep #(get local-sites (scope/span %)) names))]
+               :when (seq sites)]
+           (-> l (dissoc :names) (assoc :site (first sites) :sites sites))))))
 
 (defn- loops-said
   "The loops of the code of the unit N that went round in a call, as
@@ -882,9 +866,10 @@
 (defn- iterating
   "What says which values of a call of the unit N are of the iteration INDEX
   of the loop whose name is bound at the site SITE - {:loop :index}, the
-  sites of the names of the loops it is in, :enclosing, and :owners, of each
+  sites of the names of the loops it is in, :enclosing, :owners, of each
   site of the unit evaluated again each time round of one of these loops, the
-  innermost one's site."
+  innermost one's site, and :starts, the sites of all the names of each of
+  these loops - see `iterations/ranges'."
   [n {:keys [site index]}]
   (let [loops (loops-of n)
         it (or (some #(when (= site (:site %)) %) loops)
@@ -894,6 +879,7 @@
     {:loop site
      :index index
      :enclosing (mapv :site (remove #{it} chain))
+     :starts (into {} (map (juxt :site :sites)) (cons it chain))
      :owners (into {} (for [[k s] @sites
                             :when (= n (:unit s))
                             :let [owner (last (filter #(in? % s) chain))]
@@ -906,13 +892,128 @@
   {:times :value}, or nil where it was not evaluated then, or
   ::iterations/not-kept - or DEFAULT where it is not evaluated again each time
   round. Refuses an iteration not kept."
-  [{:keys [loop index enclosing owners]} kept-of]
-  (let [ranges (or (iterations/ranges kept-of loop index enclosing)
-                   (refuse :unknown-iteration "Iteration " index " is not kept"))]
-    (fn [site default]
-      (if-let [owner (get owners site)]
-        (iterations/value-in (kept-of site) (get ranges owner))
-        default))))
+  [iterating kept-of]
+  (or (iterations/picker kept-of iterating)
+      (refuse :unknown-iteration "Iteration " (:index iterating) " is not kept")))
+
+(defn- iteration-of
+  "What a site of the unit N evaluated to in a call: the value it is, of the
+  call C, where it was evaluated in it - of the iteration ITERATION,
+  {:site :index}, of a loop of it, where there is one. Or :not-recorded."
+  [n c site iteration]
+  (let [call (get @calls c)
+        values (get-in call [:values site :values])
+        v (if iteration
+            ((in-iteration (iterating n iteration) (kept-in call))
+             site (when values {:value (peek values)}))
+            (when values {:value (peek values)}))]
+    (if (map? v) (:value v) :not-recorded)))
+
+(defn recorded-value
+  "What a view of what the site SITE evaluated to in the call CALL shows: the
+  last value, where it was evaluated more than once - or, without CALL, the
+  last value of each call kept, one per call, the last call last. And
+  :not-recorded where nothing is kept.
+
+  With ITERATION, {:site :index}, what it evaluated to last in that iteration
+  of a loop of the call CALL, or of the last call - see replique.iterations."
+  ([site call] (recorded-value site call nil))
+  ([site call iteration]
+   (let [all @calls
+         unit (:unit (get @sites site))]
+     (cond
+       iteration (iteration-of unit (or call (peek (get @recorded unit))) site iteration)
+       call (if-let [values (get-in all [call :values site :values])]
+              (peek values)
+              :not-recorded)
+       :else (let [values (vec (keep #(peek (get-in all [% :values site :values]))
+                                     (get @recorded unit)))]
+               (if (seq values) values :not-recorded))))))
+
+(defn- columns-of
+  "The names of the code of the unit N bound each time round of the loop
+  ITERATING says - see `iterating' - and in it, in the order written: [name
+  site] pairs."
+  [n {:keys [loop owners]}]
+  (let [names (scope/names-by-span (:form (get @units n)))]
+    (->> owners
+         (keep (fn [[k owner]]
+                 (let [site (get @sites k)]
+                   (when (and (= loop owner) (= :local (:kind site)))
+                     (when-let [name (get names (span-of site))]
+                       [[(:line site) (:column site)] [name k]])))))
+         (sort-by first)
+         (mapv second))))
+
+(defn- in-loop?
+  "Whether the site K of the unit N is evaluated again each time round of the
+  loop whose name is bound at the site SITE."
+  [n site k]
+  (let [{:keys [line column]} (get @sites k)
+        l (some #(when (= site (:site %)) %) (loops-of n))]
+    (boolean (and l line (some #(scope/in-span? % [line column]) (:spans l))))))
+
+(defn- loop-plan
+  "What `table' says the loop of the unit N whose name is bound at the site
+  SITE with: the loop, as `iterating' says it, and its :columns - and of the
+  site FORM, where it is evaluated again each time round and is not a name of
+  them, a column too, after them, named the code written there: what it
+  evaluated to last in each iteration. With ONLY, that column alone, and
+  :only - where there is one."
+  [n site form only]
+  (let [it (iterating n {:site site :index 1})
+        columns (columns-of n it)
+        code (when (and form (in-loop? n site form) (not (some #(= form (second %)) columns)))
+               (scope/form-at (:form (get @units n)) (span-of (get @sites form))))]
+    (cond-> {:iteration (cond-> (dissoc it :index) code (assoc-in [:owners form] site))
+             :columns (cond-> columns code (conj [code form]))}
+      (and code only) (assoc :columns [[code form]] :only true))))
+
+(defn loop-table
+  "What each iteration of the loop whose name is bound at the site SITE
+  evaluated to in the call CALL - the last one, without - a row each: see
+  `iterations/table'. The iterations kept only. With FORM, a site evaluated
+  in the loop, what it evaluated to too: see `loop-plan' - and with ONLY,
+  that alone, {index value}, of the iterations it was evaluated in."
+  ([site call] (loop-table site call nil nil))
+  ([site call form only]
+   (let [unit (or (:unit (get @sites site))
+                  (refuse :unknown-iteration "No site " site))
+         plan (loop-plan unit site form only)
+         c (or call (peek (get @recorded unit)))
+         rows (iterations/table (kept-in (get @calls c)) (:iteration plan) (:columns plan)
+                                values-kept)]
+     (if (:only plan) (iterations/by-iteration rows) rows))))
+
+(defn- for-site
+  "The iteration ITERATING says - see `iterating' - as the runtime takes it
+  for the site SITE alone."
+  [iterating site]
+  (-> iterating
+      (update :owners #(vec (select-keys % [site])))
+      (update :starts vec)))
+
+(defn for-runtime
+  "The :debug source of a view of a ClojureScript value recorded, SOURCE, as
+  the runtime takes it: an :iteration, or a :loop, said with what the runtime
+  does not know - see `iterating'."
+  [{:keys [site iteration loop only] :as source}]
+  (let [unit (:unit (get @sites (or site loop)))]
+    (cond
+      (and site iteration)
+      (assoc source :iteration (for-site (iterating unit iteration) site))
+
+      loop
+      (-> (loop-plan unit loop site only)
+          (update-in [:iteration :owners] vec)
+          (update-in [:iteration :starts] vec)
+          (update :columns (fn [cs] (mapv (fn [[name site]]
+                                              [(if (symbol? name) (str name) (pr-str name)) site])
+                                            cs)))
+          (merge (select-keys source [:call]))
+          (assoc :loop loop :kept values-kept))
+
+      :else source)))
 
 (defn- entered!
   "The thread entered the fn of the site N, called with ARGS - or with what
@@ -1480,12 +1581,18 @@
 
 (defn recorded-in
   "What the site SITE evaluated to last in the call C - which code evaluated
-  in a call binds its locals to, see `eval-in-call'."
-  [c site]
-  (let [call (or (get @calls c)
-                 (throw (ex-info (str "Call " c " is not kept any more")
-                                 {:replique/error :unknown-call})))]
-    (peek (get-in call [:values site :values]))))
+  in a call binds its locals to, see `eval-in-call' - or in its iteration
+  ITERATION, {:site :index}, of a loop: :replique/not-recorded where it was
+  not evaluated in it."
+  ([c site] (recorded-in c site nil))
+  ([c site iteration]
+   (let [call (or (get @calls c)
+                  (throw (ex-info (str "Call " c " is not kept any more")
+                                  {:replique/error :unknown-call})))]
+     (if iteration
+       (let [v (iteration-of (:unit call) c site iteration)]
+         (if (= :not-recorded v) :replique/not-recorded v))
+       (peek (get-in call [:values site :values]))))))
 
 (defn- call-bindings
   "The bindings of a let binding the locals of the code of the unit UNIT in
@@ -1563,8 +1670,9 @@
 (defn eval-in-call
   "Evaluate FORM, read by a repl pointed at a call of the recorded unit UNIT -
   see `#replique/call' - with the locals of its code in scope at LINE and
-  COLUMN bound to what they were in the call CALL, or in the last call kept."
-  [{:keys [unit call line column]} form]
+  COLUMN bound to what they were in the call CALL, or in the last call kept -
+  in its iteration ITERATION, {:site :index}, of a loop, where there is one."
+  [{:keys [unit call line column iteration]} form]
   (let [{:keys [record dialect]} (get @units unit)]
     (when-not record
       (throw (ex-info (str "Unit " unit " does not record any more - this repl evaluates in"
@@ -1579,8 +1687,12 @@
       (when-not (contains? @calls c)
         (throw (ex-info (str "Call " c " is not kept any more") {:replique/error :unknown-call})))
       (let [values (:values (get @calls c))
-            [bindings unknown] (call-bindings unit [line column] #(contains? values %)
-                                              (fn [n] `(recorded-in ~c ~n)) resolve)]
+            had? (if iteration
+                   (let [pick (in-iteration (iterating unit iteration) (kept-in (get @calls c)))]
+                     #(map? (pick % (when (contains? values %) {}))))
+                   #(contains? values %))
+            [bindings unknown] (call-bindings unit [line column] had?
+                                              (fn [n] `(recorded-in ~c ~n ~iteration)) resolve)]
         (try
           (eval `(let ~bindings ~form))
           (catch clojure.lang.Compiler$CompilerException e
@@ -1603,8 +1715,9 @@
   what replique.debug/recorded-in answers there. Which of them there are is
   asked of the runtime too. A local whose value is not known is bound to
   :replique/not-recorded, ClojureScript compiling a name nothing binds to
-  undefined rather than refusing it."
-  [{:keys [unit call line column]} form opts]
+  undefined rather than refusing it. In its iteration ITERATION of a loop,
+  {:site :index}, where there is one."
+  [{:keys [unit call line column iteration]} form opts]
   (let [{:keys [record dialect target]} (get @units unit)]
     (when-not record
       (throw (ex-info (str "Unit " unit " does not record any more - this repl evaluates in"
@@ -1617,14 +1730,17 @@
       (throw (ex-info (str "Unit " unit " was recorded in the " (name target) " runtime, and this"
                            " repl is on the " (name cljs/*target*) " one")
                       {:replique/error :unavailable})))
-    (let [{c :call values :values} (cljs-recorded unit call nil)
+    (let [it (when iteration (iterating unit iteration))
+          {c :call values :values} (cljs-recorded unit call it)
           _ (when-not c
               (throw (ex-info (str "Unit " unit " was not called yet")
                               {:replique/error :unknown-call})))
-          had (set (map :site values))
+          had (set (keep #(when-not (:not-kept %) (:site %)) values))
           ns (cljs/current-ns)
           [bindings unknown] (call-bindings unit [line column] had
-                                            (fn [n] (list 'replique.debug/recorded-in unit c n))
+                                            (fn [n]
+                                              (apply list 'replique.debug/recorded-in unit c n
+                                                     (when it [(for-site it n)])))
                                             #(some? (cljs/resolve-var ns %)))]
       (cljs/eval-form (list 'let (into bindings (mapcat (fn [s] [s :replique/not-recorded]))
                                        (sort unknown))
@@ -1801,7 +1917,7 @@
                                                            [:line :column :end-line :end-column])]
                                   :when picked]
                               (if (= ::iterations/not-kept picked)
-                                (merge {:site site :kept false} where)
+                                (merge {:site site :not-kept true} where)
                                 (entered-said (get @sites site)
                                               (merge {:site site :times (:times picked)
                                                       :value (printed-briefly (:value picked))}
@@ -1810,6 +1926,94 @@
             c (assoc :call c)
             iteration (assoc :iteration {:site (:loop iteration)
                                          :index (:index iteration)})))))))
+
+;; The first iteration of a loop of a recorded call where something holds:
+;; CODE, evaluated with the locals of the code in scope at :line and :column
+;; bound to what they were in each iteration kept - after the iteration
+;; :from, or before it, :backward, where there is one - as `eval-in-call'
+;; binds them.
+
+(defn- searched
+  "The indices of the iterations KEPT - [first last] ranges - to look at
+  after the iteration FROM, or before it, BACKWARD, in that order."
+  [kept from backward]
+  (let [all (for [[a b] kept i (range a (inc b))] i)]
+    (cond
+      (nil? from) (if backward (reverse all) all)
+      backward (reverse (filter #(< % from) all))
+      :else (filter #(> % from) all))))
+
+(defn- find-clj-iteration
+  [unit c loop [line column] code indices]
+  (let [ns (or (unit-ns unit) (refuse :unknown-unit "The namespace of unit " unit " is gone"))
+        values (:values (get @calls c))
+        k (gensym "iteration")
+        [bindings _] (call-bindings unit [line column] #(contains? values %)
+                                    (fn [n] `(recorded-in ~c ~n {:site ~loop :index ~k}))
+                                    #(binding [*ns* ns] (resolve %)))
+        f (binding [*ns* ns]
+            (eval `(fn [~k] (let ~bindings ~(read-string code)))))]
+    (iterations/first-where f indices)))
+
+(defn- find-cljs-iteration
+  [unit {c :call values :values} loop [line column] code indices]
+  (let [{:keys [target]} (get @units unit)
+        ns (unit-ns-name unit)
+        it (iterating unit {:site loop :index 1})
+        had (set (keep #(when-not (:not-kept %) (:site %)) values))
+        k (gensym "iteration")]
+    (binding [cljs/*target* target]
+      (cljs/with-target-lock*
+       #(cljs/with-ns* ns
+          (fn []
+            (let [[form] (cljs/read-form (cljs/reader code) ::eof)
+                  [bindings unknown] (call-bindings
+                                      unit [line column] had
+                                      (fn [n] (list 'replique.debug/recorded-in unit c n
+                                                    (assoc (for-site it n) :index k)))
+                                      (fn [s] (some? (cljs/resolve-var ns s))))
+                  {:keys [status value]}
+                  (cljs/eval-form
+                   (list 'replique.debug/first-where
+                         (list 'fn [k] (list 'let (into bindings
+                                                        (mapcat (fn [s] [s :replique/not-recorded]))
+                                                        (sort unknown))
+                                             form))
+                         (vec indices)))]
+              (if (= :success status)
+                (edn/read-string value)
+                (refuse :runtime value)))))))))
+
+(defmethod protocol/handle :debug-find-iteration [_ msg]
+  (let [{:keys [unit call site from backward line column code]} msg]
+    (when-not (and (integer? unit) (integer? site) (or (nil? call) (integer? call))
+                   (or (nil? from) (integer? from)) (pos-int? line) (pos-int? column)
+                   (string? code))
+      (refuse :invalid-message "An iteration is found in a :unit, a :call or the last,"
+              " of the loop whose name is bound at :site, after the iteration :from, by"
+              " the :code evaluated at :line and :column, got: "
+              (pr-str (select-keys msg [:unit :call :site :from :line :column :code]))))
+    (when-not (:record (get @units unit))
+      (refuse :unknown-unit "Unit " unit " does not record"))
+    (let [unit (long unit), site (long site), call (some-> call long)
+          pos [line column]
+          answer (if (= :cljs (:dialect (get @units unit)))
+                   (let [said (cljs-recorded unit call nil)
+                         {:keys [kept]} (or (some #(when (= site (:site %)) %) (:loops said))
+                                            (refuse :unknown-iteration "Site " site
+                                                    " starts no iteration of a loop of unit " unit))]
+                     (find-cljs-iteration unit said site pos code (searched kept from backward)))
+                   (let [c (or call (peek (get @recorded unit))
+                               (refuse :unknown-call "Unit " unit " was not called yet"))
+                         _ (when-not (contains? @calls c)
+                             (refuse :unknown-call "Call " c " is not kept any more"))
+                         {:keys [kept]} (or (some #(when (= site (:site %)) %)
+                                                  (loops-said unit #(get-in @calls [c :values % :times])))
+                                            (refuse :unknown-iteration "Site " site
+                                                    " starts no iteration of a loop of unit " unit))]
+                     (find-clj-iteration unit c site pos code (searched kept from backward))))]
+      (cond-> {:index (:index answer)}
+        (:error answer) (assoc :error (:error answer))))))
 
 (defmethod protocol/handle :debug-restart [_ msg]
   (let [id (thread-of msg)

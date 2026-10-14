@@ -147,22 +147,32 @@
     ;; refresh, since the same frame of the same thread is another frame each
     ;; time the thread stops - and what changed since the last stop is what
     ;; a refresh shows
-    (:debug source) (let [{:keys [thread frame value site call arg]} (:debug source)]
-                      (when-not (and (or (integer? thread) (integer? site))
+    (:debug source) (let [{:keys [thread frame value site call arg iteration loop only]} (:debug source)
+                          iteration (when iteration
+                                      {:site (:site iteration) :index (:index iteration)})]
+                      (when-not (and (or (integer? thread) (integer? site) (integer? loop))
                                      (or (nil? call) (integer? call))
-                                     (or (nil? arg) (nat-int? arg)))
+                                     (or (nil? arg) (nat-int? arg))
+                                     (or (nil? iteration)
+                                         (and (integer? (:site iteration))
+                                              (integer? (:index iteration)))))
                         (refuse :invalid-message "A view of a frame names its :thread, and"
                                 " one of a form recorded its :site and :call - and :arg, a"
-                                " param of a fn entered - got: "
-                                (pr-str (:debug source))))
+                                " param of a fn entered, and :iteration, {:site :index}, an"
+                                " iteration of a loop - or of a loop recorded, its :loop,"
+                                " got: " (pr-str (:debug source))))
                       (cond
+                        ;; what each iteration of a loop did, a row each - and
+                        ;; the form of :site, in it, or with :only that alone
+                        loop #(debug/loop-table (long loop) (some-> call long) (some-> site long) only)
                         ;; a call's args, or each call's, the last call last
-                        (and site arg) #(let [v (debug/recorded-value (long site) (some-> call long))]
+                        (and site arg) #(let [v (debug/recorded-value (long site) (some-> call long)
+                                                                      iteration)]
                                           (cond
                                             (not (vector? v)) :not-recorded
-                                            call (nth v arg :not-recorded)
+                                            (or call iteration) (nth v arg :not-recorded)
                                             :else (mapv (fn [args] (nth args arg nil)) v)))
-                        site #(debug/recorded-value (long site) (some-> call long))
+                        site #(debug/recorded-value (long site) (some-> call long) iteration)
                         value #(debug/stop-value (long thread))
                         :else #(debug/frame-value (long thread) (long (or frame 0)))))
     (:trace source) (let [{:keys [call args value arg] :as what} (:trace source)]
@@ -341,7 +351,8 @@
         (let [shown (in-runtime! (merge (opts-of msg)
                                         {:op "open" :view id :history history
                                          :source (cond-> source
-                                                   (:var source) (update :var protocol/as-name))})
+                                                   (:var source) (update :var protocol/as-name)
+                                                   (:debug source) (update :debug debug/for-runtime))})
                                  nil)]
           (swap! views assoc id (assoc base :dialect :cljs :target cljs/*target*
                                        :page (cljs/page)))

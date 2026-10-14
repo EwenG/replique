@@ -626,7 +626,7 @@
                  (let [said (ask! c {:op :debug-recorded :unit unit :id id
                                      :iteration {:site site :index index}})]
                    (assoc said :by-place (into {} (map (fn [v] [[(:line v) (:column v)]
-                                                                (if (false? (:kept v))
+                                                                (if (:not-kept v)
                                                                   :not-kept
                                                                   [(:value v) (:times v)])]))
                                                (:values said)))))]
@@ -679,7 +679,97 @@
                 (is (= "unknown-iteration" (:error (ask! c {:op :debug-recorded :unit unit :id 7
                                                             :iteration {:site i :index 12}}))))
                 (is (= "unknown-iteration" (:error (ask! c {:op :debug-recorded :unit unit :id 8
-                                                            :iteration {:site 999999 :index 1}})))))))
+                                                            :iteration {:site 999999 :index 1}})))))
+              (let [site-at (fn [line column]
+                              (:site (some #(when (= [line column] [(:line %) (:column %)]) %)
+                                           (:values (recorded c unit nil 9)))))
+                    square (site-at 6 43)]
+                (testing "a value of an iteration is one to browse"
+                  (is (= "361" (get-in (ask! c {:op :inspect :id 10
+                                                :source {:debug {:site square
+                                                                 :iteration {:site i :index 20}}}})
+                                       [:root :value])))
+                  (is (= ":not-recorded"
+                         (get-in (ask! c {:op :inspect :id 11
+                                          :source {:debug {:site square
+                                                           :iteration {:site i :index 26}}}})
+                                 [:root :value]))))
+                (testing "and so is what each iteration kept did, a row each"
+                  (is (= "[{:iteration 1, x 1, y 0} {:iteration 2, x 2, y 1} {:iteration 3, x 3, y 2}]"
+                         (get-in (ask! c {:op :inspect :id 12 :source {:debug {:loop x}}})
+                                 [:root :value])))
+                  (testing "and of a form in it, what it evaluated to last in each"
+                    (is (= ["{:iteration 1, x 1, y 0, (* x y) 0}" "{:iteration 2, x 2, y 1}"
+                            "{:iteration 3, x 3, y 2, (* x y) 6}"]
+                           (mapv :value (:children (ask! c {:op :inspect :id 12
+                                                            :source {:debug {:loop x
+                                                                             :site (site-at 4 20)}}})))))
+                    (is (= "{1 0, 3 6}"
+                           (get-in (ask! c {:op :inspect :id 12
+                                            :source {:debug {:loop x :site (site-at 4 20)
+                                                             :only true}}})
+                                   [:root :value])))
+                    ;; not of a form outside it
+                    (is (some? (site-at 5 3)))
+                    (is (= "[{:iteration 1, x 1, y 0} {:iteration 2, x 2, y 1} {:iteration 3, x 3, y 2}]"
+                           (get-in (ask! c {:op :inspect :id 12
+                                            :source {:debug {:loop x :site (site-at 5 3)
+                                                             :only true}}})
+                                   [:root :value]))))
+                  ;; the ones kept
+                  (is (= 19 (get-in (ask! c {:op :inspect :id 13 :source {:debug {:loop i}}})
+                                    [:root :count])))))
+              (testing "a repl evaluates in an iteration"
+                (let [f (client/repl-client info {:call {:unit unit :line 4 :column 20
+                                                         :iteration {:site y :index 5}}}
+                                            60000)]
+                  (try
+                    (is (= {:site y :index 5} (:iteration (:call (:prompt f)))))
+                    (is (= "[[1 2 3] 3 1]" (ret f "[xs x y]")))
+                    (finally (disconnect f)))))
+              (testing "the first iteration where something holds"
+                (let [find (fn [site code & {:as more}]
+                             (ask! c (merge {:op :debug-find-iteration :unit unit :site site
+                                             :line 4 :column 20 :code code :id 14}
+                                            more)))]
+                  (is (= 3 (:index (find y "(= y 1)"))))
+                  (is (= 5 (:index (find y "(= y 1)" :from 3))))
+                  (is (= 3 (:index (find y "(= y 1)" :from 5 :backward true))))
+                  (is (nil? (:index (find y "(= y 7)"))))
+                  (is (= 22 (:index (find i "(> i 20)" :line 6 :column 43))))
+                  (is (nil? (:index (find i "(= i 12)" :line 6 :column 43))))
+                  (is (re-find #"boom" (:error (find y "(throw (ex-info \"boom\" {}))"))))))))
+          (finally (disconnect r) (disconnect c) (.delete file)))))))
+
+(deftest an-iteration-starts-with-the-first-name-bound
+  (if-not (debug/instrumenting?)
+    (println "replique.debug-test: no compiler to record with - run with :analysis")
+    (client/with-process [info nil]
+      (let [r (client/repl-client info nil 60000)
+            c (control info)
+            file (java.io.File/createTempFile "iterations" ".clj")]
+        (try
+          (ret r (str "#replique/src {:file " (pr-str (str file)) " :line 1"
+                      " :instrument true :entry false :record true}\n"
+                      "(defn dl [ms]
+  (doall (for [{:keys [a] :as m} ms]
+           (inc a))))"))
+          (let [unit (:unit (await-event c "debug-instrumented"))
+                _ (ret r "(dl [{:a 1} {:a 2} {:a 3}])")
+                {:keys [loops values]} (recorded c unit nil 1)
+                loop-site (:site (first loops))
+                m (:site (some #(when (= [2 31] [(:line %) (:column %)]) %) values))
+                m-in (fn [index id]
+                       (get-in (ask! c {:op :inspect :id id
+                                        :source {:debug {:site m
+                                                         :iteration {:site loop-site :index index}}}})
+                               [:root :value]))]
+            (testing "the :as of a map is bound before its keys, and is of the same iteration"
+              (is (= "{:a 1}" (m-in 1 2)))
+              (is (= "{:a 3}" (m-in 3 3)))
+              (is (= "[{:iteration 1, a 1, m #} {:iteration 2, a 2, m #} {:iteration 3, a 3, m #}]"
+                     (get-in (ask! c {:op :inspect :id 4 :source {:debug {:loop loop-site}}})
+                             [:root :value])))))
           (finally (disconnect r) (disconnect c) (.delete file)))))))
 
 (deftest what-a-function-recorded-is-kept-call-by-call

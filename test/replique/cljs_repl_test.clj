@@ -1248,7 +1248,71 @@
               (is (= {[5 10] ["19" 1] [6 43] ["361" 1]}
                      (select-keys (:by-place (in unit i 20 4)) [[5 10] [6 43]])))
               (is (= "unknown-iteration" (:error (ask! c {:op :debug-recorded :unit unit :id 5
-                                                          :iteration {:site i :index 12}}))))))
+                                                          :iteration {:site i :index 12}})))))
+            (let [square (:site (some #(when (= [6 43] [(:line %) (:column %)]) %)
+                                      (:values (recorded-by-place c unit nil 6))))
+                  inspect (fn [debug id]
+                            (:root (ask! c {:op :inspect :dialect :cljs :target :node
+                                            :source {:debug debug} :id id})))]
+              (testing "a value of an iteration is one to browse"
+                (is (= "361" (:value (inspect {:site square :iteration {:site i :index 20}} 7)))))
+              (testing "and so is what each iteration kept did, a row each"
+                (is (= "[{:iteration 1, x 1, y 0} {:iteration 2, x 2, y 1} {:iteration 3, x 3, y 2}]"
+                       (:value (inspect {:loop x} 8))))
+                (is (= ["{:iteration 1, x 1, y 0, (* x y) 0}" "{:iteration 2, x 2, y 1}"
+                        "{:iteration 3, x 3, y 2, (* x y) 6}"]
+                       (mapv :value (:children
+                                     (ask! c {:op :inspect :dialect :cljs :target :node :id 8
+                                              :source {:debug {:loop x
+                                                               :site (:site (some #(when (= [4 20] [(:line %) (:column %)]) %)
+                                                                                  (:values (recorded-by-place c unit nil 6))))}}})))))
+                (is (= "{1 0, 3 6}"
+                       (:value (inspect {:loop x :only true
+                                         :site (:site (some #(when (= [4 20] [(:line %) (:column %)]) %)
+                                                            (:values (recorded-by-place c unit nil 6))))}
+                                        8))))
+                (is (= 19 (:count (inspect {:loop i} 9))))))
+            (testing "a repl evaluates in an iteration"
+              (with-repl [f {:dialect :cljs :target :node
+                             :call {:unit unit :line 4 :column 20 :iteration {:site y :index 5}}}]
+                (is (= "[[1 2 3] 3 1]" (:value (frame-tagged (eval! f "[xs x y]") "ret"))))))
+            (testing "the first iteration where something holds"
+              (let [find (fn [site code & {:as more}]
+                           (ask! c (merge {:op :debug-find-iteration :unit unit :site site
+                                           :line 4 :column 20 :code code :id 10}
+                                          more)))]
+                (is (= 3 (:index (find y "(= y 1)"))))
+                (is (= 5 (:index (find y "(= y 1)" :from 3))))
+                (is (= 3 (:index (find y "(= y 1)" :from 5 :backward true))))
+                (is (nil? (:index (find y "(= y 7)"))))
+                (is (= 22 (:index (find i "(> i 20)" :line 6 :column 43)))))))
+          (finally (disconnect c)))))))
+
+(deftest test-a-clojurescript-iteration-starts-with-the-first-name-bound
+  (when (compiling?)
+    (with-repl [r]
+      (let [c (client/control-client @the-process)]
+        (try
+          (eval! r "#replique/ns rec.iteras\n(def g 1)")
+          (eval! r (record-src 1 1 (str "(defn dl [ms]\n"
+                                        "  (doall (for [{:keys [a] :as m} ms]\n"
+                                        "           (inc a))))")))
+          (let [unit (:unit (await-event c "debug-instrumented"))
+                _ (eval! r "(dl [{:a 1} {:a 2} {:a 3}])")
+                _ (loop [] (when-not (= {:unit unit :calls 1}
+                                        (select-keys (await-event c "debug-recorded") [:unit :calls]))
+                             (recur)))
+                {:keys [loops values]} (recorded-by-place c unit nil 1)
+                loop-site (:site (first loops))
+                m (:site (some #(when (= [2 31] [(:line %) (:column %)]) %) values))
+                inspect (fn [debug id]
+                          (:value (:root (ask! c {:op :inspect :dialect :cljs :target :node
+                                                  :source {:debug debug} :id id}))))]
+            (testing "the :as of a map is bound before its keys, and is of the same iteration"
+              (is (= "{:a 1}" (inspect {:site m :iteration {:site loop-site :index 1}} 2)))
+              (is (= "{:a 3}" (inspect {:site m :iteration {:site loop-site :index 3}} 3)))
+              (is (= "[{:iteration 1, a 1, m #} {:iteration 2, a 2, m #} {:iteration 3, a 3, m #}]"
+                     (inspect {:loop loop-site} 4)))))
           (finally (disconnect c)))))))
 
 (deftest test-a-repl-evaluates-in-a-recorded-clojurescript-call

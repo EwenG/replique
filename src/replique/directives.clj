@@ -290,16 +290,17 @@
 ;;
 ;; and what it reads after that is evaluated with the locals in scope at that
 ;; place bound to what they were in that call - in the last call kept when
-;; the form is evaluated, without a :call - see
+;; the form is evaluated, without a :call - or in its iteration
+;; :iteration {:site :index} of a loop, with one - see
 ;; `replique.debug/eval-in-call'. It moves the repl to the namespace of the
 ;; code. #replique/call nil, or #replique/frame nil, points it back at nothing.
-(defrecord CallDirective [unit call line column])
+(defrecord CallDirective [unit call line column iteration])
 
 (defn call-directive [m]
   (let [bad (fn [message]
               (throw (ex-info message {:replique/error :invalid-call-directive})))]
     (cond
-      (nil? m) (->CallDirective nil nil nil nil)
+      (nil? m) (->CallDirective nil nil nil nil nil)
 
       (not (map? m))
       (bad (str "#replique/call takes a map, or nil, got: " (pr-str m)))
@@ -316,8 +317,16 @@
       (bad (str "#replique/call takes the :line and :column of the place of the code"
                 " whose locals are bound, got: " (pr-str (select-keys m [:line :column]))))
 
+      (not (or (nil? (:iteration m))
+               (and (map? (:iteration m)) (integer? (get-in m [:iteration :site]))
+                    (pos-int? (get-in m [:iteration :index])))))
+      (bad (str "#replique/call takes the :iteration of a loop of the call, {:site :index},"
+                " or none, got: " (pr-str (:iteration m))))
+
       :else (->CallDirective (long (:unit m)) (some-> (:call m) long)
-                             (long (:line m)) (long (:column m))))))
+                             (long (:line m)) (long (:column m))
+                             (when-let [{:keys [site index]} (:iteration m)]
+                               {:site (long site) :index (long index)})))))
 
 (def data-readers
   "The tags a repl reads on top of whatever the code it is reading uses.

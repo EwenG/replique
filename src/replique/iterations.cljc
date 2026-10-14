@@ -58,22 +58,39 @@
     (if (pos? times) [[1 times]] [])
     [[1 (dec kept)] [(inc (- times kept)) times]]))
 
+(defn- first-bound
+  "Of the sites of the names a loop binds each time round, SITES, the one
+  bound first each time round - the one whose first value is numbered lowest
+  - or nil where none is kept. Not always the first written: a map pattern
+  binds its :as before its keys."
+  [kept-of sites]
+  (some->> (seq (keep (fn [site]
+                        (when-let [entry (first (:head (kept-of site)))]
+                          [(number entry) site]))
+                      sites))
+           (apply min-key first)
+           second))
+
 (defn ranges
   "The numbers of the values of the iteration INDEX, from 1, of the loop
   whose name was bound at the site LOOP, from the first one to the one just
   after the last - or nil, for the last iteration of a loop in nothing - and
   of the iteration of each loop of ENCLOSING it is in, the sites their names
-  were bound at: {site [from to]}. KEPT-OF answers what is kept of a site.
+  were bound at: {site [from to]}. KEPT-OF answers what is kept of a site;
+  STARTS, a map or [site sites] pairs, the sites of all the names each loop
+  binds each time round, of which the one bound first starts an iteration.
 
   Nil where that is not kept."
-  [kept-of loop index enclosing]
-  (let [kept (kept-of loop)
+  [kept-of {:keys [loop index enclosing starts]}]
+  (let [starts (into {} starts)
+        kept-of-loop (fn [site] (kept-of (or (first-bound kept-of (get starts site)) site)))
+        kept (kept-of-loop loop)
         from (when kept (nth-number kept index))
         last? (and kept (= index (:times kept)))
         to (when (and kept (not last?)) (nth-number kept (inc index)))
         around (into {}
                      (map (fn [site]
-                            (let [kept (kept-of site)
+                            (let [kept (kept-of-loop site)
                                   es (when kept (entries kept))
                                   start (some-> (last (take-while #(<= (number %) from) es)) number)
                                   end (some-> (first (drop-while #(<= (number %) from) es)) number)]
@@ -87,11 +104,84 @@
 (defn value-in
   "What is kept of KEPT between the numbers FROM and TO, TO nil for no end:
   {:times :value}, the value the last one, or nil where there is none - or
-  ::not-kept where one may not be kept."
+  ::not-kept where one may not be kept. Nil for KEPT nil, nothing kept."
   [kept [from to]]
-  (if (may-miss? kept from to)
-    ::not-kept
+  (cond
+    (nil? kept) nil
+    (may-miss? kept from to) ::not-kept
+    :else
     (let [in (filterv #(and (<= from (number %)) (or (nil? to) (< (number %) to)))
                       (entries kept))]
       (when (seq in)
         {:times (count in) :value (nth (peek in) 1)}))))
+
+(defn picker
+  "A fn answering, of a site, what it evaluated to in the iteration ITERATION
+  says - {:loop :index :enclosing :owners :starts}, the site of a name bound
+  each time round of the loop, the index of the iteration, the sites of the
+  loops it is in, of each site evaluated again each time round of one of
+  these, the innermost one's: a map, or [site owner] pairs, and the :starts
+  `ranges' takes. Of a call of which
+  KEPT-OF says what is kept: {:times :value}, or nil where the site was not
+  evaluated then, or ::not-kept - or DEFAULT where it is not evaluated again
+  each time round.
+
+  Nil where the iteration is not kept."
+  [kept-of {:keys [owners] :as iteration}]
+  (when-let [ranges (ranges kept-of iteration)]
+    (let [owners (into {} owners)]
+      (fn [site default]
+        (if-let [owner (get owners site)]
+          (value-in (kept-of site) (get ranges owner))
+          default)))))
+
+(defn kept-indices
+  "The iterations kept of a loop whose name is bound at the site LOOP, of
+  which KEPT-OF says what is kept, as many values of a form as KEPT being
+  kept first and as many last: their indices, from 1."
+  [kept-of loop kept]
+  (vec (for [[from to] (kept-iterations (:times (kept-of loop) 0) kept)
+             i (range from (inc to))]
+         i)))
+
+(defn table
+  "What the iterations kept of a loop of a call evaluated to, as rows - a map
+  each, of :iteration, the index, and of each name of COLUMNS, [name site]
+  pairs, what its site evaluated to then, where it was evaluated then and
+  that is kept. ITERATION says the loop, as `picker' takes it, without an
+  :index; KEPT-OF what is kept of the call, as many values of a form as KEPT
+  being kept first and as many last."
+  [kept-of iteration columns kept]
+  (vec (for [index (kept-indices kept-of (:loop iteration) kept)
+             :let [pick (picker kept-of (assoc iteration :index index))]
+             :when pick]
+         (apply array-map :iteration index
+                (mapcat (fn [[name site]]
+                          (let [v (pick site nil)]
+                            (when (map? v) [name (:value v)])))
+                        columns)))))
+
+(defn first-where
+  "Of INDICES, the first where (F index) is true - {:index i}, or {:index nil}
+  - with the message of the first exception F threw, :error, where it threw
+  one and was true for none."
+  [f indices]
+  (loop [[i & more] indices
+         error nil]
+    (if (nil? i)
+      (cond-> {:index nil} error (assoc :error error))
+      (let [[found thrown] (try [(f i) nil]
+                                (catch #?(:clj Throwable :cljs :default) e
+                                  [nil (or (ex-message e) (str e))]))]
+        (if found
+          {:index i}
+          (recur more (or error thrown)))))))
+
+(defn by-iteration
+  "Of ROWS of a `table' of a single column, what it is in each row where it
+  is there: {index value}, by index."
+  [rows]
+  (into (sorted-map)
+        (keep (fn [row] (when-let [[_ v] (first (dissoc row :iteration))]
+                          [(:iteration row) v])))
+        rows))
