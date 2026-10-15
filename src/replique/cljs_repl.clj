@@ -35,7 +35,6 @@
             [replique.cljs :as cljs]
             [replique.cljs-analysis :as cljs-analysis]
             [replique.debug :as debug]
-            [replique.directives :as directives]
             [replique.hooks :as hooks]
             [replique.inspect :as inspect]
             [replique.lint :as lint]
@@ -44,7 +43,7 @@
             [replique.state :as state])
   (:import [clojure.lang LineNumberingPushbackReader]
            [java.io IOException Writer]
-           [replique.directives CallDirective FrameDirective LoadDirective NsDirective ReloadDirective
+           [replique.directives FrameDirective LoadDirective NsDirective ReloadDirective
             SourceDirective]))
 
 (def ^:private start-ns
@@ -80,18 +79,14 @@
 
   `target' as well, which is the thing about a ClojureScript repl that a client
   cannot work out and has to be told - and `dialect', so that a client reading
-  frames need not remember which of its connections was which.
-
-  And `call', the recorded call IN-CALL holds what is read is evaluated in,
-  where it is pointed at one - see `replique.debug/eval-cljs-in-call'."
-  [conn in-call]
+  frames need not remember which of its connections was which."
+  [conn]
   (protocol/frame (cond-> {:tag "prompt"
                            :connection (:id conn)
                            :ns (str (cljs/current-ns))
                            :dialect "cljs"
                            :target (name cljs/*target*)}
-                    (cljs/params) (assoc :params (cljs/params))
-                    @in-call (assoc :call (into {} (filter val) @in-call)))))
+                    (cljs/params) (assoc :params (cljs/params)))))
 
 (defn- ret-frame [result]
   (protocol/frame {:tag "ret"
@@ -233,16 +228,6 @@
   [ns]
   (cljs/eval-form (list 'in-ns (list 'quote ns))))
 
-(defn- point-at-call!
-  "Point the repl at the recorded call CALL, a CallDirective - or at none,
-  where it names none - and move it to the namespace of the call's code.
-  IN-CALL is where the repl keeps it."
-  [in-call call]
-  (if (:unit call)
-    (do (vreset! in-call (into {} call))
-        (some-> (debug/unit-ns-name (:unit call)) enter-ns!))
-    (vreset! in-call nil)))
-
 (defn- read-input!
   "The next thing to evaluate: [form opts], ::eof, or a result to report.
 
@@ -263,11 +248,8 @@
   the file is bound around the evaluation, because that is where a def reads it
   (clojure.cljs.analyzer/*source-file*). It applies to the next form only, and
   is remembered until a form consumes it so that a blank line between the two
-  does not drop it.
-
-  #replique/call points the repl at a recorded call, which IN-CALL keeps, and
-  moves it to the namespace of the call's code."
-  [conn ^LineNumberingPushbackReader rdr in-call]
+  does not drop it."
+  [conn ^LineNumberingPushbackReader rdr]
   (let [pending (volatile! nil)
         moved (volatile! false)]
     (loop []
@@ -279,7 +261,7 @@
       (case (clojure.main/skip-whitespace rdr)
         :line-start (do (when @moved
                           (vreset! moved false)
-                          (protocol/write-frame! conn (prompt-frame conn in-call)))
+                          (protocol/write-frame! conn (prompt-frame conn)))
                         (recur))
         :stream-end ::eof
         (let [{:keys [file line instrument column entry record]} @pending
@@ -344,10 +326,6 @@
             (instance? FrameDirective form)
             (do (vreset! moved false)
                 (refused "A ClojureScript repl evaluates in no frame: #replique/frame is for a Clojure repl."))
-
-            ;; pending left alone, as for a namespace
-            (instance? CallDirective form)
-            (do (point-at-call! in-call form) (vreset! moved true) (recur))
 
             ;; Recorded, and nothing else: there is no debugger to stop a
             ;; page with
@@ -492,10 +470,9 @@
 (defn repl
   "Run a ClojureScript repl on conn until the client disconnects. `main' is a
   namespace to compile - and, where there is a runtime for it, load - before the
-  first prompt, or nil. See `load-main!'. CALL, a CallDirective, is a
-  recorded call it starts pointed at, or nil."
-  ([conn] (repl conn nil nil))
-  ([conn main call]
+  first prompt, or nil. See `load-main!'."
+  ([conn] (repl conn nil))
+  ([conn main]
    (let [out (frame-writer conn "out")
          err (frame-writer conn "err")
          ;; Output is flushed before every frame that concludes something, so
@@ -503,10 +480,7 @@
          ;; goes through these two is the COMPILER's output - a warning about an
          ;; undeclared var - since the program's own printing happens in the
          ;; runtime and is routed by replique.cljs.
-         flush-output! (fn [] (.flush out) (.flush err))
-         ;; nil, or the recorded call what is read is evaluated in, as
-         ;; {:unit :call :line :column}
-         in-call (volatile! nil)]
+         flush-output! (fn [] (.flush out) (.flush err))]
      (binding [*out* out *err* err]
        (cljs/with-ns* start-ns
          (fn []
@@ -515,11 +489,10 @@
                ;; watched, as every evaluation is (`replique.hooks/around*'):
                ;; compiling a program is what fills the model a lint reads
                (when main (lint/watching* #(load-main! conn flush-output! main)))
-               (when call (point-at-call! in-call call))
                (loop []
                  (flush-output!)
-                 (protocol/write-frame! conn (prompt-frame conn in-call))
-                 (let [input (try (read-input! conn rdr in-call)
+                 (protocol/write-frame! conn (prompt-frame conn))
+                 (let [input (try (read-input! conn rdr)
                                   (catch IOException e (throw e))
                                   (catch Throwable t
                                     (skip-line! rdr)
@@ -576,16 +549,9 @@
                                          ;; from now on
                                          (inspect/prepare-page!)
                                          (let [evaluate (fn []
-                                                          (cond
-                                                            (:record opts)
+                                                          (if (:record opts)
                                                             (debug/eval-cljs-recorded form opts)
-
-                                                            ;; a form typed, rather
-                                                            ;; than a file loaded
-                                                            (and @in-call (:text opts))
-                                                            (debug/eval-cljs-in-call @in-call form opts)
-
-                                                            :else (cljs/eval-form form opts)))
+                                                            (cljs/eval-form form opts)))
                                                defined (volatile! [])
                                                r (hooks/around*
                                                   (fn [r] (not= :error (:status r)))
@@ -688,11 +654,7 @@
   answered."
   [conn hello]
   (let [target (cljs/as-target (or (:target hello) cljs/default-target))
-        main   (protocol/as-name (:main hello))
-        ;; :call, the recorded call the repl starts pointed at, as
-        ;; #replique/call would point it
-        call   (try (some-> (:call hello) directives/call-directive)
-                    (catch clojure.lang.ExceptionInfo e e))]
+        main   (protocol/as-name (:main hello))]
     (cond
       (not (cljs/on-classpath?))
       (protocol/write-frame!
@@ -711,9 +673,6 @@
       (protocol/write-frame!
        conn (protocol/params-error hello param-kinds
                                    (protocol/invalid-params param-kinds (:params hello))))
-
-      (instance? Throwable call)
-      (protocol/write-frame! conn (protocol/error hello :invalid-frame (ex-message call)))
 
       (and (some? (:main hello)) (nil? main))
       (protocol/write-frame!
@@ -751,4 +710,4 @@
           ;; After the runtime, which is what made the environment they are
           ;; kept in - and before the first prompt, which reports them
           (cljs/want-params! (:params hello))
-          (repl conn (some-> main symbol) call))))))
+          (repl conn (some-> main symbol)))))))

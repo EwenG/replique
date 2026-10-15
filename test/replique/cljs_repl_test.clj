@@ -1272,16 +1272,14 @@
                                                             (:values (recorded-by-place c unit nil 6))))}
                                         8))))
                 (is (= 19 (:count (inspect {:loop i} 9))))))
-            (testing "a repl evaluates in an iteration"
-              (with-repl [f {:dialect :cljs :target :node
-                             :call {:unit unit :line 4 :column 20 :iteration {:site y :index 5}}}]
-                (is (= "[[1 2 3] 3 1]" (:value (frame-tagged (eval! f "[xs x y]") "ret"))))))
             (testing "the first iteration where something holds"
               (let [find (fn [site code & {:as more}]
                            (ask! c (merge {:op :debug-find-iteration :unit unit :site site
                                            :line 4 :column 20 :code code :id 10}
                                           more)))]
                 (is (= 3 (:index (find y "(= y 1)"))))
+                (testing "with the locals in scope there as they were in it"
+                  (is (= 5 (:index (find y "(= [xs x y] [[1 2 3] 3 1])")))))
                 (is (= 5 (:index (find y "(= y 1)" :from 3))))
                 (is (= 3 (:index (find y "(= y 1)" :from 5 :backward true))))
                 (is (nil? (:index (find y "(= y 7)"))))
@@ -1366,7 +1364,7 @@
                                                           :source {:debug {:calls unit :site sum}}})))))))))
           (finally (disconnect c)))))))
 
-(deftest test-a-repl-evaluates-in-a-recorded-clojurescript-call
+(deftest test-a-clojurescript-local-is-recorded-where-its-name-is-written
   (when (compiling?)
     (with-repl [r]
       (let [c (client/control-client @the-process)
@@ -1385,37 +1383,19 @@
                 _ (loop [] (when-not (= {:unit unit :calls 2}
                                         (select-keys (await-event c "debug-recorded") [:unit :calls]))
                              (recur)))
-                [first-call] (map :call (:calls (recorded-by-place c unit nil 1)))]
-            (eval! r "#replique/ns elsewhere\n\n")
-            (with-repl [f {:dialect :cljs :target :node
-                           :call {:unit unit :call first-call :line 5 :column 21}}]
-              (testing "a repl opened on a recorded call says so, in the namespace of its code"
-                (is (= {:unit unit :call first-call :line 5 :column 21} (:call (:prompt f))))
-                (is (= "rec.incall" (:ns (:prompt f)))))
-              (testing "what it reads is evaluated with the locals in scope there, as they were"
-                (is (= "[{:a 1} 2 (3 4) 2 1 7 2]" (ret f "[m z more x p q y]"))))
-              (testing "recorded, not evaluated again: the function is not called"
-                (is (= 2 (count (:calls (recorded-by-place c unit nil 2))))))
-              (testing "a local bound by a loop has the last value it was bound to"
-                (eval! f (str "#replique/call {:unit " unit " :call " first-call
-                              " :line 4 :column 22}\n\n"))
-                (is (= "4" (ret f "d"))))
-              (testing "which is recorded where the name was written, a let's bound to a
-                form shown being that form's"
-                (let [values (:values (recorded-by-place c unit first-call 3))
-                      at (fn [line column] (some #(when (= [line column] [(:line %) (:column %)]) %)
-                                                 values))]
-                  (is (= ["local" "4" 2] ((juxt :kind :value :times) (at 4 13))))
-                  (is (= ["local" "2"] ((juxt :kind :value) (at 1 21))))
-                  (is (nil? (at 2 9)))))
-              (testing "without a call, the last one"
-                (let [frames (eval! f (str "#replique/call {:unit " unit " :line 3 :column 9}\n\n"))]
-                  (is (= {:unit unit :line 3 :column 9} (:call (last frames)))))
-                (is (= "[{:a 10} 20 nil 11]" (ret f "[m z more x]"))))
-              (testing "and at none: the ordinary way again"
-                (let [frames (eval! f "#replique/call nil\n\n")]
-                  (is (nil? (:call (last frames)))))
-                (is (= "1" (ret f "g"))))))
+                [first-call] (map :call (:calls (recorded-by-place c unit nil 1)))
+                values (:values (recorded-by-place c unit first-call 3))
+                at (fn [line column] (some #(when (= [line column] [(:line %) (:column %)]) %)
+                                           values))]
+            (testing "a local is recorded where the name was written, a let's bound to a form
+              shown being that form's"
+              (is (= ["local" "4" 2] ((juxt :kind :value :times) (at 4 13))))
+              (is (= ["local" "2"] ((juxt :kind :value) (at 1 21))))
+              (is (nil? (at 2 9))))
+            (testing "and code is evaluated against them, the params and the lets too"
+              (is (= 2 (:index (ask! c {:op :debug-find-iteration :unit unit :call first-call
+                                        :site (:site (at 4 13)) :line 4 :column 22 :id 4
+                                        :code "(= [m z more x p q d] [{:a 1} 2 [3 4] 2 1 7 4])"}))))))
           (finally (disconnect c)))))))
 
 ;;; Tracing in the runtime

@@ -5,9 +5,9 @@
   A form read with the span of everything in it - see the compiler's
   RECORD_POSITIONS - is code whose locals can be told by position: a param
   of a fn is in scope in the arity it is a param of, a local of a let in what
-  follows it in the let. Which is what a repl evaluating in a recorded call
-  binds - see `replique.debug/eval-in-call' - the place being where the
-  editor's point is in the code of the call.
+  follows it in the let. Which is what code evaluated against a recorded call
+  binds - see \"Code evaluated against a recorded call\" in replique.debug -
+  the place being where the editor's point is in the code of the call.
 
   What it knows of is what the source wrote: fn and defn, and the forms of
   clojure.core that bind a local to a value - let, when-let, if-let,

@@ -522,74 +522,13 @@
     (assoc said :by-place (into {} (map (fn [v] [[(:line v) (:column v)] [(:value v) (:times v)]]))
                                 (:values said)))))
 
-(deftest a-repl-evaluates-in-a-recorded-call
+(deftest a-local-is-recorded-where-its-name-is-written
   (if-not (debug/instrumenting?)
     (println "replique.debug-test: no compiler to record with - run with :analysis")
     (client/with-process [info nil]
       (let [r (client/repl-client info nil 60000)
             c (control info)
-            file (java.io.File/createTempFile "in-call" ".clj")]
-        (try
-          (ret r (str "#replique/src {:file " (pr-str (str file)) " :line 1"
-                      " :instrument true :entry false :record true}\n"
-                      "(defn ic [m {:keys [z]} & more]
-  (let [x (inc (:a m))
-        [p q] [(dec x) 7]]
-    (mapv (fn [y] (* x y)) (range 3))
-    (doseq [d more] (inc d))
-    (when-let [w (seq more)]
-      (map (fn ([a] (+ a z)) ([a b] (+ a b))) w))))"))
-          (let [unit (:unit (await-event c "debug-instrumented"))
-                _ (ret r "(doall (ic {:a 1} {:z 2} 3 4))")
-                _ (ret r "(doall (ic {:a 10} {:z 20}))")
-                [first-call] (map :call (:calls (recorded c unit nil 1)))
-                f (client/repl-client info {:call {:unit unit :call first-call :line 4 :column 21}}
-                                      60000)
-                point! (fn [directive]
-                         (send! f (str directive "\n"))
-                         (last (recv-until f "prompt")))]
-            (try
-              (testing "a repl opened on a recorded call says so, from its first prompt"
-                (is (= {:unit unit :call first-call :line 4 :column 21} (:call (:prompt f))))
-                (is (= "user" (:ns (:prompt f)))))
-              (testing "what it reads is evaluated with the locals in scope there, as they were"
-                (is (= "[{:a 1} 2 (3 4) 2 1 7 2]" (ret f "[m z more x p q y]"))))
-              (testing "recorded, not evaluated again: the function is not called"
-                (is (= "[1 7]" (ret f "[p q]")))
-                (is (= 2 (count (:calls (recorded c unit nil 2))))))
-              (testing "a local bound by a loop has the last value it was bound to"
-                (point! (str "#replique/call {:unit " unit " :call " first-call " :line 5 :column 22}"))
-                (is (= "4" (ret f "d"))))
-              (testing "nor a param of a fn not called"
-                (point! (str "#replique/call {:unit " unit " :call " first-call " :line 7 :column 34}"))
-                (is (= "(3 4)" (ret f "w")))
-                (is (re-find #"a has no value in this call"
-                             (:message (client/frame-tagged (eval! f "(+ a b)") "exception")))))
-              (testing "without a call, the last one"
-                (let [prompt (point! (str "#replique/call {:unit " unit " :line 3 :column 9}"))]
-                  (is (= {:unit unit :line 3 :column 9} (:call prompt))))
-                (is (= "[{:a 10} 20 nil 11]" (ret f "[m z more x]")))
-                (ret r "(doall (ic {:a 100} {:z 200}))")
-                (is (= "101" (ret f "x"))))
-              (testing "and at none: the ordinary way again"
-                (let [prompt (point! "#replique/call nil")]
-                  (is (nil? (:call prompt))))
-                (is (client/frame-tagged (eval! f "x") "exception")))
-              (testing "a call not kept any more is not evaluated in"
-                (point! (str "#replique/call {:unit " unit " :call " first-call " :line 3 :column 9}"))
-                (dotimes [_ 10] (ret r "(ic {:a 1} {})"))
-                (is (re-find #"not kept any more"
-                             (:message (client/frame-tagged (eval! f "x") "exception")))))
-              (finally (disconnect f))))
-          (finally (disconnect r) (disconnect c) (.delete file)))))))
-
-(deftest a-call-is-evaluated-in-past-the-fns-of-macros
-  (if-not (debug/instrumenting?)
-    (println "replique.debug-test: no compiler to record with - run with :analysis")
-    (client/with-process [info nil]
-      (let [r (client/repl-client info nil 60000)
-            c (control info)
-            file (java.io.File/createTempFile "in-call" ".clj")]
+            file (java.io.File/createTempFile "locals" ".clj")]
         (try
           (ret r (str "#replique/src {:file " (pr-str (str file)) " :line 1"
                       " :instrument true :entry false :record true}\n"
@@ -598,21 +537,18 @@
            (reduce (fn [[s t] u] [(+ s u) t]) [b c] [x y]))))"))
           (let [unit (:unit (await-event c "debug-instrumented"))
                 _ (ret r "(im [1 2] 10 20)")
-                f (client/repl-client info {:call {:unit unit :line 3 :column 40}} 60000)]
-            (try
-              (testing "a fn a macro made is not the fn its code is in"
-                (is (= "[[1 2] 10 20]" (ret f "[a b c]"))))
-              (testing "nor the params destructured, the fn the code wrote"
-                (is (= "[[1 2] 10 20 12 20 3]" (ret f "[a b c s t u]"))))
-              (testing "the locals of a for are what they were bound to last"
-                (is (= "[2 3]" (ret f "[x y]"))))
-              (testing "which is recorded where the name was written, each time it was bound"
-                (let [{:keys [by-place values]} (recorded c unit nil 1)]
-                  (is (= ["2" 2] (get by-place [2 16])))
-                  (is (= "local" (:kind (some #(when (= [2 16] [(:line %) (:column %)]) %) values))))
-                  (is (= ["3" 2] (get by-place [2 26])))
-                  (is (= ["12" 4] (get by-place [3 26])))))
-              (finally (disconnect f))))
+                {:keys [by-place values]} (recorded c unit nil 1)
+                x (:site (some #(when (= [2 16] [(:line %) (:column %)]) %) values))]
+            (testing "the locals of a for are recorded where the name was written, each time it was bound"
+              (is (= ["2" 2] (get by-place [2 16])))
+              (is (= "local" (:kind (some #(when (= [2 16] [(:line %) (:column %)]) %) values))))
+              (is (= ["3" 2] (get by-place [2 26])))
+              (is (= ["12" 4] (get by-place [3 26]))))
+            (testing "code is evaluated against them past the fns of macros: a fn a macro made
+              is not the fn its code is in"
+              (is (= 2 (:index (ask! c {:op :debug-find-iteration :unit unit :site x
+                                        :line 3 :column 40 :id 2
+                                        :code "(= [a b c x y] [[1 2] 10 20 2 3])"}))))))
           (finally (disconnect r) (disconnect c) (.delete file)))))))
 
 (deftest an-iteration-of-a-loop-is-what-it-evaluated
@@ -719,20 +655,14 @@
                   ;; the ones kept
                   (is (= 19 (get-in (ask! c {:op :inspect :id 13 :source {:debug {:loop i}}})
                                     [:root :count])))))
-              (testing "a repl evaluates in an iteration"
-                (let [f (client/repl-client info {:call {:unit unit :line 4 :column 20
-                                                         :iteration {:site y :index 5}}}
-                                            60000)]
-                  (try
-                    (is (= {:site y :index 5} (:iteration (:call (:prompt f)))))
-                    (is (= "[[1 2 3] 3 1]" (ret f "[xs x y]")))
-                    (finally (disconnect f)))))
               (testing "the first iteration where something holds"
                 (let [find (fn [site code & {:as more}]
                              (ask! c (merge {:op :debug-find-iteration :unit unit :site site
                                              :line 4 :column 20 :code code :id 14}
                                             more)))]
                   (is (= 3 (:index (find y "(= y 1)"))))
+                  (testing "with the locals in scope there as they were in it"
+                    (is (= 5 (:index (find y "(= [xs x y] [[1 2 3] 3 1])")))))
                   (is (= 5 (:index (find y "(= y 1)" :from 3))))
                   (is (= 3 (:index (find y "(= y 1)" :from 5 :backward true))))
                   (is (nil? (:index (find y "(= y 7)"))))

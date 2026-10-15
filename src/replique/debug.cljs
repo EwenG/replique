@@ -329,21 +329,18 @@
          (if (seq values) (iterations/by-call values) :not-recorded))))))
 
 (defn recorded-in
-  "What the site SITE evaluated to last in the call CALL of the unit UNIT -
-  which code evaluated in a call binds its locals to, see `eval-cljs-in-call'
-  in replique/debug.clj - or in the iteration ITERATION of a loop of it, see
-  `in-iteration': :replique/not-recorded where it was not evaluated then."
-  ([unit call site] (recorded-in unit call site nil))
-  ([unit call site iteration]
-   (let [c (some #(when (= call (.-n %)) %) (some-> (get @units unit) unit-calls vec))]
-     (when-not c
-       (throw (ex-info (str "Call " call " is not kept any more") {:kind "unknown-call"})))
-     (let [last-value (some-> (.get (.-values c) site) .-values last-of)]
-       (if (some? iteration)
-         (let [v (iteration-in c site iteration
-                               (when (.get (.-values c) site) {:value last-value}))]
-           (if (= :not-recorded v) :replique/not-recorded v))
-         last-value)))))
+  "What the site SITE evaluated to last in the iteration ITERATION of a loop
+  of the call CALL of the unit UNIT, see `in-iteration' - which code evaluated
+  against a call binds its locals to, see \"Code evaluated against a recorded
+  call\" in replique/debug.clj: :replique/not-recorded where it was not
+  evaluated then."
+  [unit call site iteration]
+  (let [c (some #(when (= call (.-n %)) %) (some-> (get @units unit) unit-calls vec))]
+    (when-not c
+      (throw (ex-info (str "Call " call " is not kept any more") {:kind "unknown-call"})))
+    (let [kept (.get (.-values c) site)
+          v (iteration-in c site iteration (when kept {:value (some-> kept .-values last-of)}))]
+      (if (= :not-recorded v) :replique/not-recorded v))))
 
 (defn loop-table
   "What each iteration kept of a loop of the call CALL - the last one,

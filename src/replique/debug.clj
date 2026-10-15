@@ -1618,19 +1618,15 @@
             :else value))
         (finally (swap! handed dissoc n))))))
 
-;;; A repl evaluating in a recorded call
+;;; Code evaluated against a recorded call
 
 ;; A call recorded is what a function had, form by form, and what somebody
 ;; wants to try things against, the way a stopped thread's frame is - without
-;; anything stopped. A repl can be pointed at a call of a recorded unit, at a
-;; place of its code:
-;;
-;;   #replique/call {:unit 7 :call 12 :line 14 :column 9}
-;;
-;; and what it reads after that is evaluated with the locals in scope there
-;; bound to what they were in that call - or in the last call, the one kept
-;; when the form is evaluated, without a :call. On the repl's own thread, the
-;; ordinary way otherwise: a recorded function it calls records that call.
+;; anything stopped. Code is evaluated against a call of a recorded unit at a
+;; place of its code, with the locals in scope there bound to what they were
+;; in one iteration of a loop of that call - which is how the first iteration
+;; where something holds is found, see "The first iteration of a loop of a
+;; recorded call" below.
 ;;
 ;; A local is what the code bound it to: a param, what it was called with,
 ;; and a name a let or a loop binds, what it was bound to - which the code
@@ -1639,28 +1635,25 @@
 ;; too, and each name a destructuring binds. Where that was not recorded, a
 ;; local of a let is what the form it was bound to evaluated to, which was -
 ;; not evaluated again. One whose value is not known - a form that was not
-;; evaluated in that call, a loop that did not go round - is not bound. A
-;; value is the last in the call, a form of a fn the call called many times
-;; having had many, a loop's local having been bound many times: what the
-;; code shows.
+;; evaluated in that iteration, a loop that did not go round - is not bound. A
+;; value is the last in the iteration, or in the whole call for code the loop
+;; does not go round, a form of a fn called many times having had many: what
+;; the code shows.
 ;;
-;; A ClojureScript call is evaluated in from a ClojureScript repl, in the
-;; runtime that keeps its values - see `eval-cljs-in-call'.
+;; A ClojureScript call is evaluated against in the runtime that keeps its
+;; values, the locals bound to what replique.debug/recorded-in answers there.
 
 (defn recorded-in
-  "What the site SITE evaluated to last in the call C - which code evaluated
-  in a call binds its locals to, see `eval-in-call' - or in its iteration
-  ITERATION, {:site :index}, of a loop: :replique/not-recorded where it was
-  not evaluated in it."
-  ([c site] (recorded-in c site nil))
-  ([c site iteration]
-   (let [call (or (get @calls c)
-                  (throw (ex-info (str "Call " c " is not kept any more")
-                                  {:replique/error :unknown-call})))]
-     (if iteration
-       (let [v (iteration-of (:unit call) c site iteration)]
-         (if (= :not-recorded v) :replique/not-recorded v))
-       (peek (get-in call [:values site :values]))))))
+  "What the site SITE evaluated to last in the iteration ITERATION,
+  {:site :index}, of a loop of the call C - which code evaluated against a
+  call binds its locals to, see \"Code evaluated against a recorded call\":
+  :replique/not-recorded where it was not evaluated in it."
+  [c site iteration]
+  (let [call (or (get @calls c)
+                 (throw (ex-info (str "Call " c " is not kept any more")
+                                 {:replique/error :unknown-call})))
+        v (iteration-of (:unit call) c site iteration)]
+    (if (= :not-recorded v) :replique/not-recorded v)))
 
 (defn- call-bindings
   "The bindings of a let binding the locals of the code of the unit UNIT in
@@ -1734,86 +1727,6 @@
   dialect - or nil, for a unit gone."
   [n]
   (some-> (get @units n) :ns symbol))
-
-(defn eval-in-call
-  "Evaluate FORM, read by a repl pointed at a call of the recorded unit UNIT -
-  see `#replique/call' - with the locals of its code in scope at LINE and
-  COLUMN bound to what they were in the call CALL, or in the last call kept -
-  in its iteration ITERATION, {:site :index}, of a loop, where there is one."
-  [{:keys [unit call line column iteration]} form]
-  (let [{:keys [record dialect]} (get @units unit)]
-    (when-not record
-      (throw (ex-info (str "Unit " unit " does not record any more - this repl evaluates in"
-                           " one of its calls, and here after #replique/call nil")
-                      {:replique/error :unknown-unit})))
-    (when (= :cljs dialect)
-      (throw (ex-info "A ClojureScript call is evaluated in from a ClojureScript repl"
-                      {:replique/error :unavailable})))
-    (let [c (or call (peek (get @recorded unit))
-                (throw (ex-info (str "Unit " unit " was not called yet")
-                                {:replique/error :unknown-call})))]
-      (when-not (contains? @calls c)
-        (throw (ex-info (str "Call " c " is not kept any more") {:replique/error :unknown-call})))
-      (let [values (:values (get @calls c))
-            had? (if iteration
-                   (let [pick (in-iteration (iterating unit iteration) (kept-in (get @calls c)))]
-                     #(map? (pick % (when (contains? values %) {}))))
-                   #(contains? values %))
-            [bindings unknown] (call-bindings unit [line column] had?
-                                              (fn [n] `(recorded-in ~c ~n ~iteration)) resolve)]
-        (try
-          (eval `(let ~bindings ~form))
-          (catch clojure.lang.Compiler$CompilerException e
-            ;; a local of the code, rather than a name nobody bound
-            (let [[_ s] (some->> (ex-cause e) ex-message
-                                 (re-find #"^Unable to resolve symbol: (\S+) in this context"))]
-              (if (and s (contains? unknown (symbol s)))
-                (throw (ex-info (str s " has no value in this call: what binds it was not evaluated"
-                                     " in it, or binds it to something else than a value it had")
-                                {:replique/error :not-recorded}))
-                (throw e)))))))))
-
-(defn eval-cljs-in-call
-  "Evaluate FORM in the runtime of `cljs/*target*', with OPTS as
-  `cljs/eval-form' takes them - read by a repl pointed at a call of the
-  recorded ClojureScript unit UNIT, as `eval-in-call' is a Clojure one's -
-  and answer what it answers.
-
-  The values are the runtime's, which keeps them: the locals are bound to
-  what replique.debug/recorded-in answers there. Which of them there are is
-  asked of the runtime too. A local whose value is not known is bound to
-  :replique/not-recorded, ClojureScript compiling a name nothing binds to
-  undefined rather than refusing it. In its iteration ITERATION of a loop,
-  {:site :index}, where there is one."
-  [{:keys [unit call line column iteration]} form opts]
-  (let [{:keys [record dialect target]} (get @units unit)]
-    (when-not record
-      (throw (ex-info (str "Unit " unit " does not record any more - this repl evaluates in"
-                           " one of its calls, and here after #replique/call nil")
-                      {:replique/error :unknown-unit})))
-    (when-not (= :cljs dialect)
-      (throw (ex-info "A Clojure call is evaluated in from a Clojure repl"
-                      {:replique/error :unavailable})))
-    (when-not (= cljs/*target* target)
-      (throw (ex-info (str "Unit " unit " was recorded in the " (name target) " runtime, and this"
-                           " repl is on the " (name cljs/*target*) " one")
-                      {:replique/error :unavailable})))
-    (let [it (when iteration (iterating unit iteration))
-          {c :call values :values} (cljs-recorded unit call it)
-          _ (when-not c
-              (throw (ex-info (str "Unit " unit " was not called yet")
-                              {:replique/error :unknown-call})))
-          had (set (keep #(when-not (:not-kept %) (:site %)) values))
-          ns (cljs/current-ns)
-          [bindings unknown] (call-bindings unit [line column] had
-                                            (fn [n]
-                                              (apply list 'replique.debug/recorded-in unit c n
-                                                     (when it [(for-site it n)])))
-                                            #(some? (cljs/resolve-var ns %)))]
-      (cljs/eval-form (list 'let (into bindings (mapcat (fn [s] [s :replique/not-recorded]))
-                                       (sort unknown))
-                            form)
-                      opts))))
 
 ;;; What a client sees
 
@@ -1998,8 +1911,8 @@
 ;; The first iteration of a loop of a recorded call where something holds:
 ;; CODE, evaluated with the locals of the code in scope at :line and :column
 ;; bound to what they were in each iteration kept - after the iteration
-;; :from, or before it, :backward, where there is one - as `eval-in-call'
-;; binds them.
+;; :from, or before it, :backward, where there is one - as "Code evaluated
+;; against a recorded call" says.
 
 (defn- searched
   "The indices of the iterations KEPT - [first last] ranges - to look at

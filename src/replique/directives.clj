@@ -12,7 +12,6 @@
     #replique/load   load a file rather than evaluate a form
     #replique/reload load everything that changed
     #replique/frame  evaluate in a frame of a stopped thread, from here on
-    #replique/call   evaluate in a call a recorded function made, from here on
 
   IN BAND rather than as ops on the control connection, and rather than as a
   process wide atom another connection could set: a directive cannot race with
@@ -280,54 +279,6 @@
 
       :else (->FrameDirective (long (:thread m)) (long (or (:frame m) 0))))))
 
-;;; Evaluating in a recorded call
-
-;; What a function recorded is what a call of it had, local by local, and a
-;; repl can be pointed at one of its calls, at a place of its code - the way
-;; #replique/frame points it at a frame:
-;;
-;;   #replique/call {:unit 7 :call 12 :line 14 :column 9}
-;;
-;; and what it reads after that is evaluated with the locals in scope at that
-;; place bound to what they were in that call - in the last call kept when
-;; the form is evaluated, without a :call - or in its iteration
-;; :iteration {:site :index} of a loop, with one - see
-;; `replique.debug/eval-in-call'. It moves the repl to the namespace of the
-;; code. #replique/call nil, or #replique/frame nil, points it back at nothing.
-(defrecord CallDirective [unit call line column iteration])
-
-(defn call-directive [m]
-  (let [bad (fn [message]
-              (throw (ex-info message {:replique/error :invalid-call-directive})))]
-    (cond
-      (nil? m) (->CallDirective nil nil nil nil nil)
-
-      (not (map? m))
-      (bad (str "#replique/call takes a map, or nil, got: " (pr-str m)))
-
-      (not (integer? (:unit m)))
-      (bad (str "#replique/call takes the number of the recorded :unit, got: "
-                (pr-str (:unit m))))
-
-      (not (or (nil? (:call m)) (integer? (:call m))))
-      (bad (str "#replique/call takes the number of the :call, or none for the last, got: "
-                (pr-str (:call m))))
-
-      (not (and (pos-int? (:line m)) (pos-int? (:column m))))
-      (bad (str "#replique/call takes the :line and :column of the place of the code"
-                " whose locals are bound, got: " (pr-str (select-keys m [:line :column]))))
-
-      (not (or (nil? (:iteration m))
-               (and (map? (:iteration m)) (integer? (get-in m [:iteration :site]))
-                    (pos-int? (get-in m [:iteration :index])))))
-      (bad (str "#replique/call takes the :iteration of a loop of the call, {:site :index},"
-                " or none, got: " (pr-str (:iteration m))))
-
-      :else (->CallDirective (long (:unit m)) (some-> (:call m) long)
-                             (long (:line m)) (long (:column m))
-                             (when-let [{:keys [site index]} (:iteration m)]
-                               {:site (long site) :index (long index)})))))
-
 (def data-readers
   "The tags a repl reads on top of whatever the code it is reading uses.
 
@@ -339,5 +290,4 @@
    'replique/ns     #'ns-directive
    'replique/load   #'load-directive
    'replique/reload #'reload-directive
-   'replique/frame  #'frame-directive
-   'replique/call   #'call-directive})
+   'replique/frame  #'frame-directive})
