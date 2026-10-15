@@ -1398,68 +1398,192 @@
                                         :code "(= [m z more x p q d] [{:a 1} 2 [3 4] 2 1 7 4])"}))))))
           (finally (disconnect c)))))))
 
-;;; Tracing in the runtime
-;;; Tracing in the runtime
+(deftest test-a-cursor-goes-through-what-a-clojurescript-runtime-recorded
+  (when (compiling?)
+    (with-repl [r]
+      (let [c (client/control-client @the-process)
+            cursor (fn [from & {:as msg}]
+                     (ask! c (merge {:op :debug-cursor :id 1} (select-keys from [:unit :call :at]) msg)))
+            frames (fn [cur] (mapv (juxt :kind :label :index :of) (:frames cur)))
+            seen (fn [{:keys [unit call at frame]}]
+                   (let [o (ask! c {:op :inspect :id 2 :dialect :cljs :target :node
+                                    :source {:debug {:cursor {:unit unit :call call :at at
+                                                              :frame frame}}}})]
+                     (mapv (juxt :key :value) (:children o))))
+            told (fn [unit calls]
+                   (loop [] (when-not (= {:unit unit :calls calls}
+                                         (select-keys (await-event c "debug-recorded") [:unit :calls]))
+                              (recur))))]
+        (try
+          (eval! r "#replique/ns rec.cursor\n(def z 1)")
+          (eval! r (record-src 1 1 "(defn cg [x] (* x 10))"))
+          (let [g (:unit (await-event c "debug-instrumented"))
+                _ (eval! r (record-src 2 1 (str "(defn cf [xs]\n"
+                                                "  (doseq [x xs]\n"
+                                                "    (cg x)))")))
+                f (:unit (await-event c "debug-instrumented"))
+                _ (eval! r "(cf [1 2 3])")
+                _ (told f 1)
+                site (:site (some #(when (= [4 5] [(:line %) (:column %)]) %)
+                                  (:values (ask! c {:op :debug-recorded :unit f :id 3}))))
+                at (cursor {:unit f} :site site)]
+            (testing "a cursor is at a form, in the loops around it"
+              (is (= [["(cg x)" "30"] ["locals" "xs [1 2 3]  x 3"]] (seen at)))
+              (is (= [["loop" "doseq x" 3 3] ["call" "cf" 1 1]] (frames at))))
+            (testing "and goes into the call made there, which the runtime says it made"
+              (let [in (cursor (cursor at :move "previous-iteration") :move "in")]
+                (is (= [["[x]" "[2]"] ["locals" "x 2"]] (seen in)))
+                (is (= [["(* x 10)" "20"] ["locals" "x 2"]] (seen (cursor in :move "next"))))
+                (is (= [["call" "cg" 2 3] ["loop" "doseq x" 2 3] ["call" "cf" 1 1]] (frames in)))
+                (testing "and from a frame further out, to the call of the next iteration"
+                  (let [next (cursor in :frame 1 :move "next-iteration")]
+                    (is (= [["call" "cg" 3 3] ["loop" "doseq x" 3 3] ["call" "cf" 1 1]]
+                           (frames next)))
+                    (is (= [["[x]" "[3]"] ["locals" "x 3"]] (seen (assoc next :frame 0))))))
+                (testing "or to a call of the same function, by its number"
+                  (is (= [["[x]" "[1]"] ["locals" "x 1"]] (seen (cursor in :move "call" :index 1)))))))
+            (testing "what the form of a frame was in each iteration of its loop, in the runtime"
+              (let [l (:loop (first (:frames at)))
+                    view (fn [source]
+                           (mapv (juxt :key :value)
+                                 (:children (ask! c {:op :inspect :id 4 :dialect :cljs :target :node
+                                                     :source {:debug source}}))))]
+                (is (= [["iteration 1" "10"] ["iteration 2" "20"] ["iteration 3" "30"]]
+                       (view {:loop l :call (:call at) :site site :only true})))
+                (is (= [["iteration 1" "1"] ["iteration 2" "2"] ["iteration 3" "3"]]
+                       (view {:loop l :call (:call at) :site l :only true})))))
+            (testing "the calls the runtime recorded, as a tree"
+              (let [said (juxt :label :args :value :made :index :of :thread)
+                    ;; of the other tests too, in this runtime
+                    roots (filterv #(= f (:unit %)) (:calls (ask! c {:op :debug-calls :id 5})))]
+                (is (= [["cf" ["[1 2 3]"] "nil" 3 1 1 "node"]] (mapv said roots)))
+                (is (= [["cg" ["1"] "10" 0 1 3 "node"] ["cg" ["2"] "20" 0 2 3 "node"]
+                        ["cg" ["3"] "30" 0 3 3 "node"]]
+                       (mapv said (:calls (ask! c {:op :debug-calls :unit f :call (:call (first roots))
+                                                   :id 6}))))))))
+          (finally (disconnect c)))))))
 
-(deftest test-what-is-traced-in-the-runtime-is-a-tree-of-calls
+(deftest test-a-literal-a-clojurescript-function-returns-is-what-it-returned
+  (when (compiling?)
+    (with-repl [r]
+      (let [c (client/control-client @the-process)]
+        (try
+          (eval! r "#replique/ns rec.literal\n(def z 1)")
+          (eval! r (record-src 1 1 "(defn lg [x] {:a (inc x) :b [x]})"))
+          (let [g (:unit (await-event c "debug-instrumented"))
+                _ (eval! r "(lg 1)")
+                _ (loop [] (when-not (= g (:unit (await-event c "debug-recorded"))) (recur)))
+                roots (filterv #(= g (:unit %)) (:calls (ask! c {:op :debug-calls :id 1})))]
+            (is (= [["lg" "{:a 2, :b [1]}"]] (mapv (juxt :label :value) roots))))
+          (finally (disconnect c)))))))
+
+(deftest test-the-calls-a-clojurescript-call-made-for-a-value-kept-are-kept
+  (when (compiling?)
+    (with-repl [r]
+      (let [c (client/control-client @the-process)
+            record (fn [line code]
+                     (eval! r (record-src line 1 code))
+                     (:unit (await-event c "debug-instrumented")))
+            run (fn [unit code]
+                  (eval! r code)
+                  (loop [] (when-not (= unit (:unit (await-event c "debug-recorded"))) (recur))))
+            site-at (fn [unit line column]
+                      (:site (some #(when (= [line column] [(:line %) (:column %)]) %)
+                                   (:values (ask! c {:op :debug-recorded :unit unit :id 1})))))
+            made (fn [unit]
+                   (let [call (:call (ask! c {:op :debug-cursor :unit unit :id 2}))]
+                     (:calls (ask! c {:op :debug-calls :unit unit :call call :id 3}))))
+            into (fn [unit site at]
+                   (ask! c (merge {:op :debug-cursor :move "in" :id 4}
+                                  (select-keys (ask! c {:op :debug-cursor :unit unit :site site
+                                                        :at at :id 5})
+                                               [:unit :call :at]))))]
+        (try
+          (eval! r "#replique/ns rec.made\n(def z 1)")
+          (let [h (record 1 "(defn mh [f xs] (mapv f xs))")
+                o (record 2 (str "(defn mo [xs]\n"
+                                 "  (doall (for [x xs]\n"
+                                 "          [(mh (fn [y] (inc y)) [x])\n"
+                                 "           (mh #(* 2 %) [x x])])))"))]
+            (run o "(mo (range 30))")
+            (testing "of the calls made in a loop, the ones made for the values kept"
+              (is (= (* 2 2 10) (count (made o)))))
+            (testing "a move into one of them, a fn of the call that made it called in it"
+              (doseq [[line at] [[4 0] [4 Integer/MAX_VALUE] [5 0] [5 Integer/MAX_VALUE]]]
+                (let [in (into o (site-at o line 12) at)]
+                  (is (= h (:unit in)))
+                  (is (= "[f xs]" (:code (first (:frames in)))))))))
+          (testing "of the calls made for the same value, the first ones and the last ones"
+            (let [_ (record 7 "(defn mh2 [x] (inc x))")
+                  g (record 8 "(defn mg [xs] (mapv mh2 xs))")]
+              (run g "(mg (range 30))")
+              (is (= (* 2 10) (count (made g))))))
+          (finally (disconnect c)))))))
+
+;;; Recording the calls only of a function, in the runtime
+
+(deftest test-the-calls-only-of-a-function-are-recorded-in-the-runtime
   (when (compiling?)
     (with-repl [r]
       (let [c (client/control-client @the-process)
             on {:dialect :cljs :target :node}
-            ask (fn [msg] (ask! c (merge msg on)))
-            calls (fn ([] (:calls (ask {:op :trace-calls :id 9})))
-                    ([parent] (:calls (ask {:op :trace-calls :parent parent :id 9}))))
-            said (juxt :var :args #(or (:value %) (:thrown %)))]
+            said (juxt :label :args :value :threw)
+            roots (fn [label] (filterv #(= label (:label %)) (:calls (ask! c {:op :debug-calls :id 1}))))
+            wrapped? (fn [v] (:value (frame-tagged (eval! r (str "(.-get (js/Object.getOwnPropertyDescriptor"
+                                                                  " (.get (.-namespaces js/$CLJS) \"rec.only\") \""
+                                                                  v "\"))"))
+                                                   "ret")))]
         (try
-          (eval! r "#replique/ns trc.node\n(def x 1)")
-          (eval! r "(defn ta [x] (inc x))")
-          (eval! r "(defn tb [m] (+ (ta (:n m)) (ta 10)))")
-          (eval! r "(defn tc [] (throw (js/Error. \"none\")))")
-          (eval! r "(defn ^:async tw [x] (+ (ta x) (await (js/Promise.resolve 1))))")
-          (let [{:keys [asked traced skipped]} (ask {:op :trace :ns "trc.node" :id 1})]
-            (is (= ["trc.node/ta" "trc.node/tb" "trc.node/tc" "trc.node/tw"] traced))
-            (is (= [["trc.node/x" "not a function"]] (map (juxt :var :why) skipped)))
-            (is (= asked (+ (count traced) (count skipped)))))
-          (is (= "13" (:value (frame-tagged (eval! r "(tb {:n 1})") "ret"))))
-          (let [[tb] (calls)]
-            (testing "a call, with what it was called with and returned, where it is written"
-              (is (= ["trc.node/tb" ["{:n 1}"] "13"] (said tb)))
-              (is (= {:state "returned" :made 2 :kept 2} (select-keys tb [:state :made :kept]))))
-            (is (= [["trc.node/ta" ["1"] "2"] ["trc.node/ta" ["10"] "11"]]
-                   (map said (calls (:call tb)))))
-            (testing "a value to browse, in the runtime"
-              (is (= "{:n 1}" (get-in (ask {:op :inspect :id 2
-                                            :source {:trace {:call (:call tb) :arg 0}}})
-                                      [:root :value]))))
-            (testing "a call made again, with what it was called with"
-              (is (= "13" (:value (frame-tagged (eval! r (str "(apply trc.node/tb (replique.trace/args-of "
-                                                              (:call tb) "))"))
-                                                "ret"))))
-              (is (= ["trc.node/tb" ["{:n 1}"] "13"] (said (last (calls)))))
-              (is (string/includes? (:message (frame-tagged (eval! r "(replique.trace/args-of 100000)")
-                                                            "exception"))
-                                    "not kept"))))
-          (testing "a call that threw"
-            (eval! r "(try (tc) (catch :default _ nil))")
-            (is (= ["trc.node/tc" [] "Error: none"] (said (last (calls))))))
-          (testing "an async call is over once its promise is"
-            (eval! r "(tw 1)")
-            (let [tw (loop [i 0]
-                       (let [tw (last (calls))]
-                         (if (or (= "returned" (:state tw)) (> i 50))
-                           tw
-                           (do (Thread/sleep 100) (recur (inc i))))))]
-              (is (= ["trc.node/tw" ["1"] "3"] (said tw)))
-              (is (= [["trc.node/ta" ["1"] "2"]] (map said (calls (:call tw)))))))
-          (testing "defined again, it is traced still"
-            (eval! r "(defn ta [x] (+ x 2))")
-            (eval! r "(ta 1)")
-            (is (= ["trc.node/ta" ["1"] "3"] (said (last (calls))))))
-          (testing "cleared, and let go of"
-            (is (pos? (:cleared (ask {:op :trace-clear :id 3}))))
-            (is (= 4 (count (:untraced (ask {:op :untrace :id 4})))))
-            (is (= "3" (:value (frame-tagged (eval! r "(ta 1)") "ret"))))
-            (is (= [] (calls))))
+          ;; what other tests recorded: the calls only of a function are let
+          ;; go of with the last code recorded in its runtime
+          (ask! c {:op :debug-uninstrument :id 0})
+          (eval! r "#replique/ns rec.only\n(def z 1)")
+          (eval! r "(defn la [x] (inc x))")
+          (eval! r "(defn lt [] (throw (js/Error. \"none\")))")
+          (let [{:keys [recorded skipped] :as answer}
+                (ask! c (merge {:op :record-calls :vars ["rec.only/la" "rec.only/lt" "rec.only/z"
+                                                         "cljs.core/inc"] :id 2}
+                               on))]
+            (is (nil? (:error answer)) (pr-str answer))
+            (is (= ["rec.only/la" "rec.only/lt"] recorded))
+            (is (= [["rec.only/z" "not a function"]
+                    ["cljs.core/inc" "called everywhere, or what recording is made of"]]
+                   (mapv (juxt :var :why) skipped))))
+          (testing "a call made in no call recorded is only made"
+            (is (= "2" (:value (frame-tagged (eval! r "(la 1)") "ret"))))
+            (is (= [] (roots "rec.only/la"))))
+          (eval! r (record-src 1 1 "(defn lf [x] (+ (la x) (try (lt) (catch :default _ 0))))"))
+          (let [f (loop [] (let [e (await-event c "debug-instrumented")]
+                             (if (:calls-only e) (recur) (:unit e))))
+                _ (is (= "2" (:value (frame-tagged (eval! r "(lf 1)") "ret"))))
+                [lf] (roots "lf")
+                made (:calls (ask! c {:op :debug-calls :unit f :call (:call lf) :id 3}))]
+            (testing "one made in one is a call among the calls recorded, with what it was
+                      called with and returned, or threw"
+              (is (= ["lf" ["1"] "2" nil] (said lf)))
+              (is (= [["rec.only/la" ["1"] "2" nil] ["rec.only/lt" nil "Error: none" true]]
+                     (mapv said made))))
+            (testing "which a cursor goes through"
+              (let [la (first made)
+                    at (ask! c {:op :debug-cursor :unit (:unit la) :call (:call la) :id 4})]
+                (is (= [["call" "rec.only/la" 1 1] ["call" "lf" 1 1]]
+                       (mapv (juxt :kind :label :index :of) (:frames at))))
+                (is (= ["args" "[1]"]
+                       ((juxt :key :value)
+                        (first (:children (ask! c (merge {:op :inspect :id 5
+                                                          :source {:debug {:cursor (select-keys at [:unit :call :at])}}}
+                                                         on)))))))))
+            (testing "defined again, it is recorded still"
+              (eval! r "(defn la [x] (+ x 2))")
+              (is (= "3" (:value (frame-tagged (eval! r "(lf 1)") "ret"))))
+              (is (= ["rec.only/la" ["1"] "3" nil]
+                     (said (first (:calls (ask! c {:op :debug-calls :unit f
+                                                   :call (:call (last (roots "lf"))) :id 6})))))))
+            (testing "and let go of with the last code recorded"
+              (ask! c {:op :debug-uninstrument :unit f :id 7})
+              (is (= "undefined" (wrapped? "la")))
+              (is (= "undefined" (wrapped? "lt")))
+              (is (= "3" (:value (frame-tagged (eval! r "(la 1)") "ret"))))))
           (finally (disconnect c)))))))
 
 (deftest test-a-recorded-clojurescript-definition-is-let-go-of-when-its-file-loads

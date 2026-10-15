@@ -53,6 +53,30 @@
     (<= 1 k (count head)) (number (nth head (dec k)))
     (< (- times (count tail)) k (inc times)) (number (nth tail (- k (- times (count tail)) 1)))))
 
+(defn events
+  "The values kept of the sites SITES of a call, KEPT-OF saying what is kept
+  of each, in the order they were recorded: [number site] pairs."
+  [kept-of sites]
+  (->> sites
+       (mapcat (fn [site] (map (fn [e] [(number e) site]) (some-> (kept-of site) entries))))
+       (sort-by first)
+       vec))
+
+(defn numbered
+  "The value of KEPT numbered N - {:value v}, or nil where it is not kept."
+  [kept n]
+  (some (fn [e] (when (= n (number e)) {:value (nth e 1)})) (some-> kept entries)))
+
+(defn latest
+  "Of KEPT, the last value numbered N or before it: [number value] - nil
+  where there is none, and ::not-kept where one not kept may be."
+  [kept n]
+  (when kept
+    (let [e (last (take-while #(<= (number %) n) (entries kept)))]
+      (cond
+        (may-miss? kept (if e (inc (number e)) 1) (inc n)) ::not-kept
+        e e))))
+
 (defn kept-iterations
   "Which iterations of a loop whose name was bound TIMES times are kept, where
   as many as KEPT values of a form are kept first and as many last: [first
@@ -75,6 +99,26 @@
                       sites))
            (apply min-key first)
            second))
+
+(defn times-round
+  "How many times a loop went round, whose names are bound each time round
+  at the sites SITES - or nil where none of them was bound."
+  [kept-of sites]
+  (some-> (first-bound kept-of sites) kept-of :times))
+
+(defn index-at
+  "The index, from 1, of the iteration the value numbered N is of, of a loop
+  whose names are bound each time round at the sites SITES - 0 before the
+  first one - or nil where that is not kept: the iterations around N were
+  not."
+  [kept-of sites n]
+  (when-let [kept (some-> (first-bound kept-of sites) kept-of)]
+    (let [[after before :as gap] (not-kept kept)
+          upto (fn [es] (count (take-while #(<= (number %) n) es)))]
+      (cond
+        (nil? gap) (upto (entries kept))
+        (<= n after) (upto (:head kept))
+        (>= n before) (- (:times kept) (count (drop-while #(<= (number %) n) (:tail kept))))))))
 
 (defn ranges
   "The numbers of the values of the iteration INDEX, from 1, of the loop
@@ -223,3 +267,22 @@
            (when-let [[_ v] (first (inspector/entries row))]
              [label v]))
          (inspector/entries table))))
+
+(defn at-outline
+  "What a call had at one moment, as an outline: the value of the form there,
+  on the line under the code written there, and the locals in scope there, under
+  \"locals\", each under its name. PLAN says them - {:value [label site
+  number] :locals [[label site number arg] ...]}, the Ith of the value of a
+  local with ARG i, as a param is of what its fn was called with, and a nil
+  number for a local whose value is not kept - and VALUE-OF answers the value
+  of a site numbered so, or ::not-kept."
+  [value-of {:keys [value locals]}]
+  (let [one (fn [[_ site n arg]]
+              (let [v (if (nil? n) ::not-kept (value-of site n))]
+                (cond
+                  (= ::not-kept v) :not-kept
+                  arg (nth v arg nil)
+                  :else v)))]
+    (inspector/outline
+     (cond-> [[(first value) (one value) :above]]
+       (seq locals) (conj ["locals" (inspector/outline (map (fn [l] [(first l) (one l)]) locals))])))))

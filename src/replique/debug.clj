@@ -45,6 +45,8 @@
   The debugger is started the first time a thread asks to stop, and runs as
   long as the process does."
   (:require [clojure.edn :as edn]
+            [clojure.string :as str]
+            [clojure.walk :as walk]
             [replique.cljs :as cljs]
             [replique.json :as json]
             [replique.iterations :as iterations]
@@ -504,6 +506,11 @@
   ;; whether entering there :starts a call - see "Recording"
   (atom {}))
 
+(defonce ^:private wrapping
+  ;; unit number -> {:var :original :wrapper :sites}: the vars whose calls only
+  ;; are recorded, what each held and holds now - see "Recording calls only"
+  (atom {}))
+
 (defn- compiler-var
   "The Var of Compiler named NAME, which only the compiler of replique-clj has
   - or nil."
@@ -525,18 +532,65 @@
                 n))
             @sites))))
 
+(defn- written-at
+  "The span of the form written in FORM at the place [LINE COLUMN], as a site
+  says it - or nil."
+  [form line column]
+  (some (fn [x]
+          (when-let [[l c el ec] (scope/span x)]
+            (when (= [line column] [l c])
+              {:line l :column c :end-line el :end-column ec})))
+        (tree-seq coll? seq form)))
+
+(defn- reader-fn?
+  "Whether the arity A of a fn written nowhere - see `scope/arities' - is what
+  #(...) reads to, its params named by the reader, p1__42# and rest__43#."
+  [a]
+  (let [params (remove #{'&} (:params a))]
+    (and (seq params)
+         (every? #(and (symbol? %) (re-matches #"(p\d+|rest)__\d+#" (name %))) params))))
+
+(defn- entry-place
+  "Where the fn whose arity ARITY - (params body...), as the compiler sees it -
+  is about to be compiled is written in FORM, what was evaluated, as a site
+  says it: a fn and defn write an arity the source did not, but its body the
+  source did, the same form, which says which fn it is. #(...) is where the
+  body read in it is, from the # before it. A fn a macro made, written nowhere,
+  is where the form written around it is - the one the compiler is in - and
+  :made."
+  [form arity]
+  (let [b (second arity)
+        a (when (instance? clojure.lang.IObj b)
+            (some (fn [x] (some #(when (identical? b (first (:body %))) %) (scope/arities x)))
+                  (tree-seq coll? seq form)))
+        [l c el ec] (:span a)]
+    (cond
+      l {:line l :column c :end-line el :end-column ec}
+      (and a (reader-fn? a) (scope/span b))
+      (let [[l c el ec] (scope/span b)]
+        {:line l :column (dec c) :end-line el :end-column ec})
+      :else
+      (let [line (some-> ^clojure.lang.Var (compiler-var "LINE") deref)
+            column (some-> ^clojure.lang.Var (compiler-var "COLUMN") deref)]
+        (assoc (or (when (and line column) (written-at form line column))
+                   (select-keys (meta form) [:line :column :end-line :end-column]))
+               :made true)))))
+
 (defn- new-site!
   "A number for the site the compiler is about to compile, of the unit UNIT
-  evaluated from FILE in the namespace NS - the form whose metadata is
-  EVALUATED - which no other site has."
+  evaluated from FILE in the namespace NS - the form EVALUATED - which no
+  other site has."
   [ns file unit evaluated site]
   (let [n (swap! site-numbers inc)
-        ;; an arity the source did not write, as a single arity defn's is,
-        ;; is where the form that was evaluated is
-        where (if (:line site) site evaluated)
+        ;; the entry of an arity the source did not write, as a single arity
+        ;; fn's is, is where its fn is
+        where (cond (:line site) site
+                    (= :enter (:kind site)) (entry-place evaluated (:form site))
+                    :else (meta evaluated))
         {:keys [record definition dialect]} (get @units unit)]
     (swap! sites assoc n (merge {:ns ns :file file :unit unit}
                                 (select-keys site [:kind :outermost])
+                                (select-keys where [:made])
                                 (when-let [params (:params site)]
                                   {:params (mapv str params)})
                                 ;; an arity is where its fn is, the one fn made
@@ -554,8 +608,8 @@
 
 (defn- site!
   "Number the site the compiler is about to compile, of the unit UNIT
-  evaluated from FILE in the namespace NS - the form whose metadata is
-  EVALUATED - or answer the number it already has. See Compiler/INSTRUMENT."
+  evaluated from FILE in the namespace NS - the form EVALUATED - or answer
+  the number it already has. See Compiler/INSTRUMENT."
   [ns file unit evaluated site]
   (or (local-site unit site)
       (new-site! ns file unit evaluated site)))
@@ -640,9 +694,9 @@
 ;;; Recording
 
 ;; A unit evaluated to record stops nothing: what each of its forms evaluates
-;; to is kept instead, call by call - of the last `calls-kept' calls, the first
-;; `values-kept' values of each form and the last ones, a form in a loop being
-;; evaluated many times in one call. Each numbered in the call, which is what
+;; to is kept instead, call by call - the first `values-kept' values of each
+;; form and the last ones, a form in a loop being evaluated many times in one
+;; call. Each numbered in the call, which is what
 ;; says which iteration of a loop a value is of - see replique.iterations. Which is what makes the data that went through a
 ;; function something to look at once it ran, written over the code it went
 ;; through: an example of everything it was handed and made.
@@ -658,13 +712,28 @@
 ;; What a fn was called with is what its entry evaluated to: a vector of the
 ;; value of each param - see Compiler/INSTRUMENT's :enter.
 ;;
+;; Of the calls of a unit made in no other call kept, the last `calls-kept'
+;; are kept. A call made in another is kept as long as that one is - and as
+;; long as the value it was made for is: the first one that call had once it
+;; was over, which says what it was made for, kept of it or not as any value
+;; is. Of the calls made for the same value - in a loop that records nothing
+;; else, (mapv f xs) - the first `values-kept' and the last ones. So what was
+;; called to make a value kept is kept, and gone with it. Of all the calls,
+;; `calls-kept-in-all' at most, the oldest let go of first.
+;;
 ;; The values are kept as they are, and printed when a client asks: what
 ;; changed since of a mutable one is shown changed, and what was realized
 ;; since of a lazy one, realized.
 
 (def ^:private calls-kept
-  "How many calls of a unit are kept, the last ones."
+  "How many calls of a unit made in no other call kept are kept, the last
+  ones."
   10)
+
+(def ^:private calls-kept-in-all
+  "How many calls are kept at most, of all units - the last ones, and the
+  ones running."
+  10000)
 
 (def ^:private values-kept
   "How many values of a form are kept in a call, the first ones, and as many
@@ -677,11 +746,15 @@
 
 (defonce ^:private calls
   ;; call number -> {:unit :thread :at :count :values {site {:times :values
-  ;; :numbers :head}}}: what the thread named :thread did from :at, in ms -
-  ;; :count values, each site evaluated :times times, its last :values, which
-  ;; are the values numbered :numbers in the call, and the first ones, :head,
-  ;; [number value]s
-  (atom {}))
+  ;; :numbers :head}} :parent :children :until}: what the thread named :thread did
+  ;; from :at, in ms - :count values, each site evaluated :times times, its
+  ;; last :values, which are the values numbered :numbers in the call, and the
+  ;; first ones, :head, [number value]s. Made in another call recorded, once
+  ;; that one had :count values, its :parent, [call count] - and of that one,
+  ;; one of the :children, [count call]s - and once it was over and that one
+  ;; had :until values, made for the next one. See "Going through what was
+  ;; recorded". Sorted, the oldest first
+  (atom (sorted-map)))
 
 (defonce ^:private call-numbers (atom 0))
 
@@ -751,25 +824,80 @@
   [in frames here]
   (filterv #(and (< (:depth %) here) (still-in? frames {:at (:depth %) :class (:class %)})) in))
 
+(defn- forget-calls
+  "Of M, the calls by number, without the calls GONE - which the calls that
+  made them have no more among their :children."
+  [m gone]
+  (reduce (fn [m g]
+            (let [[parent] (:parent (get m g))]
+              (cond-> (dissoc m g)
+                (contains? m parent)
+                (update-in [parent :children] (fn [cs] (filterv #(not= g (second %)) cs))))))
+          m gone))
+
+(defn- with-made
+  "The calls CS, the calls they made and so on - of M, the calls by number."
+  [m cs]
+  (loop [acc #{}, todo (vec cs)]
+    (if-let [c (peek todo)]
+      (if (contains? acc c)
+        (recur acc (pop todo))
+        (recur (conj acc c) (into (pop todo) (map second) (:children (get m c)))))
+      acc)))
+
+(defn- forget!
+  "Let go of the calls CS, and of the calls they made and so on."
+  [cs]
+  (when (seq cs)
+    (let [m @calls
+          gone (with-made m cs)
+          by-unit (group-by #(:unit (get m %)) gone)]
+      (swap! calls forget-calls gone)
+      (swap! recorded (fn [r]
+                        (reduce-kv (fn [r unit gs]
+                                     (let [gs (set gs)]
+                                       (cond-> r
+                                         (contains? r unit) (update unit #(filterv (complement gs) %)))))
+                                   r by-unit))))))
+
+(defn- forget-oldest!
+  "Let go of the oldest calls not running, where more than
+  `calls-kept-in-all' are kept."
+  []
+  (let [m @calls
+        over (- (count m) calls-kept-in-all)]
+    (when (pos? over)
+      (let [running (into #{} (comp (mapcat val) (map :call)) @in-calls)]
+        (forget! (take over (remove running (keys m))))))))
+
 (defn- call-started!
   "Start a call of the unit UNIT on this thread, over once the site RETURN
-  has its value - or never, without one: see `call-ended!'. Returns its
-  number."
+  has its value - or never, without one: see `call-ended!'. Made in the
+  innermost call the thread is in, where it is in one. Returns its number."
   [unit return]
   (let [thread (Thread/currentThread)
         id (.threadId thread)
         frames (frames-here)
         here (count frames)
-        c (swap! call-numbers inc)]
-    (swap! calls assoc c {:unit unit :thread (.getName thread)
-                          :at (System/currentTimeMillis) :values {}})
+        c (swap! call-numbers inc)
+        in (still-in-calls (get @in-calls id) frames here)
+        parent (:call (peek in))]
+    (swap! calls (fn [m]
+                   (let [made-in (get m parent)
+                         at (:count made-in 0)]
+                     (cond-> (assoc m c (cond-> {:unit unit :thread (.getName thread)
+                                                 :at (System/currentTimeMillis) :values {}}
+                                          made-in (assoc :parent [parent at])))
+                       made-in (update-in [parent :children] (fnil conj []) [at c])))))
     (swap! in-calls update id #(conj (still-in-calls % frames here)
                                      {:call c :unit unit :depth here :class (first frames)
                                       :return return}))
-    (let [[before after] (swap-vals! recorded update unit
-                                     #(vec (take-last calls-kept (conj (or % []) c))))
-          kept (set (get after unit))]
-      (swap! calls #(apply dissoc % (remove kept (get before unit)))))
+    ;; of the calls made in none kept, the last ones
+    (let [r (swap! recorded update unit (fnil conj []) c)
+          m @calls]
+      (forget! (drop-last calls-kept (remove #(contains? m (first (:parent (get m %))))
+                                             (get r unit)))))
+    (forget-oldest!)
     (changed! unit)
     c))
 
@@ -781,7 +909,43 @@
     (swap! in-calls (fn [m]
                       (let [in (filterv #(not= c (:call %)) (get m id))]
                         (if (seq in) (assoc m id in) (dissoc m id))))))
+  ;; made for the next value of the call that made it
+  (let [m (swap! calls (fn [m]
+                         (let [call (get m c)
+                               p (get m (first (:parent call)))]
+                           (if (and p (not (:until call)))
+                             (assoc-in m [c :until] (:count p 0))
+                             m))))
+        until (:until (get m c))]
+    (when until
+      (let [same (filter #(= until (:until (get m %)))
+                         (map second (:children (get m (first (:parent (get m c)))))))]
+        ;; the first ones and the last ones
+        (forget! (take (- (count same) (* 2 values-kept)) (drop values-kept same))))))
   (changed! unit))
+
+(defn- with-value
+  "M, the calls by number, with VALUE kept as what the site N evaluated to in
+  the call C - numbered in it, see replique.iterations."
+  [m c n value]
+  (if-let [call (get m c)]
+    (let [i (inc (:count call 0))]
+      (assoc m c (-> call
+                     (assoc :count i)
+                     (update-in [:values n]
+                                (fn [{:keys [times values numbers head]}]
+                                  (let [values (conj (or values []) value)
+                                        numbers (conj (or numbers []) i)
+                                        over (> (count values) values-kept)]
+                                    {:times (inc (or times 0))
+                                     ;; vectors of their own rather than
+                                     ;; subvecs, which hold on to all of it
+                                     :values (if over (vec (rest values)) values)
+                                     :numbers (if over (vec (rest numbers)) numbers)
+                                     :head (if (< (count head) values-kept)
+                                             (conj (or head []) [i value])
+                                             head)}))))))
+    m))
 
 (defn- record!
   "The site N of the unit UNIT has VALUE, which the call the thread is in
@@ -803,26 +967,13 @@
         call (some #(when (= unit (:unit %)) %) (rseq in))
         c (or (:call call) (peek (get @recorded unit)))]
     (when c
-      (swap! calls (fn [m]
-                     (if-let [call (get m c)]
-                       (let [i (inc (:count call 0))]
-                         (assoc m c (-> call
-                                        (assoc :count i)
-                                        (update-in [:values n]
-                                                   (fn [{:keys [times values numbers head]}]
-                                                     (let [values (conj (or values []) value)
-                                                           numbers (conj (or numbers []) i)
-                                                           over (> (count values) values-kept)]
-                                                       {:times (inc (or times 0))
-                                                        ;; vectors of their own rather
-                                                        ;; than subvecs, which hold on
-                                                        ;; to all of it
-                                                        :values (if over (vec (rest values)) values)
-                                                        :numbers (if over (vec (rest numbers)) numbers)
-                                                        :head (if (< (count head) values-kept)
-                                                                (conj (or head []) [i value])
-                                                                head)}))))))
-                       m)))
+      (let [[before _] (swap-vals! calls with-value c n value)
+            {:keys [numbers head]} (get-in before [c :values n])
+            out (first numbers)]
+        ;; the value that is not kept any more, and the calls made for it
+        (when (and (= values-kept (count numbers)) (not-any? #(= out (first %)) head))
+          (forget! (keep (fn [[_ made]] (when (= (dec out) (:until (get before made))) made))
+                         (:children (get before c))))))
       (when (and call (= n (:return call)))
         (call-ended! unit c)))))
 
@@ -842,8 +993,9 @@
   bound each time round is a site, outermost first: each {:site :span
   :spans}, and :sites, the sites of all its names. An arity of a fn is one
   too, with :fn and its :args, its first site being its entry - which records
-  what each call of it was called with, the names of its params among it. Not
-  a fn of a definition in no other, a call of which is a call of the unit."
+  what each call of it was called with, the names of its params among it -
+  each with the :names it binds. Not a fn of a definition in no other, a call
+  of which is a call of the unit."
   [n]
   (let [{:keys [form definition]} (get @units n)
         unit-sites (filter #(= n (:unit (val %))) @sites)
@@ -861,7 +1013,7 @@
                :let [sites (vec (keep identity (cons (when fn (entry-of l))
                                                      (map #(get local-sites (scope/span %)) names))))]
                :when (seq sites)]
-           (-> l (dissoc :names :outermost) (assoc :site (first sites) :sites sites))))))
+           (-> l (dissoc :outermost) (assoc :site (first sites) :sites sites))))))
 
 (defn- loops-said
   "The loops of the code of the unit N that went round in a call, as
@@ -876,6 +1028,14 @@
                 (when fn {:fn true})
                 (zipmap [:line :column :end-line :end-column] span)))))
 
+(defn- loop-has?
+  "Whether the site K, which is S, is evaluated again each time round of the
+  loop L, of `loops-of' - a fn's entry being where the fn is, and of each call
+  of it."
+  [l k s]
+  (boolean (or (some #{k} (:sites l))
+               (and (:line s) (some #(scope/in-span? % [(:line s) (:column s)]) (:spans l))))))
+
 (defn- iterating
   "What says which values of a call of the unit N are of the iteration INDEX
   of the loop whose name is bound at the site SITE - {:loop :index}, the
@@ -887,10 +1047,7 @@
   (let [loops (loops-of n)
         it (or (some #(when (= site (:site %)) %) loops)
                (refuse :unknown-iteration "Site " site " starts no iteration of a loop of unit " n))
-        ;; a fn's entry is where the fn is, and of each call of it
-        in? (fn [l k s] (or (some #{k} (:sites l))
-                            (and (:line s) (some #(scope/in-span? % [(:line s) (:column s)])
-                                                 (:spans l)))))
+        in? loop-has?
         chain (filter #(in? % site (get @sites site)) loops)]
     {:loop site
      :index index
@@ -986,16 +1143,19 @@
   SITE with: the loop, as `iterating' says it, and its :columns - and of the
   site FORM, where it is evaluated again each time round and is not a name of
   them, a column too, after them, named the code written there: what it
-  evaluated to last in each iteration. With ONLY, that column alone, and
-  :only - where there is one."
+  evaluated to last in each iteration. With ONLY, the column of FORM alone,
+  and :only - where there is one: FORM's, or one of the names, where it is
+  one."
   [n site form only]
   (let [it (iterating n {:site site :index 1})
         columns (columns-of n it)
-        code (when (and form (in-loop? n site form) (not (some #(= form (second %)) columns)))
-               (scope/form-at (:form (get @units n)) (span-of (get @sites form))))]
+        named (when form (some #(when (= form (second %)) %) columns))
+        code (when (and form (in-loop? n site form) (not named))
+               (scope/form-at (:form (get @units n)) (span-of (get @sites form))))
+        alone (or named (when code [code form]))]
     (cond-> {:iteration (cond-> (dissoc it :index) code (assoc-in [:owners form] site))
              :columns (cond-> columns code (conj [code form]))}
-      (and code only) (assoc :columns [[code form]] :only true))))
+      (and alone only) (assoc :columns [alone] :only true))))
 
 (defn loop-table
   "What each iteration of the loop whose name is bound at the site SITE
@@ -1059,14 +1219,19 @@
       (update :owners #(vec (select-keys % [site])))
       (update :starts vec)))
 
+(declare cursor-plan)
+
 (defn for-runtime
   "The :debug source of a view of a ClojureScript value recorded, SOURCE, as
-  the runtime takes it: an :iteration, a :loop, or the table of the :calls of
-  a unit, said with what the runtime does not know - see `iterating' and
-  `calls-plan'."
-  [{:keys [site iteration loop only calls] :as source}]
+  the runtime takes it: an :iteration, a :loop, the table of the :calls of a
+  unit, or what is at a :cursor - the :plan of it - said with what the
+  runtime does not know - see `iterating', `calls-plan' and `cursor-plan'."
+  [{:keys [site iteration loop only calls cursor] :as source}]
   (let [unit (:unit (get @sites (or site loop)))]
     (cond
+      cursor
+      {:plan (cursor-plan cursor)}
+
       calls
       (assoc source :columns (runtime-columns (calls-plan calls site)))
 
@@ -1149,7 +1314,7 @@
 
 (defn- unit-described
   "The unit numbered N as a client is told about it."
-  [n {:keys [ns file line column end-line end-column entry record dialect target]}]
+  [n {:keys [ns file line column end-line end-column entry record dialect target calls-only]}]
   (merge {:unit n :ns ns}
          ;; which runtime its code is in, where it is not this one
          (when (= :cljs dialect) {:dialect "cljs" :target (name target)})
@@ -1161,7 +1326,9 @@
            end-column (assoc :end-column end-column)
            ;; :entry is a file's, inside a jar
            (false? entry) (assoc :breaks-only true)
-           record (assoc :record true))))
+           record (assoc :record true)
+           ;; what it is written is not recorded, nor marked
+           calls-only (assoc :calls-only true))))
 
 (declare cljs-forget! cljs-recorded)
 
@@ -1179,21 +1346,34 @@
         (swap! recording #(apply dissoc % gone))
         (swap! returns #(apply dissoc % gone)))
       (let [[before _] (swap-vals! recorded dissoc n)]
-        (swap! calls #(apply dissoc % (get before n))))
+        (forget! (get before n)))
       (swap! in-calls (fn [m]
                         (into {} (keep (fn [[id in]]
                                          (let [in (filterv #(not= n (:unit %)) in)]
                                            (when (seq in) [id in]))))
                               m)))
       (when (var? var) (remove-watch var [::unit n]))
+      (let [[before _] (swap-vals! wrapping dissoc n)]
+        (when-let [{:keys [^clojure.lang.Var var original wrapper]} (get before n)]
+          (remove-watch var [::calls n])
+          (when (identical? wrapper (.getRawRoot var))
+            (alter-var-root var (constantly original)))))
       (when (= :cljs dialect) (cljs-forget! n unit))
       (when shown
         (output/broadcast-event! (protocol/event "debug-uninstrumented" {:unit n})))
+      ;; the calls only of a function are recorded for the calls that code
+      ;; recorded makes: with none of it left in that runtime, they go too
+      (when (and (:record unit) (not (:calls-only unit)))
+        (let [same? #(and (= dialect (:dialect %)) (= (:target unit) (:target %)))
+              left @units]
+          (when-not (some #(and (:record %) (not (:calls-only %)) (same? %)) (vals left))
+            (doseq [[k u] left :when (and (:calls-only u) (same? u))]
+              (uninstrument! k)))))
       true)))
 
 (defn- underlying
   "The function F wraps, where something holding a var for a while puts a
-  function of its own in it - see `replique.trace' - and F otherwise."
+  function of its own in it - see \"Recording calls only\" - and F otherwise."
   [f]
   (if-let [wrapped (::wraps (meta f))] (recur wrapped) f))
 
@@ -1202,6 +1382,37 @@
   name of what it calls: the fns it makes are called later, by others."
   [form]
   (and (seq? form) (symbol? (first form)) (.startsWith (name (first form)) "def")))
+
+(defn- returning-literals
+  "FORM, with the literal map, vector or set each fn written in it returns -
+  the last form of an arity - written (do literal), where the literal is: a
+  literal is not a form the compiler records the value of, and what a call
+  returned is what it is looked at for. The rest of FORM is FORM's own."
+  [form]
+  (let [returned (java.util.IdentityHashMap.)]
+    (doseq [a (scope/all-arities form)
+            :let [x (last (:body a))]
+            :when (and (or (map? x) (vector? x) (set? x)) (scope/span x))]
+      (.put returned x (with-meta (list 'do x) (meta x))))
+    (if (.isEmpty returned)
+      form
+      (letfn [(walk [x]
+                (if (.containsKey returned x)
+                  (.get returned x)
+                  (let [same (fn [xs ys] (every? true? (map identical? xs ys)))]
+                    (cond
+                      (and (seq? x) (= 'quote (first x))) x
+                      (seq? x) (let [ys (doall (map walk x))]
+                                 (if (same x ys) x (with-meta (apply list ys) (meta x))))
+                      (map? x) (let [ys (mapv (fn [[k v]] [(walk k) (walk v)]) x)]
+                                 (if (same (mapcat identity x) (mapcat identity ys))
+                                   x
+                                   (with-meta (into {} ys) (meta x))))
+                      (or (vector? x) (set? x))
+                      (let [ys (mapv walk x)]
+                        (if (same x ys) x (into (empty x) ys)))
+                      :else x))))]
+        (walk form)))))
 
 (defn eval-instrumented
   "Evaluate the form of INSTRUMENTED, compiled to be stepped through: the
@@ -1232,7 +1443,8 @@
             _ (swap! units assoc n {:entry entry :record record :definition definition})
             ;; what is evaluated outside of the calls of what it defines
             evaluation (when record (call-started! n nil))
-            v (try (with-bindings {instrument {:site (partial site! (str *ns*) *file* n where)
+            evaluated (cond-> form record returning-literals)
+            v (try (with-bindings {instrument {:site (partial site! (str *ns*) *file* n evaluated)
                                                :hook #'hook
                                                :enter #'enter
                                                ;; what each local was bound to,
@@ -1240,7 +1452,7 @@
                                                :locals (boolean record)}
                                    #'*compiler-options* (assoc *compiler-options*
                                                                :disable-locals-clearing true)}
-                     (eval form))
+                     (eval evaluated))
                    (catch Throwable t
                      (uninstrument! n)
                      (throw t))
@@ -1255,12 +1467,11 @@
             ;; the evaluation of a function is not one of its calls, which are
             ;; what is looked at
             (when (and evaluation (var? v) (fn? @v))
-              (swap! recorded update n #(vec (remove #{evaluation} %)))
-              (swap! calls dissoc evaluation))
+              (forget! [evaluation]))
             (swap! units assoc n unit)
             ;; defined again, the ordinary way or not: the code it holds is
-            ;; not this unit's any more. Wrapped or let go of by tracing,
-            ;; it is still the same code
+            ;; not this unit's any more. Wrapped or let go of to record
+            ;; its calls only, it is still the same code
             (when (var? v)
               (add-watch v [::unit n] (fn [_ _ old now]
                                         (when-not (identical? (underlying old) (underlying now))
@@ -1415,11 +1626,12 @@
         definition (definition? form)
         _ (swap! units assoc n {:dialect :cljs :record true :entry false
                                 :definition definition})
+        evaluated (returning-literals form)
         r (try (cljs-runtime-half!)
-               (cljs/with-instrument* {:site (partial site! ns file n where)
+               (cljs/with-instrument* {:site (partial site! ns file n evaluated)
                                        :hook (cljs-hook n definition)
                                        :locals true}
-                                      #(cljs/eval-form form opts))
+                                      #(cljs/eval-form evaluated opts))
                (catch Throwable t
                  (uninstrument! n)
                  (throw t)))]
@@ -1451,8 +1663,11 @@
                        (not= n except)
                        (:page unit)
                        (or (cljs-unit-gone? unit)
-                           (contains? vars (some-> (:var unit) str))
-                           (contains? nss (:ns unit))))]
+                           ;; a function recorded by its calls is wrapped
+                           ;; again, defined again - see debug.cljs
+                           (and (not (:calls-only unit))
+                                (or (contains? vars (some-> (:var unit) str))
+                                    (contains? nss (:ns unit))))))]
       (uninstrument! n))))
 
 (cljs/on-notify!
@@ -1465,6 +1680,146 @@
      (output/broadcast-event! (protocol/event "debug-recorded"
                                               {:unit unit :call call :calls calls})))))
 
+;;; Recording calls only
+
+;; A function whose code is not recorded - a library's, in a jar - can be
+;; recorded by its calls: what each was called with, and what it returned or
+;; threw, a call among the others, in the call that made it. Its var is made
+;; to hold a function that records the call and calls the one it held - and
+;; defined again, it holds that again, wrapped again. Nothing is compiled
+;; again. What cannot be seen is a call that does not go through the var: a
+;; direct-linked one, or one of a function captured as a value before.
+;;
+;; WHAT IS RECORDED IS THE CALLS MADE IN A CALL RECORDED: a library function
+;; is looked at as what the code recorded handed it and got back, and is
+;; called everywhere else too, where a call is not worth a stack walk, nor a
+;; place among the calls kept. So it is recorded for as long as code is
+;; recorded in its runtime, and let go of with the last of it - see
+;; `uninstrument!'.
+;;
+;; A unit of its own, as a definition recorded is, whose sites are made up:
+;; its entry, which has what it was called with, and what it returned, and
+;; what it threw - written nowhere, and said by their :label.
+
+(defn- calls-only-sites!
+  "Number the sites of the unit N, recorded by its calls only, of the
+  namespace NS: [entry returned threw]. The params, of a function of one
+  arity - ARGLISTS - are what its entry is shown under."
+  [n ns arglists]
+  (let [site! (fn [site]
+                (let [k (swap! site-numbers inc)]
+                  (swap! sites assoc k (assoc site :unit n :ns ns))
+                  k))
+        params (when (= 1 (count arglists)) (first arglists))
+        entry (site! {:kind :enter :outermost true
+                      :label (if (vector? params) (pr-str params) "args")})
+        returned (site! {:kind :value :label "returned"})
+        threw (site! {:kind :value :label "threw"})]
+    ;; a call is over once it returned, see `record!'
+    (swap! returns assoc entry returned)
+    [entry returned threw]))
+
+(defn- calls-recorder
+  "What the var of the unit N holds while its calls are recorded, F being
+  what it held: SITES are the unit's, see `calls-only-sites!'. A call made in
+  no call recorded is only made."
+  [n [entry returned threw] f]
+  (with-meta
+   (fn recorded [& args]
+     (if (or *in-frame* (empty? (get @in-calls (.threadId (Thread/currentThread)))))
+       (apply f args)
+       (let [c (call-started! n returned)]
+         (when (seq args) (record! n entry (vec args)))
+         (try
+           (let [r (apply f args)]
+             (record! n returned r)
+             r)
+           (catch Throwable t
+             (record! n threw t)
+             (call-ended! n c)
+             (throw t))))))
+   {::wraps f}))
+
+(defn- unrecordable
+  "Why the calls of the function F, the root of the var V, cannot be recorded
+  - or nil."
+  [^clojure.lang.Var v f]
+  (let [m (meta v)]
+    (cond
+      (:macro m) "a macro"
+      (.isDynamic v) "dynamic: what is bound is not the var's"
+      (:protocol m) "a protocol's method"
+      (not (fn? f)) "not a function"
+      (some #(.startsWith (.getName ^Class %) "clojure.lang.IFn$") (supers (class f)))
+      "it takes or returns primitives, which a caller calls it with directly")))
+
+(defn- rewrapped!
+  "The var of the unit N, whose calls are recorded, was defined again to NOW:
+  wrapped again - or, defined to what cannot be, let go of."
+  [n now]
+  (when-let [{:keys [var wrapper sites]} (get @wrapping n)]
+    (when-not (identical? wrapper now)
+      (if (unrecordable var now)
+        (uninstrument! n)
+        (let [w (calls-recorder n sites now)]
+          (swap! wrapping update n assoc :original now :wrapper w)
+          (alter-var-root var (constantly w)))))))
+
+(defn record-calls!
+  "Record the calls of the function the var V holds - see \"Recording calls
+  only\". Answers why it cannot be, or nil - where it is, already."
+  [^clojure.lang.Var v]
+  (let [f (.getRawRoot v)]
+    (or (unrecordable v f)
+        (when-not (some #(= v (:var %)) (vals @wrapping))
+          (let [n (swap! unit-numbers inc)
+                m (meta v)
+                ns (str (.ns v))
+                ss (calls-only-sites! n ns (:arglists m))
+                unit (merge {:ns ns :file (:file m) :var v :shown true :entry false
+                             :record true :definition true :calls-only true
+                             :returns (subvec ss 1)}
+                            (select-keys m [:line :column]))
+                w (calls-recorder n ss f)]
+            (swap! units assoc n unit)
+            (swap! wrapping assoc n {:var v :original f :wrapper w :sites ss})
+            (alter-var-root v (constantly w))
+            (add-watch v [::calls n] (fn [_ _ _ now] (rewrapped! n now)))
+            (output/broadcast-event! (protocol/event "debug-instrumented" (unit-described n unit)))
+            nil)))))
+
+(defn cljs-record-calls!
+  "Record the calls of the functions of the vars NAMED, qualified symbols, in
+  the runtime of `cljs/*target*' - see \"Recording calls only\", and
+  replique/debug.cljs, which wraps them. Answers [name why] of each that
+  cannot be, where it is already being none."
+  [named]
+  (cljs-runtime-half!)
+  (let [page (cljs/page)
+        already (set (for [[_ u] @units
+                           :when (and (:calls-only u) (= cljs/*target* (:target u))
+                                      (= page (:page u)))]
+                       (:var u)))
+        made (vec (for [q named :when (not (contains? already q))]
+                    (let [n (swap! unit-numbers inc)
+                          ss (calls-only-sites! n (namespace q) nil)]
+                      (swap! units assoc n {:dialect :cljs :target cljs/*target* :page page
+                                            :ns (namespace q) :var q :entry false :record true
+                                            :definition true :calls-only true
+                                            :returns (subvec ss 1)})
+                      {:name (str q) :unit n :enter (ss 0) :return (ss 1) :threw (ss 2)})))
+        answer (cljs-op {:op "wrap" :wraps made})
+        _ (when-let [why (:error answer)]
+            (doseq [{:keys [unit]} made] (uninstrument! unit))
+            (refuse (keyword (:kind answer "runtime")) why))
+        skipped (into {} (map (juxt :name :why)) (:skipped answer))]
+    (doseq [{:keys [name unit]} made]
+      (if (contains? skipped name)
+        (uninstrument! unit)
+        (let [u (get (swap! units update unit assoc :shown true) unit)]
+          (output/broadcast-event! (protocol/event "debug-instrumented" (unit-described unit u))))))
+    (vec (for [q named :let [why (get skipped (str q))] :when why] [q why]))))
+
 (defn stop-value
   "What a view of the value the thread ID stopped after shows: the value,
   while the thread is stopped, and :running otherwise."
@@ -1472,6 +1827,701 @@
   (if-let [pause (let [p (get @pauses id)] (when (:stopped p) p))]
     (:value pause)
     :running))
+
+;;; Going through what was recorded
+
+;; What was recorded is gone through a value at a time, the way a thread is
+;; stepped through - back as well as forward, over the values kept. Where it
+;; is at is a cursor: a call, and the number of one of its values, which says
+;; the rest - the form that had that value, the iteration of each loop around
+;; it, the locals in scope there and what they were, and the calls it is in.
+;; A call of a unit that records, started on a thread while a call of another
+;; one was running there, is that one's, made once it had as many values as
+;; its :parent says. The calls the cursor is in, and the loops around it in
+;; each, are its frames, innermost first - each at a form: the form of the
+;; cursor, and in a call that made the next one in, the form whose value that
+;; call was made for, the first one it had after.
+;;
+;; A client keeps the cursor, asks where a move takes it - `:debug-cursor' -
+;; and browses what is there, a view of {:debug {:cursor ...}}. A move is made
+;; from one of the frames: to the value after or before, into a call made
+;; there, out of the call, to the same form in another iteration of a loop or
+;; in another call of the same function. Where the frame is not the
+;; innermost, the cursor goes on being in a call of the same function made
+;; there, at the same form - as far down as there is one.
+;;
+;; Of ClojureScript, what is kept is asked of the runtime, which says the
+;; numbers of the values - see replique/debug.cljs - and keeps the values,
+;; which a view of the cursor is browsed there.
+
+(defn- call-data
+  "What is known of the call numbered C of this process: {:call :unit :thread
+  :at :parent :children :until :calls :kept-of :events} - :calls the calls of its
+  unit kept, :kept-of what is kept of each site, as replique.iterations takes
+  it, and :events the values kept, [number site]s in order. Or nil where it
+  is not kept."
+  [c]
+  (when-let [call (get @calls c)]
+    (let [kept-of (kept-in call)]
+      {:call c :unit (:unit call) :thread (:thread call) :at (:at call)
+       :parent (:parent call) :children (:children call []) :until (:until call)
+       :calls (get @recorded (:unit call) [])
+       :kept-of kept-of
+       :events (iterations/events kept-of (keys (:values call)))})))
+
+(defn- cljs-call-data
+  "What `call-data' says of the call C of the runtime of `cljs/*target*' - the
+  last call of the unit UNIT, C nil - asked of it: the numbers of the values
+  kept, without the values, which stay there."
+  [unit c]
+  (let [answer (cljs-op (cond-> {:op "call" :unit unit} c (assoc :call c)))]
+    (when-not (:error answer)
+      (let [sites (:sites answer)
+            kept-of (fn [site]
+                      (when-let [{:keys [times head tail]} (get sites site)]
+                        {:times times
+                         :head (mapv #(vector % nil) head)
+                         :tail (mapv #(vector % nil) tail)}))]
+        (assoc (select-keys answer [:call :unit :at :parent :children :until :calls])
+               :thread (name cljs/*target*)
+               :kept-of kept-of
+               :events (iterations/events kept-of (keys sites)))))))
+
+(defn- calls-of
+  "How the calls of the runtime the unit UNIT records in are known: {:call-of
+  :latest}, a fn answering `call-data' of a call, and one answering it of the
+  last call of UNIT - each call asked of a ClojureScript runtime once."
+  [unit]
+  (let [u (get @units unit)]
+    (when-not (:record u)
+      (refuse :unknown-unit "Unit " unit " does not record"))
+    (if (= :cljs (:dialect u))
+      (do (when (cljs-unit-gone? u)
+            (uninstrument! unit)
+            (refuse :unknown-unit "Unit " unit " was recorded in a page that is gone"))
+          (let [asked (atom {})
+                ask (fn [c] (binding [cljs/*target* (:target u)] (cljs-call-data unit c)))]
+            {:call-of (fn [c]
+                        (if (contains? @asked c)
+                          (get @asked c)
+                          (let [d (ask c)] (swap! asked assoc c d) d)))
+             :latest #(ask nil)}))
+      {:call-of call-data
+       :latest #(some-> (peek (get @recorded unit)) call-data)})))
+
+(defn- site-at [d n] (some (fn [[k site]] (when (= k n) site)) (:events d)))
+(defn- event-after [d n] (first (filter #(> (first %) n) (:events d))))
+(defn- event-before [d n] (last (filter #(< (first %) n) (:events d))))
+(defn- event-upto [d n] (last (filter #(<= (first %) n) (:events d))))
+
+(defn- site-events
+  "The numbers of the values of the site K kept of the call D, from FROM on
+  and before TO - nil, for no end."
+  [d k from to]
+  (for [[n site] (:events d)
+        :when (and (= k site) (<= from n) (or (nil? to) (< n to)))]
+    n))
+
+(defn- same-place
+  "Of the values of the call D numbered FROM on and before TO, the one of the
+  site K that is the ORDINALth of them, from 1, or the last - or nil where K
+  has none there."
+  [d k from to ordinal]
+  (let [ns (site-events d k from to)]
+    (when (seq ns) (nth ns (dec (min (max ordinal 1) (count ns)))))))
+
+(defn- levels
+  "The calls the cursor at the value numbered AT of the call D is in,
+  innermost first: each {:data :at}, the call and the value it is at - and
+  last, where the call that made the outermost one kept is not kept any
+  more, {:gone c}."
+  [call-of d at]
+  (loop [d d, at at, acc []]
+    (let [acc (conj acc {:data d :at at})
+          [parent pos] (:parent d)
+          made (or (:until d) pos)
+          p (when (and parent (< (count acc) 1000)) (call-of parent))
+          e (when p (or (event-after p made) (event-upto p made)))]
+      (cond
+        e (recur p (first e) acc)
+        parent (conj acc {:gone parent})
+        :else acc))))
+
+(defn- arg-written
+  "The name #(...) was written with for the param the reader named S - %,
+  %2, %& - or nil, for another name."
+  [s]
+  (when-let [[_ i] (re-matches #"(?:p(\d+)|rest)__\d+#" s)]
+    (cond (nil? i) "%&" (= "1" i) "%" :else (str "%" i))))
+
+(defn- as-written
+  "FORM with what #(...) read to written back so: (fn* [p1__42#] (f p1__42#))
+  as #(f %) - a symbol printing so - and its params, where they are, as %."
+  [form]
+  (walk/prewalk
+   (fn [x]
+     (cond
+       (and (symbol? x) (arg-written (name x))) (symbol (arg-written (name x)))
+       (and (seq? x) (= 'fn* (first x)) (= 3 (count x)) (vector? (second x))
+            (seq (remove #{'&} (second x)))
+            (every? #(and (symbol? %) (arg-written (name %))) (remove #{'&} (second x))))
+       (symbol (str "#" (pr-str (as-written (nth x 2)))))
+       :else x))
+   form))
+
+(defn- code-text
+  "The code FORM on one line, as long as a label is - on a line of its own."
+  [form]
+  (let [s (str/replace (binding [*print-length* 5 *print-level* 3] (pr-str (as-written form)))
+                       #"\s+" " ")]
+    (if (> (count s) 70) (str (subs s 0 69) "…") s)))
+
+(defn- site-label
+  "What the value of the site K of the unit UNIT is shown under: the code
+  written there - the params, of a fn's entry."
+  [unit k]
+  (let [site (get @sites k)]
+    (cond
+      ;; made up, of a function recorded by its calls only
+      (:label site) (:label site)
+      (= :enter (:kind site))
+      (str "[" (str/join " " (map #(or (arg-written %) %) (:params site))) "]")
+      :else
+      (or (some-> (scope/form-at (:form (get @units unit)) (span-of site)) code-text)
+          (str "line " (:line site))))))
+
+(defn- unit-label
+  "What the unit UNIT defines, or where it is."
+  [unit]
+  (let [{:keys [var line calls-only]} (get @units unit)]
+    (cond
+      ;; a library's, which its namespace says
+      (and calls-only var) (str (if (var? var) (symbol var) var))
+      (var? var) (name (.sym ^clojure.lang.Var var))
+      (symbol? var) (name var)
+      line (str "line " line)
+      :else "evaluation")))
+
+(defn- loop-label
+  "What the loop L of the code of the unit UNIT is called: its head and the
+  names it binds each time round - fn and its params, of a fn."
+  [unit l]
+  (if (:fn l)
+    (str "fn [" (str/join " " (:names l)) "]")
+    (let [form (scope/form-at (:form (get @units unit)) (:span l))]
+      (str/join " " (cons (if (seq? form) (first form) "loop") (:names l))))))
+
+(defn- place
+  "Where the site K is written, as a frame says it, and what it is."
+  [k]
+  (let [site (get @sites k)]
+    (cond-> (select-keys site [:line :column :end-line :end-column])
+      ;; the entry of a fn a macro made, at the form around it: not its params
+      (:kind site) (assoc :site-kind (if (:made site) "made" (name (:kind site)))))))
+
+(defn- loops-around
+  "The loops of the code of the call D around its value numbered AT, that
+  went round by then, innermost first: each of `loops-of', with the :index
+  of the iteration AT is of - nil where that is not kept - and how many
+  times it went round in the call, :of."
+  [d at]
+  (let [k (site-at d at)
+        site (get @sites k)
+        kept-of (:kept-of d)]
+    (->> (loops-of (:unit d))
+         (filter #(loop-has? % k site))
+         reverse
+         (keep (fn [l]
+                 (when-let [of (iterations/times-round kept-of (:sites l))]
+                   (let [index (iterations/index-at kept-of (:sites l) at)]
+                     (when-not (= 0 index)
+                       (assoc l :index index :of of)))))))))
+
+(defn- frames-of
+  "The frames of the cursor in the calls LEVELS - see `levels' - innermost
+  first: in each call, the loops around where it is, then the call itself.
+  The :level of each is the call it is of, and its :form the site the cursor
+  is at in that call, with the :code written there; a call frame says which
+  iteration of the innermost loop around it is, where that is kept."
+  [levels]
+  (vec
+   (mapcat
+    (fn [j {:keys [data at gone]}]
+      (if gone
+        [{:kind "gone" :level j :call gone}]
+        (let [unit (:unit data)
+              loops (loops-around data at)
+              calls (:calls data)
+              index (.indexOf ^java.util.List calls (:call data))
+              k (site-at data at)
+              form {:form k :code (site-label unit k)}]
+          (concat
+           (for [l loops]
+             (merge {:kind "loop" :level j :unit unit :call (:call data) :loop (:site l)
+                     :label (loop-label unit l) :of (:of l)}
+                    form
+                    (when (:fn l) {:fn true})
+                    (when (:index l) {:index (:index l)})
+                    ;; the form the cursor is at, in the loop as in its call
+                    (place k)))
+           [(merge {:kind "call" :level j :unit unit :call (:call data)
+                    :label (unit-label unit) :of (count calls)
+                    :thread (:thread data) :started (:at data)}
+                   form
+                   (when-not (neg? index) {:index (inc index)})
+                   (when-let [l (first (filter :index loops))]
+                     {:iteration {:site (:site l) :index (:index l)}})
+                   (place k))]))))
+    (range) levels)))
+
+(defn- made-until
+  "The number of the last value the call that made the call MADE, made once
+  it had POS values, had before it was over: the next one is the one it was
+  made for."
+  [made pos]
+  (or (:until made) pos))
+
+(defn- descend
+  "Where the cursor goes, the value numbered AT of the call D taking the place
+  of the one the calls BELOW were made for - innermost first, each {:data
+  :at}: in each, the call of the same function made there, at the same form,
+  as many values of it in as it was - as far down as there is one. [call at
+  note]."
+  [call-of d at below]
+  (loop [d d, at at, [old & more] (reverse below)]
+    (if-not old
+      [d at nil]
+      (let [unit (:unit (:data old))
+            k (site-at (:data old) (:at old))
+            ordinal (count (site-events (:data old) k 0 (inc (:at old))))
+            from (or (first (event-before d at)) 0)
+            child (->> (:children d)
+                       (filter (fn [[pos _]] (< pos at)))
+                       (keep (fn [[pos c]] (some-> (call-of c) (vector pos))))
+                       (filter (fn [[made pos]] (<= from (made-until made pos) (dec at))))
+                       (map first)
+                       (filter #(and (= unit (:unit %)) (seq (:events %))))
+                       last)]
+        (cond
+          (nil? child) [d at (str (unit-label unit) " was not called there")]
+          (same-place child k 0 nil ordinal) (recur child (same-place child k 0 nil ordinal) more)
+          :else [child (ffirst (:events child)) nil])))))
+
+(defn- unit-called
+  "The unit recording the function the form at the value numbered AT of the
+  call D calls - or nil, where it calls none recorded."
+  [d at]
+  (let [unit (get @units (:unit d))
+        form (scope/form-at (:form unit) (span-of (get @sites (site-at d at))))
+        head (when (seq? form) (first form))
+        called (when (symbol? head)
+                 (if (= :cljs (:dialect unit))
+                   (symbol (or (namespace head) (:ns unit)) (name head))
+                   (some-> (find-ns (symbol (:ns unit))) (ns-resolve head))))]
+    (when called
+      (some (fn [[n u]]
+              (when (and (:record u) (= called (:var u)))
+                n))
+            @units))))
+
+(defn- into-call
+  "Where a move into a call made at the value numbered AT of the call D goes:
+  the first value of the call it was made for, over since the value before -
+  or of the call made after it, before the value after. What it was called
+  with, of a fn's: that call is gone through from its start."
+  [call-of d at]
+  (let [before (or (first (event-before d at)) 0)
+        after (first (event-after d at))
+        made (keep (fn [[pos c]]
+                     (when-let [made (call-of c)]
+                       (when (seq (:events made)) [pos made])))
+                   (:children d))]
+    (if-let [[_ made] (or (last (filter (fn [[pos made]] (<= before (made-until made pos) (dec at)))
+                                        made))
+                          (first (filter (fn [[pos]] (and (<= at pos) (or (nil? after) (< pos after))))
+                                         made)))]
+      [made (ffirst (:events made)) nil]
+      (if-let [unit (unit-called d at)]
+        (refuse :no-move (unit-label unit) " was called here, but that call is not"
+                " recorded: it was not being recorded then, or it is not kept"
+                " any more")
+        (refuse :no-move "No call recorded was made here")))))
+
+(defn- iteration-move
+  "Where a move to another iteration of a loop goes, from the frame F of the
+  cursor of FRAMES, whose calls are LEVELS: the same form in the next one
+  kept, MOVE \"next-iteration\", the one before, or the iteration INDEX,
+  \"iteration\". Of the loop of F, or of the innermost one of its call."
+  [call-of levels frames f move index]
+  (let [level (:level f)
+        l (if (= "loop" (:kind f))
+            f
+            (or (some #(when (and (= level (:level %)) (= "loop" (:kind %))) %) frames)
+                (refuse :no-move "No loop went round around here")))
+        {d :data at :at} (get levels level)
+        unit (:unit d)
+        kept-of (:kept-of d)
+        current (:index l)
+        _ (when (and (nil? current) (not= "iteration" move))
+            (refuse :no-move "Which iteration this is is not kept"))
+        kept (iterations/kept-indices kept-of (:loop l) values-kept)
+        target (case move
+                 "next-iteration" (first (filter #(> % current) kept))
+                 "previous-iteration" (last (filter #(< % current) kept))
+                 "iteration" (some #{index} kept))
+        _ (when-not target
+            (refuse :no-move (case move
+                               "next-iteration" "This is the last iteration kept"
+                               "previous-iteration" "This is the first iteration kept"
+                               (str "Iteration " index " is not kept"))))
+        range-of (fn [i] (get (iterations/ranges kept-of (iterating unit {:site (:loop l) :index i}))
+                              (:loop l)))
+        [from to] (or (range-of target) (refuse :no-move "Iteration " target " is not kept"))
+        k (site-at d at)
+        ordinal (if-let [[from-now] (when current (range-of current))]
+                  (count (site-events d k from-now (inc at)))
+                  1)
+        skipped (when (and current (not= "iteration" move) (> (abs (- target current)) 1))
+                  (str "Iterations " (inc (min target current)) " to " (dec (max target current))
+                       " are not kept"))]
+    (if-let [n (same-place d k from to ordinal)]
+      (let [[made at note] (descend call-of d n (subvec levels 0 level))]
+        [made at (some->> (remove nil? [skipped note]) seq (str/join " - ")) (:call d)])
+      [d (or (first (event-after d (dec from))) at)
+       (str/join " - " (remove nil? [skipped (str (site-label unit k) " was not evaluated in"
+                                                  " iteration " target)]))
+       (:call d)])))
+
+(defn- call-move
+  "Where a move to another call of the same function goes, from the frame F
+  of the cursor whose calls are LEVELS: the same form in the call after,
+  MOVE \"next-call\", the one before, or the call INDEX among the ones kept,
+  from 1, \"call\"."
+  [call-of levels f move index]
+  (let [level (:level f)
+        {d :data at :at} (get levels level)
+        calls (:calls d)
+        i (.indexOf ^java.util.List calls (:call d))
+        c (cond
+            (neg? i) (refuse :no-move "This call is not kept any more")
+            (= "next-call" move) (get calls (inc i))
+            (= "call" move) (when (and index (pos? index)) (get calls (dec index)))
+            :else (when (pos? i) (get calls (dec i))))
+        _ (when-not c
+            (refuse :no-move (case move
+                               "next-call" "This is the last call kept"
+                               "previous-call" "This is the first call kept"
+                               (str "Call " index " is not kept"))))
+        made (or (call-of c) (refuse :no-move "That call is not kept any more"))
+        k (site-at d at)]
+    (when (empty? (:events made))
+      (refuse :no-move "That call recorded nothing kept"))
+    (if-let [n (same-place made k 0 nil (count (site-events d k 0 (inc at))))]
+      (conj (descend call-of made n (subvec levels 0 level)) c)
+      [made (ffirst (:events made)) (str (site-label (:unit d) k) " was not evaluated in that call")
+       c])))
+
+(defn- made-event?
+  "Whether the value [n site] of a call is the entry of a fn a macro made -
+  written nowhere, gone past."
+  [[_ site]]
+  (:made (get @sites site)))
+
+(defn- not-kept-between
+  "What says how many values of the call D between the numbers FROM and TO
+  were not kept, or nil."
+  [d from to]
+  (let [kept (count (filter #(< from (first %) to) (:events d)))
+        gone (- to from 1 kept)]
+    (when (pos? gone) (str gone " values in between are not kept"))))
+
+(def ^:private cursor-moves
+  #{"next" "previous" "in" "out" "next-iteration" "previous-iteration" "iteration"
+    "next-call" "previous-call" "call"})
+
+(defn- move-cursor
+  "Where the move MOVE takes the cursor whose calls are LEVELS and frames
+  FRAMES, from the frame numbered FRAME - INDEX the iteration of a move
+  \"iteration\", the call of a move \"call\": [call at note moved], MOVED the call the frame moved from
+  is in after a move to another iteration or call - or refused, where it goes
+  nowhere."
+  [call-of levels frames frame move index]
+  (let [f (get frames frame)
+        {d :data at :at up :gone} (get levels (:level f))
+        outer (get levels (inc (:level f)))]
+    (when up (refuse :no-move "That call is not kept any more"))
+    (case move
+      "next" (if-let [[n] (first (remove made-event? (filter #(> (first %) at) (:events d))))]
+               [d n (not-kept-between d at n)]
+               (if (:data outer)
+                 [(:data outer) (:at outer) nil]
+                 (refuse :no-move "This is the last value kept of the outermost call")))
+      "previous" (if-let [[n] (last (remove made-event? (filter #(< (first %) at) (:events d))))]
+                   [d n (not-kept-between d n at)]
+                   (if-let [[n] (when (:data outer) (event-upto (:data outer) (second (:parent d))))]
+                     [(:data outer) n nil]
+                     (refuse :no-move "This is the first value kept of the outermost call")))
+      "out" (if (:data outer)
+              [(:data outer) (:at outer) nil]
+              (refuse :no-move "This is the outermost call kept"))
+      "in" (into-call call-of d at)
+      ("next-iteration" "previous-iteration" "iteration")
+      (iteration-move call-of levels frames f move index)
+      ("next-call" "previous-call" "call") (call-move call-of levels f move index))))
+
+(defn- at-plan
+  "What a view of the cursor at the value numbered AT of the call D shows,
+  as `iterations/at-outline' takes it: the value, under the code written
+  there, and the locals in scope at its form, as the code wrote them - each
+  the last value it was bound to by then. A param, what its fn was called
+  with; a name a let or a loop binds, what was recorded where it is written,
+  or, where nothing was, what the form a let binds it to evaluated to. The
+  innermost of the same name only."
+  [d at]
+  (let [unit (:unit d)
+        form (:form (get @units unit))
+        k (site-at d at)
+        site (get @sites k)
+        kept-of (:kept-of d)
+        mine (filter #(= unit (:unit (val %))) @sites)
+        by-span (fn [kind] (into {} (for [[n s] mine :when (= kind (:kind s))] [(span-of s) n])))
+        local-sites (by-span :local)
+        value-sites (by-span :value)
+        arities (scope/all-arities form)
+        entries (into {} (for [[n s] mine
+                               :when (and (= :enter (:kind s)) (:marker s))
+                               :let [a (scope/entered-arity arities (:marker s))]
+                               :when a]
+                           [(:span a) n]))
+        bound (fn [label k arg]
+                (when k
+                  (let [l (iterations/latest (kept-of k) at)]
+                    (cond
+                      (= ::iterations/not-kept l) [label k nil arg]
+                      l [label k (first l) arg]))))
+        locals (when (:line site)
+                 (for [{:keys [pattern init arity arg]} (scope/locals-at form [(:line site) (:column site)])
+                       :let [names (scope/pattern-names pattern)
+                             named (map #(get local-sites (scope/span %)) names)]
+                       local (cond
+                               (and (seq names) (every? some? named))
+                               (map (fn [nm k] (bound (str nm) k nil)) names named)
+                               arity [(bound (pr-str pattern) (get entries (:span arity)) arg)]
+                               init [(bound (pr-str pattern) (get value-sites (scope/span init)) nil)]
+                               :else [])
+                       :when local]
+                   local))]
+    {:value [(site-label unit k) k at nil]
+     :locals (->> (reverse locals)
+                  (reduce (fn [[seen acc] l]
+                            (if (seen (first l)) [seen acc] [(conj seen (first l)) (conj acc l)]))
+                          [#{} []])
+                  second
+                  reverse
+                  vec)}))
+
+(defn- cursor-at
+  "The call and the value the frame :frame of the cursor CURSOR - {:unit :call
+  :at :frame} - is at, and the frames: [call at frames]."
+  [{:keys [unit call at frame]}]
+  (let [{:keys [call-of]} (calls-of unit)
+        d (or (call-of call) (refuse :unknown-call "Call " call " is not kept any more"))
+        ls (levels call-of d (or (first (event-upto d at)) (ffirst (:events d))))
+        fs (frames-of ls)
+        {:keys [data at]} (get ls (:level (get fs (or frame 0) (first fs))))]
+    (when-not data
+      (refuse :unknown-call "That call is not kept any more"))
+    [data at fs]))
+
+(defn cursor-value
+  "What a view of the cursor CURSOR shows - see `at-plan'."
+  [cursor]
+  (let [[d at] (cursor-at cursor)
+        kept-of (:kept-of d)]
+    (iterations/at-outline (fn [k n]
+                             (if-let [v (iterations/numbered (kept-of k) n)]
+                               (:value v)
+                               ::iterations/not-kept))
+                           (at-plan d at))))
+
+(defn- cursor-plan
+  "What a view of the cursor CURSOR shows, as the runtime keeping its values
+  takes it: `at-plan', and the :call."
+  [cursor]
+  (let [[d at] (cursor-at cursor)]
+    (assoc (at-plan d at) :call (:call d))))
+
+;; Where the move :move takes the cursor at the value :at of the call :call
+;; of the unit :unit - or at the value of the site :site nearest it, before
+;; it where there is one, or its last - from its frame :frame, the innermost
+;; without. Without :call, a call of the unit is the last one, and so is a
+;; call not kept any more, which is said - and not moved from. Answers the
+;; cursor, its :frames, the frame moved from, and the :note of what was
+;; passed by or not found
+(defmethod protocol/handle :debug-cursor [_ msg]
+  (let [{:keys [unit call at site frame move index]} msg]
+    (when-not (and (integer? unit) (or (nil? call) (integer? call)) (or (nil? at) (integer? at))
+                   (or (nil? site) (integer? site)) (or (nil? frame) (nat-int? frame))
+                   (or (nil? move) (contains? cursor-moves move))
+                   (or (nil? index) (integer? index)))
+      (refuse :invalid-message "A cursor is at the value :at of the :call of a :unit, or at"
+              " its :site, and moves by :move, one of " (str/join ", " (sort cursor-moves))
+              " - from its :frame - got: "
+              (pr-str (select-keys msg [:unit :call :at :site :frame :move :index]))))
+    (let [{:keys [call-of latest]} (calls-of unit)
+          [d note] (if-let [d (when call (call-of call))]
+                     [d nil]
+                     [(or (latest) (refuse :unknown-call "Unit " unit " was not called yet"))
+                      (when call "That call is not kept any more - this is the last one")])
+          _ (when (empty? (:events d))
+              (refuse :unknown-call "That call recorded nothing kept"))
+          at (if-let [ns (when site (seq (site-events d site 0 nil)))]
+               (or (when (and at (not note)) (or (last (filter #(<= % at) ns)) (first ns)))
+                   (last ns))
+               (or (when (and at (not note)) (first (event-upto d at)))
+                   (ffirst (:events d))))
+          ls (levels call-of d at)
+          fs (frames-of ls)
+          frame (min (or frame 0) (dec (count fs)))
+          f (get fs frame)
+          [d at said moved] (if (and move (not note))
+                              (move-cursor call-of ls fs frame move index)
+                              [d at nil nil])
+          fs (frames-of (levels call-of d at))
+          ;; the frame moved from stays the one looked at, where it is still
+          ;; there - or its call
+          in-moved (fn [kind loop]
+                     (first (keep-indexed (fn [i g]
+                                            (when (and (= moved (:call g)) (= kind (:kind g))
+                                                       (= loop (:loop g)))
+                                              i))
+                                          fs)))
+          frame (if moved
+                  (or (in-moved (:kind f) (:loop f)) (in-moved "call" nil) 0)
+                  0)]
+      (cond-> {:unit (:unit d) :call (:call d) :at at :frame frame :frames fs}
+        (or note said) (assoc :note (or note said))))))
+
+;;; The calls recorded, as a tree
+
+;; The calls a client is shown, to go to one: the calls kept made in none, or
+;; in one not kept any more - of every unit that records, on the JVM and in
+;; each ClojureScript runtime - and the calls each made, each with what it was
+;; called with and what it returned, where that is kept.
+
+(defn- call-ends
+  "The sites a call of the unit UNIT starts and ends at: [entries returns],
+  the entries of its outermost fns - which record what it was called with -
+  and the last form of each, whose value it returns."
+  [unit]
+  (let [entries (vec (for [[k s] (sort-by key @sites)
+                           :when (and (= unit (:unit s)) (= :enter (:kind s)) (:outermost s))]
+                       k))]
+    [entries (or (:returns (get @units unit)) (vec (keep return-of entries)))]))
+
+(defn- call-told
+  "What a client is told of the call C, CALL, as the runtime keeping it says
+  it: {:call :unit :calls :at :thread :parent :made :last}, :calls the calls
+  of its unit kept, and :last the last value of each of the sites KS it
+  has a value of - {:number :value}, and the :args, of an entry - printed."
+  [c call ks]
+  {:call c :unit (:unit call) :calls (get @recorded (:unit call) [])
+   :at (:at call) :thread (:thread call)
+   :parent (first (:parent call)) :made (count (:children call))
+   :last (into {} (for [k ks
+                        :let [{:keys [values numbers]} (get-in call [:values k])]
+                        :when (seq values)]
+                    [k (cond-> {:number (peek numbers)
+                                :value (let [v (peek values)]
+                                         ;; what a call recorded by its calls
+                                         ;; only threw, which a line says
+                                         (if (instance? Throwable v)
+                                           (str (.getName (class v))
+                                                (some->> (ex-message v) (str ": ")))
+                                           (printed-briefly v)))}
+                         (and (= :enter (:kind (get @sites k))) (vector? (peek values)))
+                         (assoc :args (mapv printed-briefly (peek values))))]))})
+
+(defn- call-summary
+  "A call as a client is shown it, from what its runtime told - see
+  `call-told': its :label, which of the calls kept of its unit it is,
+  :index, of :of, what it was called with, :args, and returned, :value -
+  where they are kept - how many calls it made that are kept, :made, and,
+  among calls made in none kept, ROOT, whether it was made in one not kept
+  any more, :made-in-gone - and, of a call recorded by its calls only that
+  threw, :threw, its :value being what it threw. ENDS is `call-ends'."
+  [ends root {:keys [call unit calls at thread parent made] :as told}]
+  (let [[entries returns] (ends unit)
+        latest (fn [ks] (->> (keep #(some-> (get (:last told) %) (assoc :site %)) ks)
+                             (sort-by :number)
+                             last))
+        args (latest entries)
+        value (latest returns)
+        index (.indexOf ^java.util.List calls call)]
+    (cond-> (merge {:unit unit :call call :label (unit-label unit) :thread thread :started at
+                    :made (or made 0)}
+                   ;; which runtime it is in, where it is not this one
+                   (let [{:keys [dialect target]} (get @units unit)]
+                     (when (= :cljs dialect) {:dialect "cljs" :target (name target)})))
+      (not (neg? index)) (assoc :index (inc index) :of (count calls))
+      args (assoc :args (:args args))
+      value (assoc :value (:value value))
+      (and value (= (:site value) (second (:returns (get @units unit))))) (assoc :threw true)
+      (and root parent) (assoc :made-in-gone true))))
+
+(defn- cljs-calls-told
+  "What the runtime of `cljs/*target*' tells of its calls: the ones made in
+  none, or in one it does not keep - or, with PARENT, the ones that call
+  made - see `call-told'."
+  [parent]
+  (let [mine (for [[n u] @units :when (and (:record u) (= :cljs (:dialect u))
+                                           (= cljs/*target* (:target u)))]
+               n)
+        sites (vec (mapcat #(apply concat (call-ends %)) mine))
+        answer (cljs-op (cond-> {:op "calls" :sites sites} parent (assoc :parent parent)))]
+    (when (:error answer)
+      (refuse (keyword (:kind answer "runtime")) (:error answer)))
+    (mapv #(assoc % :thread (name cljs/*target*)) (:calls answer))))
+
+(defn- calls-told
+  "The calls of this process made in none kept - or, with PARENT, the ones
+  the call PARENT of the unit UNIT made - as their runtimes tell them, oldest
+  first."
+  [unit parent]
+  (let [all @calls
+        jvm (fn []
+              (let [sites (vec (mapcat #(apply concat (call-ends %))
+                                       (for [[n u] @units :when (and (:record u) (not= :cljs (:dialect u)))]
+                                         n)))]
+                (if parent
+                  (for [[_ c] (get-in all [parent :children]) :let [call (get all c)] :when call]
+                    (call-told c call sites))
+                  (for [[c call] all
+                        :when (not (contains? all (first (:parent call))))]
+                    (call-told c call sites)))))
+        targets (distinct (for [[_ u] @units
+                                :when (and (:record u) (= :cljs (:dialect u))
+                                           (not (cljs-unit-gone? u)))]
+                            (:target u)))]
+    (if parent
+      (let [u (or (get @units unit) (refuse :unknown-unit "No unit " unit))]
+        (if (= :cljs (:dialect u))
+          (binding [cljs/*target* (:target u)]
+            (cljs-calls-told parent))
+          (vec (jvm))))
+      (let [cljs (mapcat (fn [t] (binding [cljs/*target* t]
+                                   (when (cljs/runtime-connected?) (cljs-calls-told nil))))
+                         targets)]
+        (->> (concat (jvm) cljs) (sort-by (juxt :at :call)) vec)))))
+
+;; The calls kept made in none kept - or, with :unit and :call, the calls that
+;; call made - each as `call-summary' says it
+(defmethod protocol/handle :debug-calls [_ msg]
+  (let [{:keys [unit call]} msg]
+    (when-not (or (and (nil? unit) (nil? call)) (and (integer? unit) (integer? call)))
+      (refuse :invalid-message "The calls a call made are asked by its :unit and its :call,"
+              " got: " (pr-str (select-keys msg [:unit :call]))))
+    {:calls (mapv (partial call-summary (memoize call-ends) (nil? call)) (calls-told unit call))}))
 
 ;;; What the debugger calls, on the thread it stopped
 
@@ -1896,7 +2946,8 @@
                                   :let [picked (pick site {:times times :value (peek values)})
                                         where (select-keys (get @sites site)
                                                            [:line :column :end-line :end-column])]
-                                  :when picked]
+                                  ;; not code written: no params to show its args on
+                                  :when (and picked (not (:made (get @sites site))))]
                               (if (= ::iterations/not-kept picked)
                                 (merge {:site site :not-kept true} where)
                                 (entered-said (get @sites site)

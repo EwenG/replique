@@ -43,22 +43,25 @@
 
 ;;; What is not data
 
-(deftype Outline [entries])
+(deftype Outline [entries above])
 
 (defn outline
   "What is shown as an outline rather than as data: a heading a line - its
   label - and the value under it, browsed as any other. What a debugger has
   to say of a value is not part of it: which iteration it is of, which call,
   which local. ENTRIES are [label value] pairs, a label a string, said once:
-  one said again is told apart by its number, \"x (2)\"."
+  one said again is told apart by its number, \"x (2)\" - or [label value
+  :above], the label on a line of its own, above its value: code, which can
+  be long."
   [entries]
-  (Outline.
-   (first (reduce (fn [[out seen] [label v]]
-                    (let [label (first (remove seen (cons label (map #(str label " (" % ")")
-                                                                     (iterate inc 2)))))]
-                      [(conj out [label v]) (conj seen label)]))
-                  [[] #{}]
-                  entries))))
+  (let [[out _ above] (reduce (fn [[out seen above] [label v where]]
+                                (let [label (first (remove seen (cons label (map #(str label " (" % ")")
+                                                                                 (iterate inc 2)))))]
+                                  [(conj out [label v]) (conj seen label)
+                                   (cond-> above (= :above where) (conj label))]))
+                              [[] #{} #{}]
+                              entries)]
+    (Outline. out above)))
 
 (defn outline?
   "Whether X is an `outline'."
@@ -69,6 +72,12 @@
   "The [label value] pairs of the outline O."
   [o]
   (.-entries ^Outline o))
+
+(defn- above?
+  "Whether the label LABEL of the outline O is on a line of its own, above
+  what is under it."
+  [o label]
+  (contains? (.-above ^Outline o) label))
 
 (defn- outline-get [o label]
   (if-let [[_ v] (some #(when (= label (first %)) %) (.-entries ^Outline o))]
@@ -597,11 +606,12 @@
 (defn- value-column
   "The column the value of a child labelled LABEL is written at, its entry
   starting at COLUMN: after its key, where it has one."
-  [column {:keys [via key pad]}]
+  [column {:keys [via key pad above]}]
   (+ column (case via
               ("key" "prop") (inc (count key))
-              ;; the labels of an outline are padded to the longest
-              "label" (inc (max (count key) (or pad 0)))
+              ;; the labels of an outline are padded to the longest - or
+              ;; the value is on the line under its label, indented
+              "label" (if above 2 (inc (max (count key) (or pad 0))))
               "meta" 1
               0)))
 
@@ -612,7 +622,8 @@
   (let [width (or width 80)
         column (or column 0)
         label (when step (cond-> (label step (max 20 (quot (- width column) 2)))
-                           pad (assoc :pad pad)))
+                           pad (assoc :pad pad)
+                           (and (outline? b) (above? b (second step))) (assoc :above true)))
         {:keys [text whole cut]} (summary x (max 20 (- width (value-column column label)
                                                    (if step margin 0)))
                                       meta?)
@@ -726,7 +737,9 @@
           columns (when (and tables? (= :seq (shape b))) (table-keys page))
           opts (if (outline? b)
                  (assoc opts :column column
-                        :pad (reduce max 0 (map (fn [[[_ label]]] (count label)) page)))
+                        :pad (reduce max 0 (keep (fn [[[_ label]]]
+                                                   (when-not (above? b label) (count label)))
+                                                 page)))
                  (-> opts (assoc :column (+ column (count open))) (dissoc :pad)))]
       (cond-> {:children (mapv (fn [[step x]]
                                  (cond-> (describe view id b step x opts)
@@ -752,7 +765,7 @@
   it takes. And a line for saying there is more."
   [{:keys [children more columns]} base width]
   (+ (if (or columns (some #(or (keyed? %) (:count %)) children))
-       (count children)
+       (+ (count children) (count (filter :above children)))
        (let [w (max 1 (- width base))]
          (quot (+ (reduce + 0 (map #(inc (count (:value %))) children)) (dec w)) w)))
      (if more 1 0)))

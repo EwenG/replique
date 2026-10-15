@@ -6,7 +6,9 @@
   it, which is the other thing tested here."
   (:require [clojure.data.json :as djson]
             [clojure.test :refer [deftest is testing]]
+            [replique.classpath :as classpath]
             [replique.debug :as debug]
+            [replique.state :as state]
             [replique.test-client :as client
              :refer [connect delete-recursively disconnect eval! recv recv-until
                      send! temp-dir]])
@@ -702,6 +704,58 @@
                              [:root :value])))))
           (finally (disconnect r) (disconnect c) (.delete file)))))))
 
+(deftest a-fn-in-a-definition-is-entered-where-it-is-written
+  (if-not (debug/instrumenting?)
+    (println "replique.debug-test: no compiler to record with - run with :analysis")
+    (client/with-process [info nil]
+      (let [r (client/repl-client info nil 60000)
+            c (control info)
+            file (java.io.File/createTempFile "entries" ".clj")]
+        (try
+          (ret r (str "#replique/src {:file " (pr-str (str file)) " :line 1"
+                      " :instrument true :entry false :record true}\n"
+                      "(defn ef [xs ys]
+  (let [a (mapv (fn [x] (inc x)) xs)
+        b (mapv #(* 2 %) ys)]
+    (doall (for [y ys] (+ y (count a) (count b))))))"))
+          (let [unit (:unit (await-event c "debug-instrumented"))
+                _ (ret r "(ef [1 2] [3 4])")
+                place (juxt :line :column :end-line :end-column)
+                entries (filter #(= "enter" (:kind %)) (:values (recorded c unit nil 1)))]
+            (testing "a fn and #(...) are entered where they are written - not the definition"
+              (is (= {["x"] [2 17 2 33] ["xs" "ys"] [1 1 4 53]}
+                     (into {} (for [e entries :when (not (re-find #"__" (first (:params e))))]
+                                [(:params e) (place e)]))))
+              (is (= [3 17 3 25] (place (some #(when (re-find #"^p1__" (first (:params %))) %)
+                                              entries)))))
+            (testing "one a macro made says nothing of its args, having no params written"
+              (is (= 3 (count entries))))
+            (testing "a frame of a loop is at the form the cursor is at"
+              (let [at (ask! c {:op :debug-cursor :unit unit :id 2
+                                :site (:site (some #(when (= [2 25] [(:line %) (:column %)]) %)
+                                                   (:values (recorded c unit nil 3))))})
+                    [loop call] (:frames at)]
+                (is (= ["loop" "fn [x]" [2 25 2 32]] ((juxt :kind :label place) loop)))
+                (is (= [2 25 2 32] (place call)))))
+            (testing "#(...) is said as it is written"
+              (is (= "(mapv #(* 2 %) ys)"
+                     (:code (first (:frames (ask! c {:op :debug-cursor :unit unit :id 4
+                                                     :site (:site (some #(when (= [3 11] [(:line %) (:column %)]) %)
+                                                                        (:values (recorded c unit nil 5))))})))))))
+            (testing "the entry of a fn a macro made is gone past"
+              (let [start (ask! c {:op :debug-cursor :unit unit :id 6})
+                    codes (loop [cur start codes []]
+                            (let [next (ask! c (merge {:op :debug-cursor :id 7 :move "next"}
+                                                      (select-keys cur [:unit :call :at])))]
+                              (if (or (:error next) (> (count codes) 60))
+                                codes
+                                (recur next (conj codes (:code (first (:frames next))))))))]
+                (is (some #{"y"} codes))
+                (is (not-any? #(re-find #"__" (str %)) codes))
+                (is (some #{"[%]"} codes))
+                (is (some #{"(* 2 %)"} codes)))))
+          (finally (disconnect r) (disconnect c) (.delete file)))))))
+
 (deftest each-call-of-a-fn-is-a-time-round
   (if-not (debug/instrumenting?)
     (println "replique.debug-test: no compiler to record with - run with :analysis")
@@ -878,12 +932,17 @@
               ;; the form evaluated is the repl's to show
               (is (= {[30 9] ["2" 1] [30 18] ["4" 1]}
                      (:by-place (recorded c unit nil 13))))))
-          (testing "traced, and let go of by tracing, it records still"
+          (testing "its calls recorded too, and let go of, it records still"
             (record 40 "(defn rk [n] (inc n))")
-            (let [unit (:unit (await-event c "debug-instrumented"))]
-              (is (= ["user/rk"] (:traced (ask! c {:op :trace :vars ["user/rk"] :id 16}))))
+            (let [unit (:unit (await-event c "debug-instrumented"))
+                  _ (send! c {:op :record-calls :vars ["user/rk"] :id 16})
+                  wrapper (await-event c "debug-instrumented")]
+              (is (:calls-only wrapper))
+              ;; its answer, which followed the event
+              (is (= ["user/rk"] (:recorded (loop [] (let [f (next-frame c)]
+                                                       (if (= "event" (:tag f)) (recur) f))))))
               (is (= "2" (ret r "(rk 1)")))
-              (ask! c {:op :untrace :id 17})
+              (ask! c {:op :debug-uninstrument :unit (:unit wrapper) :id 17})
               (is (= "3" (ret r "(rk 2)")))
               (is (= 2 (count (:calls (recorded c unit nil 18)))))
               (testing "and defined again, it does not"
@@ -894,4 +953,373 @@
               (is (seq uninstrumented))
               (is (= "unknown-unit" (:error (ask! c {:op :debug-recorded
                                                      :unit (first uninstrumented) :id 15}))))))
+          (finally (disconnect r) (disconnect c) (.delete file)))))))
+
+(deftest the-calls-recorded-are-a-tree
+  (if-not (debug/instrumenting?)
+    (println "replique.debug-test: no compiler to record with - run with :analysis")
+    (client/with-process [info nil]
+      (let [r (client/repl-client info nil 60000)
+            c (control info)
+            file (java.io.File/createTempFile "calls" ".clj")
+            record (fn [line code]
+                     (ret r (str "#replique/src {:file " (pr-str (str file)) " :line " line
+                                 " :instrument true :entry false :record true}\n" code))
+                     (:unit (await-event c "debug-instrumented")))
+            said (juxt :label :args :value :made :index :of)]
+        (try
+          (let [g (record 1 "(defn tg [x] (* x 10))")
+                f (record 2 "(defn tf [xs]\n  (reduce + (map tg xs)))")
+                _ (ret r "(tf [1 2 3])")
+                _ (ret r "(tg 4)")
+                ;; of the other tests too, in this JVM
+                calls (filterv #(#{f g} (:unit %)) (:calls (ask! c {:op :debug-calls :id 1})))]
+            (testing "the calls made in none, oldest first, with what they were called with
+                      and returned"
+              (is (= [["tf" ["[1 2 3]"] "60" 3 1 1] ["tg" ["4"] "40" 0 4 4]] (mapv said calls)))
+              (is (every? :started calls))
+              (is (= [f g] (mapv :unit calls))))
+            (testing "and the calls each made"
+              (let [made (:calls (ask! c {:op :debug-calls :unit f :call (:call (first calls)) :id 2}))]
+                (is (= [["tg" ["1"] "10" 0 1 4] ["tg" ["2"] "20" 0 2 4] ["tg" ["3"] "30" 0 3 4]]
+                       (mapv said made)))
+                (testing "a call is where a cursor goes"
+                  (is (= (:call (second made))
+                         (:call (ask! c {:op :debug-cursor :unit g :call (:call (second made)) :id 3})))))))
+            (is (= "invalid-message" (:error (ask! c {:op :debug-calls :unit f :id 4})))))
+          (finally (disconnect r) (disconnect c) (.delete file)))))))
+
+(deftest a-literal-a-function-returns-is-what-it-returned
+  (if-not (debug/instrumenting?)
+    (println "replique.debug-test: no compiler to record with - run with :analysis")
+    (client/with-process [info nil]
+      (let [r (client/repl-client info nil 60000)
+            c (control info)
+            file (java.io.File/createTempFile "literals" ".clj")
+            record (fn [line code]
+                     (ret r (str "#replique/src {:file " (pr-str (str file)) " :line " line
+                                 " :instrument true :entry false :record true}\n" code))
+                     (:unit (await-event c "debug-instrumented")))
+            site-at (fn [unit line column]
+                      (:site (some #(when (= [line column] [(:line %) (:column %)]) %)
+                                   (:values (ask! c {:op :debug-recorded :unit unit :id 1})))))
+            code (fn [cur] (:code (first (:frames cur))))]
+        (try
+          (ret r "(defn lh [x] (dec x))")
+          (let [g (record 1 "(defn lg [x] {:a (inc x) :b [x]})")
+                f (record 2 "(defn lf [x]\n  (let [m (lg x)]\n    [m (lh x)]))")
+                _ (ret r "(lf 1)")
+                calls (filterv #(#{f g} (:unit %)) (:calls (ask! c {:op :debug-calls :id 2})))]
+            (testing "the value of a literal a fn ends with is what its call returned"
+              (is (= [["lf" "[{:a 2, :b [1]} 0]"]] (mapv (juxt :label :value) calls)))
+              (is (= [["lg" "{:a 2, :b [1]}"]]
+                     (mapv (juxt :label :value)
+                           (:calls (ask! c {:op :debug-calls :unit f :call (:call (first calls))
+                                            :id 3}))))))
+            (testing "which a move into the call goes to"
+              (let [in (ask! c (merge {:op :debug-cursor :move "in" :id 5}
+                                      (select-keys (ask! c {:op :debug-cursor :unit f :id 6
+                                                            :site (site-at f 3 11)})
+                                                   [:unit :call :at])))]
+                (is (= "[x]" (code in)))
+                (is (= "{:a (inc x), :b [x]}"
+                       (code (reduce (fn [at _]
+                                       (ask! c (merge {:op :debug-cursor :move "next" :id 9}
+                                                      (select-keys at [:unit :call :at]))))
+                                     in (range 2)))))))
+            (testing "a call of a function recorded since is said to be one, where it was not"
+              (record 3 "(defn lh [x] (dec x))")
+              (let [at (ask! c {:op :debug-cursor :unit f :site (site-at f 4 8) :id 7})
+                    in (ask! c (merge {:op :debug-cursor :move "in" :id 8}
+                                      (select-keys at [:unit :call :at])))]
+                (is (= "(lh x)" (code at)))
+                (is (= "no-move" (:error in)))
+                (is (re-find #"^lh was called here, but that call is not recorded" (str (:message in)))))))
+          (finally (disconnect r) (disconnect c) (.delete file)))))))
+
+(deftest the-calls-made-for-a-value-kept-are-kept
+  (if-not (debug/instrumenting?)
+    (println "replique.debug-test: no compiler to record with - run with :analysis")
+    (client/with-process [info nil]
+      (let [r (client/repl-client info nil 60000)
+            c (control info)
+            file (java.io.File/createTempFile "made" ".clj")
+            record (fn [line code]
+                     (ret r (str "#replique/src {:file " (pr-str (str file)) " :line " line
+                                 " :instrument true :entry false :record true}\n" code))
+                     (:unit (await-event c "debug-instrumented")))
+            site-at (fn [unit line column]
+                      (:site (some #(when (= [line column] [(:line %) (:column %)]) %)
+                                   (:values (ask! c {:op :debug-recorded :unit unit :id 1})))))
+            made (fn [unit]
+                   (let [call (:call (ask! c {:op :debug-cursor :unit unit :id 2}))]
+                     (:calls (ask! c {:op :debug-calls :unit unit :call call :id 3}))))
+            into (fn [unit site at]
+                   (ask! c (merge {:op :debug-cursor :move "in" :id 4}
+                                  (select-keys (ask! c {:op :debug-cursor :unit unit :site site
+                                                        :at at :id 5})
+                                               [:unit :call :at]))))]
+        (try
+          (let [h (record 1 "(defn mh [f xs] (mapv f xs))")
+                o (record 2 (str "(defn mo [xs]\n"
+                                 "  (doall (for [x xs]\n"
+                                 "          [(mh (fn [y] (inc y)) [x])\n"
+                                 "           (mh #(* 2 %) [x x])])))"))
+                _ (ret r "(mo (range 30))")]
+            (testing "of the calls made in a loop, the ones made for the values kept"
+              (is (= (* 2 2 10) (count (made o)))))
+            (testing "a move into one of them, a fn of the call that made it called in it"
+              (doseq [[line at] [[4 0] [4 Integer/MAX_VALUE] [5 0] [5 Integer/MAX_VALUE]]]
+                (let [in (into o (site-at o line 12) at)]
+                  (is (= h (:unit in)))
+                  (is (= "[f xs]" (:code (first (:frames in)))))))))
+          (testing "of the calls made for the same value, the first ones and the last ones"
+            (let [_ (record 7 "(defn mh2 [x] (inc x))")
+                  g (record 8 "(defn mg [xs] (mapv mh2 xs))")]
+              (ret r "(mg (range 30))")
+              (is (= (* 2 10) (count (made g))))
+              (let [in (into g (site-at g 8 15) 0)]
+                (is (= "[x]" (:code (first (:frames in))))))))
+          (finally (disconnect r) (disconnect c) (.delete file)))))))
+
+(defn- source-root! []
+  (let [dir (java.io.File. (str (client/temp-dir)) "src")]
+    (.mkdirs dir)
+    (.addURL state/class-loader (.toURL (.toURI dir)))
+    (state/adopt-class-loader!)
+    (classpath/rescan!)
+    (.getPath dir)))
+
+(defn- written-file! [dir name source]
+  (let [f (java.io.File. (str dir) (str name))]
+    (.mkdirs (.getParentFile f))
+    (spit f source)
+    (.getPath f)))
+
+(deftest the-calls-only-of-a-function-are-recorded
+  (if-not (debug/instrumenting?)
+    (println "replique.debug-test: no compiler to record with - run with :analysis")
+    (client/with-process [info nil]
+      (let [r (client/repl-client info nil 60000)
+            c (control info)
+            file (java.io.File/createTempFile "only" ".clj")
+            record (fn [line code]
+                     (ret r (str "#replique/src {:file " (pr-str (str file)) " :line " line
+                                 " :instrument true :entry false :record true}\n" code))
+                     (loop [] (let [e (await-event c "debug-instrumented")]
+                                (if (:calls-only e) (recur) (:unit e)))))
+            said (juxt :label :args :value :threw)
+            roots (fn [label] (filterv #(= label (:label %)) (:calls (ask! c {:op :debug-calls :id 1}))))
+            wrapped? (fn [v] (ret r (str "(boolean (:replique.debug/wraps (meta " v ")))")))]
+        (try
+          ;; what other tests recorded in this JVM: the calls only of a
+          ;; function are let go of with the last code recorded
+          (ask! c {:op :debug-uninstrument :id 0})
+          (ret r "(ns lc)")
+          (ret r "(defn la [x] (inc x))")
+          (ret r "(defn lt [] (throw (ex-info \"none\" {})))")
+          (ret r "(def lz 1)")
+          (let [{:keys [recorded skipped]}
+                (ask! c {:op :record-calls :vars ["lc/la" "lc/lt" "lc/lz" "clojure.core/inc"] :id 1})]
+            (is (= ["lc/la" "lc/lt"] recorded))
+            (is (= [["lc/lz" "not a function"]
+                    ["clojure.core/inc" "called everywhere, or what recording is made of"]]
+                   (mapv (juxt :var :why) skipped))))
+          (testing "a call made in no call recorded is only made"
+            (is (= "2" (ret r "(la 1)")))
+            (is (= [] (roots "lc/la"))))
+          (let [f (record 1 "(defn lf [x] (+ (la x) (try (lt) (catch Exception _ 0))))")
+                _ (is (= "2" (ret r "(lf 1)")))
+                [lf] (roots "lf")
+                made (:calls (ask! c {:op :debug-calls :unit f :call (:call lf) :id 2}))]
+            (testing "one made in one is a call among the calls recorded, with what it was
+                      called with and returned, or threw"
+              (is (= ["lf" ["1"] "2" nil] (said lf)))
+              (is (= [["lc/la" ["1"] "2" nil] ["lc/lt" nil "clojure.lang.ExceptionInfo: none" true]]
+                     (mapv said made))))
+            (testing "which a cursor goes through: what it was called with, then returned"
+              (let [la (first made)
+                    at (ask! c {:op :debug-cursor :unit (:unit la) :call (:call la) :id 3})
+                    seen (fn [cur]
+                           (first (:children (ask! c {:op :inspect :id 4
+                                                      :source {:debug {:cursor (select-keys cur [:unit :call :at])}}}))))]
+                (is (= [["call" "lc/la" 1 1] ["call" "lf" 1 1]]
+                       (mapv (juxt :kind :label :index :of) (:frames at))))
+                (is (= ["[x]" "[1]"] ((juxt :key :value) (seen at))))
+                (is (= ["returned" "2"]
+                       ((juxt :key :value) (seen (ask! c (merge {:op :debug-cursor :id 5 :move "next"}
+                                                                (select-keys at [:unit :call :at])))))))))
+            (testing "defined again, it is recorded still"
+              (ret r "(defn la [x] (+ x 2))")
+              (is (= "3" (ret r "(lf 1)")))
+              (is (= ["lc/la" ["1"] "3" nil]
+                     (said (first (:calls (ask! c {:op :debug-calls :unit f
+                                                   :call (:call (last (roots "lf"))) :id 6})))))))
+            (testing "and let go of with the last code recorded"
+              (ask! c {:op :debug-uninstrument :unit f :id 7})
+              (is (= "false" (wrapped? "lc/la")))
+              (is (= "false" (wrapped? "lc/lt")))
+              (is (= "3" (ret r "(lc/la 1)")))))
+          (finally (disconnect r) (disconnect c) (.delete file)))))))
+
+(deftest the-library-functions-code-calls-are-found
+  (client/with-process [info nil]
+    (let [r (client/repl-client info nil 60000)
+          c (control info)
+          root (source-root!)]
+      (try
+        (if-not (true? (:analysis (ask! c {:op :process-info :id 1})))
+          (println "replique.debug-test: no model to read callees from - run with :analysis")
+          (let [a (written-file! root "lcs/a.clj"
+                                 (str "(ns lcs.a (:require [clojure.string :as str]))\n"
+                                      "(defn low [x] (str/upper-case x))\n"
+                                      "(defn mid [x] (inc (count (low x))))\n"
+                                      "(defn top [] (mid \"a\"))\n"))]
+            (eval! r (str "#replique/load " (pr-str {:file a})))
+            (testing "the functions around one, and where they are"
+              (let [{:keys [vars callers callees]}
+                    (ask! c {:op :recording-scope :around "lcs.a/mid" :id 2})]
+                (is (= ["lcs.a/top"] callers))
+                (is (= ["lcs.a/low"] callees))
+                (is (= [["lcs.a/mid" a] ["lcs.a/top" a] ["lcs.a/low" a]]
+                       (mapv (juxt :var :file) vars)))))
+            (testing "a library's functions they call, recorded by their calls - and never
+                      clojure.core's"
+              (is (= {:recorded ["clojure.string/upper-case"] :skipped []}
+                     (select-keys (ask! c {:op :record-calls :callees-of ["lcs.a/low" "lcs.a/mid"] :id 3})
+                                  [:recorded :skipped]))))))
+        (finally
+          (ask! c {:op :debug-uninstrument :id 9})
+          (disconnect r) (disconnect c)
+          (client/delete-recursively (.getParent (java.io.File. ^String root))))))))
+
+(deftest a-cursor-goes-through-what-was-recorded
+  (if-not (debug/instrumenting?)
+    (println "replique.debug-test: no compiler to record with - run with :analysis")
+    (client/with-process [info nil]
+      (let [r (client/repl-client info nil 60000)
+            c (control info)
+            file (java.io.File/createTempFile "cursor" ".clj")
+            record (fn [line code]
+                     (ret r (str "#replique/src {:file " (pr-str (str file)) " :line " line
+                                 " :instrument true :entry false :record true}\n" code))
+                     (:unit (await-event c "debug-instrumented")))
+            cursor (fn [from & {:as msg}]
+                     (ask! c (merge {:op :debug-cursor :id 1}
+                                    (select-keys from [:unit :call :at])
+                                    msg)))
+            frames (fn [cur] (mapv (juxt :kind :label :index :of) (:frames cur)))
+            seen (fn [{:keys [unit call at frame]}]
+                   (let [o (ask! c {:op :inspect :id 2
+                                    :source {:debug {:cursor {:unit unit :call call :at at
+                                                              :frame frame}}}})
+                         label (first (:children o))
+                         locals (some #(when (= "locals" (:key %)) %) (:children o))]
+                     [(:key label) (:value label)
+                      (when locals
+                        (mapv (juxt :key :value)
+                              (:children (ask! c {:op :inspect-children :view (:view o)
+                                                  :node (:node locals) :id 3}))))]))]
+        (try
+          (let [g (record 1 "(defn cg [x] (* x 10))")
+                f (record 2 "(defn cf [xs]
+  (let [total (atom 0)]
+    (doseq [x xs]
+      (swap! total + (cg x)))
+    @total))")
+                _ (ret r "(cf [1 2 3])")
+                start (cursor {:unit f})
+                site-at (fn [line column]
+                          (:site (some #(when (= [line column] [(:line %) (:column %)]) %)
+                                       (:values (ask! c {:op :debug-recorded :unit f :id 4})))))
+                cg-x (cursor {:unit f} :site (site-at 5 22))]
+            (testing "a cursor starts at the first value of the last call: what it was called with"
+              (is (= ["[xs]" "[[1 2 3]]" [["xs" "[1 2 3]"]]] (seen start)))
+              (is (= [["call" "cf" 1 1]] (frames start))))
+            (testing "and goes from value to value"
+              (let [after (cursor start :move "next")]
+                (is (= "(atom 0)" (first (seen after))))
+                (is (= (:at start) (:at (cursor after :move "previous"))))
+                (is (= "no-move" (:error (cursor start :move "previous"))))))
+            (testing "at a form, at its last value - in the loops it is in"
+              (is (= ["(cg x)" "30"] (take 2 (seen cg-x))))
+              (is (= [["loop" "doseq x" 3 3] ["call" "cf" 1 1]] (frames cg-x)))
+              (testing "each frame at it"
+                (is (= [["(cg x)" (site-at 5 22)] ["(cg x)" (site-at 5 22)]]
+                       (mapv (juxt :code :form) (:frames cg-x))))))
+            (testing "to the same form in another iteration, with the locals of that one"
+              (let [before (cursor cg-x :move "previous-iteration")]
+                (is (= ["(cg x)" "20" [["xs" "[1 2 3]"] ["total" "#Atom 60"] ["x" "2"]]]
+                       (seen before)))
+                (is (= [["loop" "doseq x" 2 3] ["call" "cf" 1 1]] (frames before)))
+                (testing "into the call made for a value, and back out of it"
+                  (let [in (cursor before :move "in")]
+                    (is (= ["[x]" "[2]" [["x" "2"]]] (seen in)))
+                    (is (= [["call" "cg" 2 3] ["loop" "doseq x" 2 3] ["call" "cf" 1 1]] (frames in)))
+                    (is (= [(:call before) (:at before)]
+                           ((juxt :call :at) (cursor in :move "out"))))
+                    (testing "and from a frame further out, to the same place in the call made
+                              in the next iteration"
+                      (let [next (cursor in :frame 1 :move "next-iteration")]
+                        (is (= 1 (:frame next)))
+                        (is (= ["[x]" "[3]" [["x" "3"]]] (seen (assoc next :frame 0))))
+                        (is (= [["call" "cg" 3 3] ["loop" "doseq x" 3 3] ["call" "cf" 1 1]]
+                               (frames next)))
+                        (testing "what the frame is at is what is seen of it"
+                          (is (= ["(cg x)" "30"] (take 2 (seen next)))))))
+                    (testing "or the call of the same function before"
+                      (let [first-call (cursor in :move "previous-call")]
+                        (is (= ["[x]" "[1]" [["x" "1"]]] (seen first-call)))
+                        (is (= [["call" "cg" 1 3] ["loop" "doseq x" 1 3] ["call" "cf" 1 1]]
+                               (frames first-call)))
+                        (is (= "no-move" (:error (cursor first-call :move "previous-call"))))))
+                    (testing "past the last value of a call is the value it was made for"
+                      (let [returned (cursor in :move "next")]
+                        (is (= ["(* x 10)" "20" [["x" "2"]]] (seen returned)))
+                        (is (= [(:call before) (:at before)]
+                               ((juxt :call :at) (cursor returned :move "next"))))))
+                    (testing "or a call of the same function, by its number among the ones kept"
+                      (let [third (cursor in :move "call" :index 3)]
+                        (is (= ["[x]" "[3]" [["x" "3"]]] (seen third)))
+                        (is (= [["call" "cg" 3 3] ["loop" "doseq x" 3 3] ["call" "cf" 1 1]]
+                               (frames third))))
+                      (is (= "no-move" (:error (cursor in :move "call" :index 7)))))
+                    (testing "what the form of a frame was in each iteration of its loop"
+                      (let [l (:loop (second (:frames in)))
+                            view (fn [source] (get-in (ask! c {:op :inspect :id 6
+                                                                :source {:debug source}})
+                                                      [:root :value]))]
+                        (is (= "iteration 1 10  iteration 2 20  iteration 3 30"
+                               (view {:loop l :call (:call before) :site (site-at 5 22) :only true})))
+                        (testing "and the names bound in it"
+                          (is (= [["iteration 1" "x 1  (cg x) 10"] ["iteration 2" "x 2  (cg x) 20"]
+                                  ["iteration 3" "x 3  (cg x) 30"]]
+                                 (mapv (juxt :key :value)
+                                       (:children (ask! c {:op :inspect :id 6
+                                                           :source {:debug {:loop l :call (:call before)
+                                                                            :site (site-at 5 22)}}}))))))
+                        (testing "of a name of the loop, that name"
+                          (is (= "iteration 1 1  iteration 2 2  iteration 3 3"
+                                 (view {:loop l :call (:call before) :site l :only true}))))))))))
+            (testing "a gap in what is kept is said"
+              (let [l (record 10 "(defn cl [] (dotimes [i 30] (inc i)))")
+                    _ (ret r "(cl)")
+                    at (fn [line column]
+                         (cursor {:unit l}
+                                 :site (:site (some #(when (= [line column] [(:line %) (:column %)]) %)
+                                                    (:values (ask! c {:op :debug-recorded :unit l :id 5}))))))
+                    ninth (cursor (at 10 29) :move "iteration" :index 9)]
+                (testing "a loop bound its name once more than it went round: the last time is
+                          the one that ends it"
+                  (is (= [["loop" "dotimes i" 9 31] ["call" "cl" 1 1]] (frames ninth))))
+                (let [next (cursor ninth :move "next-iteration")]
+                  (is (= "Iterations 10 to 21 are not kept" (:note next)))
+                  (is (= [["loop" "dotimes i" 22 31] ["call" "cl" 1 1]] (frames next))))
+                (let [tenth (cursor (cursor ninth :move "next") :move "next")]
+                  (is (= ["(inc i)" "10"] (take 2 (seen tenth))))
+                  (is (= "21 values in between are not kept" (:note (cursor tenth :move "next")))))))
+            (testing "a call not kept any more is said, and the last one is shown"
+              (let [gone (cursor {:unit f :call 999999 :at 1} :move "next")]
+                (is (= "That call is not kept any more - this is the last one" (:note gone)))
+                (is (= (:call start) (:call gone))))))
           (finally (disconnect r) (disconnect c) (.delete file)))))))

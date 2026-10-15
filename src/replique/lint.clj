@@ -761,7 +761,7 @@
   each a set of symbols - those DEPTH calls away at most, up for the callers
   and down for the callees. Only vars defined in this project's files on disk:
   a library's, or clojure's, is in no file the model can tell apart from the
-  project's, and is what a trace stops at.
+  project's, and is recorded by its calls only.
 
   As the model has it, which is the code on disk as it was last compiled: a
   definition typed at a prompt since is not in it."
@@ -777,3 +777,19 @@
                      (recur (into seen next) next (dec n))))))]
     {:callers (walk callers)
      :callees (walk callees)}))
+
+(defn defined-in
+  "The file on disk the var QSYM, of this thread's dialect, is defined in, as
+  the model has it - nil where it is defined in none, as a library's is."
+  [qsym]
+  (model)
+  (some-> (call :definition qsym) :source disk-file (.getPath)))
+
+(defn library-callees
+  "The vars the definitions of the vars QSYMS use - see `callees' - that are
+  not this project's: a library's, defined in no file on disk, as the model
+  has it."
+  [qsyms]
+  (model)
+  (let [ours? (memoize (fn [q] (some? (some-> (call :definition q) :source disk-file))))]
+    (into (sorted-set) (comp (mapcat callees) (remove ours?)) qsyms)))

@@ -368,6 +368,14 @@
       (is (= ["acc"] (mapv :key (:children (inspector/children view (:node twelve) {:width 40}))))))
     (testing "a path through one is no code"
       (is (nil? (inspector/path-form view (:node one) 'x))))
+    (testing "a label above its value, which is under it, indented - padded to none"
+      (let [v (atom (inspector/view (inspector/outline [["(some-long-code x)" (vec (range 30)) :above]
+                                                         ["locals" 1]])))
+            [code locals] (:children (inspector/children v 0 {:width 40}))]
+        (is (= [true nil] (mapv :above [code locals])))
+        (is (= [6 6] (mapv :pad [code locals])))
+        ;; as wide as under a short label, from its indent
+        (is (= "[0 1 2 3 4 5 6 7 ...]" (:value code)))))
     (testing "printed, an outline in an outline is apart by a dot"
       (is (= "iteration 1 acc {}  x 1  x (2) 2 · iteration 12 acc {:a [0 1]}"
              (pr-str (inspector/outline [["iteration 1" (inspector/outline [["acc" {}] ["x" 1] ["x" 2]])]

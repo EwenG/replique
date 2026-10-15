@@ -28,11 +28,17 @@
     {:debug {:calls n :site s}}
                        what each call kept of the unit N did, by call: its
                        params - and the form S, with :site
-    {:trace {:call c :args true}}
-    {:trace {:call c :value true}}
-    {:trace {:call c :arg i}}
-                       what the traced call C was called with, returned or
-                       threw, or was handed as its arg I - see replique.trace
+    {:debug {:loop l :call c :site s :only true}}
+                       what each iteration of the loop whose name is bound at
+                       the site L did in the call C, by iteration: the names
+                       bound in it - and the form S, with :site, or that
+                       alone, with :only
+    {:debug {:cursor {:unit u :call c :at i :frame f}}}
+                       what a cursor going through what the unit U recorded
+                       is at: the value numbered I of the call C, the form
+                       that had it, and the locals in scope there - of the
+                       frame F of it, where it is not the innermost - see
+                       \"Going through what was recorded\" in replique.debug
 
   A source that is a reference is WATCHED: the client is told that the view
   changed, by an `inspect-changed' event, and asks for it again. The event
@@ -152,11 +158,18 @@
     ;; refresh, since the same frame of the same thread is another frame each
     ;; time the thread stops - and what changed since the last stop is what
     ;; a refresh shows
-    (:debug source) (let [{:keys [thread frame value site call arg iteration loop only calls]} (:debug source)
+    (:debug source) (let [{:keys [thread frame value site call arg iteration loop only calls
+                                  cursor]} (:debug source)
                           iteration (when iteration
                                       {:site (:site iteration) :index (:index iteration)})]
+                      (when-not (or (nil? cursor)
+                                    (and (map? cursor) (integer? (:unit cursor))
+                                         (integer? (:call cursor)) (integer? (:at cursor))
+                                         (or (nil? (:frame cursor)) (nat-int? (:frame cursor)))))
+                        (refuse :invalid-message "A view of a cursor names its :unit, :call and"
+                                " :at - and its :frame - got: " (pr-str cursor)))
                       (when-not (and (or (integer? thread) (integer? site) (integer? loop)
-                                         (integer? calls))
+                                         (integer? calls) cursor)
                                      (or (nil? call) (integer? call))
                                      (or (nil? arg) (nat-int? arg))
                                      (or (nil? iteration)
@@ -169,6 +182,8 @@
                                 " the calls of a unit, :calls,"
                                 " got: " (pr-str (:debug source))))
                       (cond
+                        ;; what a cursor is at
+                        cursor #(debug/cursor-value cursor)
                         ;; what each iteration of a loop did, by iteration - and
                         ;; the form of :site, in it, or with :only that alone
                         loop #(debug/loop-table (long loop) (some-> call long) (some-> site long) only)
@@ -187,15 +202,10 @@
                         site #(debug/recorded-value (long site) (some-> call long) iteration)
                         value #(debug/stop-value (long thread))
                         :else #(debug/frame-value (long thread) (long (or frame 0)))))
-    (:trace source) (let [{:keys [call args value arg] :as what} (:trace source)]
-                      (when-not (and (integer? call) (or args value (nat-int? arg)))
-                        (refuse :invalid-message "A view of a traced call names its :call, and"
-                                " :args, :value or an :arg, got: " (pr-str what)))
-                      #((requiring-resolve 'replique.trace/call-value) (long call) what))
     :else (refuse :invalid-message
                   "A view is opened on a :var, on the :results of a repl"
-                  " connection, on the :taps, on a frame of a stopped thread"
-                  " - :debug - or on a traced call - :trace - got: " (pr-str source))))
+                  " connection, on the :taps, or on a frame of a stopped thread"
+                  " - :debug - got: " (pr-str source))))
 
 ;;; The ops
 
@@ -432,22 +442,20 @@
 ;; view :view holds: a value looked at, kept to work with at the repl - a local
 ;; of a stopped thread in particular, which is gone once the thread goes on.
 ;; Without :ns, a view of the locals of a frame defines it in the namespace of
-;; that frame's code, one of a form recorded in that of the form's code, and
-;; one of a traced call in that of its function - where the code it is to be
-;; tried on is evaluated. A Clojure view only: a ClojureScript value is in a
+;; that frame's code, and one of a form recorded in that of the form's code -
+;; where the code it is to be tried on is evaluated. A Clojure view only: a ClojureScript value is in a
 ;; runtime, and its vars are not this process's
 (defmethod protocol/handle :inspect-def [_ msg]
   (with-view msg
     (fn [{:keys [id dialect session source]}]
       (let [node (node-of msg)
             name (:name msg)
-            {:keys [thread frame site]} (:debug source)
+            {:keys [thread frame site cursor]} (:debug source)
             ns (cond
                  (some? (:ns msg)) (some-> (:ns msg) protocol/as-name symbol find-ns)
                  thread (debug/frame-ns (long thread) (long (or frame 0)))
-                 site (debug/site-ns (long site))
-                 (:trace source) ((requiring-resolve 'replique.trace/call-ns)
-                                  (long (:call (:trace source)))))]
+                 cursor (debug/unit-ns (long (:unit cursor)))
+                 site (debug/site-ns (long site)))]
         (when (= :cljs dialect)
           (refuse :invalid-message "A value of a ClojureScript runtime is not defined in this process"))
         (when-not (and (string? name) (simple-symbol? (symbol name)))

@@ -14,7 +14,7 @@
             [replique.debug]
             [replique.inspect]
             [replique.ops]
-            [replique.trace]))
+            [replique.recording]))
 
 (defn- error-frame [msg ^Throwable t]
   (let [kind (:replique/error (ex-data t))]

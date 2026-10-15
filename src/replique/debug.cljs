@@ -27,14 +27,25 @@
   in no fn, or in a fn made outside any call, is the last call's - or the
   unit's first, its evaluation, where there is none yet.
 
+  WHICH CALL MADE A CALL is the one running when it started - entered and not
+  exited yet, of any unit - which is its :parent, as on the JVM: see \"Going
+  through what was recorded\" in replique/debug.clj. Which calls are kept is
+  as there too: see \"Recording\".
+
   Asked through `op', with what the JVM wants as JSON and what it gets back as
   EDN, as replique.inspect is. That a unit recorded is said with the
   runtime's notify, once every `tell-every' ms at most."
   (:require [replique.iterations :as iterations]))
 
 (def ^:private calls-kept
-  "How many calls of a unit are kept, the last ones."
+  "How many calls of a unit made in no other call kept are kept, the last
+  ones."
   10)
+
+(def ^:private calls-kept-in-all
+  "How many calls are kept at most, of all units - the last ones, and the
+  ones running."
+  10000)
 
 (def ^:private values-kept
   "How many values of a form are kept in a call, the first ones, and as many
@@ -59,6 +70,14 @@
   ;; the numbers of the sites that are a fn's entry, whose value is what it
   ;; was called with
   (js/Set.))
+
+(defonce ^:private by-number
+  ;; call number -> Call, of the calls kept
+  (js/Map.))
+
+(defonce ^:private running
+  ;; the calls entered and not exited yet, the innermost last
+  #js [])
 
 ;;; Saying that a unit recorded
 
@@ -89,17 +108,77 @@
 
 ;;; Calls
 
-(deftype Call [n at values ^:mutable counted])
+(deftype Call [n unit at values ^:mutable counted parent children ^:mutable until])
 
 (deftype Frame [of own])
 
+(defn- remove-from! [a x]
+  (let [i (.indexOf a x)]
+    (when-not (neg? i) (.splice a i 1))))
+
+(defn- forget-call!
+  "Let go of the call C: its unit has it no more among its calls, and the
+  call that made it among its children."
+  [c]
+  (.delete by-number (.-n c))
+  (remove-from! running c)
+  (some-> (get @units (.-unit c)) unit-calls (remove-from! c))
+  (when-let [[parent] (.-parent c)]
+    (when-let [p (.get by-number parent)]
+      (let [cs (.-children p)]
+        (loop [i (dec (alength cs))]
+          (when-not (neg? i)
+            (when (= (.-n c) (aget (aget cs i) 1)) (.splice cs i 1))
+            (recur (dec i))))))))
+
+(defn- forget-made!
+  "Let go of the calls CS, and of the calls they made and so on."
+  [cs]
+  (let [todo (into-array cs)]
+    (while (pos? (alength todo))
+      (let [c (.pop todo)]
+        (when (.has by-number (.-n c))
+          (doseq [pair (vec (.-children c))]
+            (when-let [made (.get by-number (aget pair 1))]
+              (.push todo made)))
+          (forget-call! c))))))
+
+(defn- made-for
+  "Of the calls the call C made, the ones made for its value numbered I: the
+  next one it had once they were over."
+  [c i]
+  (into [] (comp (map #(.get by-number (aget % 1)))
+                 (filter #(and (some? %) (= (dec i) (.-until %)))))
+        (.-children c)))
+
 (defn- new-call
-  "A call numbered from now on, of the unit whose calls kept are CALLS."
-  [calls]
-  (let [c (Call. (swap! call-count inc) (js/Date.now) (js/Map.) 0)]
+  "A call numbered from now on, of the unit N whose calls kept are CALLS -
+  made by the call running, where there is one."
+  [n calls]
+  (let [p (when (pos? (alength running)) (aget running (dec (alength running))))
+        c (Call. (swap! call-count inc) n (js/Date.now) (js/Map.) 0
+                 (when p [(.-n p) (.-counted p)]) #js [] nil)]
+    (when p (.push (.-children p) #js [(.-counted p) (.-n c)]))
+    (.set by-number (.-n c) c)
     (.push calls c)
-    (when (> (alength calls) calls-kept) (.shift calls))
+    ;; of the calls made in none kept, the last ones
+    (forget-made! (drop-last calls-kept (remove #(.has by-number (first (.-parent %))) calls)))
+    (let [over (- (.-size by-number) calls-kept-in-all)]
+      (when (pos? over)
+        (forget-made! (into [] (comp (remove #(.includes running %)) (take over))
+                            (es6-iterator-seq (.values by-number))))))
     c))
+
+(defn- ended!
+  "The call C is over: it was made for the next value of the call that made
+  it - of the ones made for the same one, the first ones and the last ones
+  are kept."
+  [c]
+  (when-let [p (some->> (.-parent c) first (.get by-number))]
+    (when (nil? (.-until c))
+      (set! (.-until c) (.-counted p))
+      (let [same (made-for p (inc (.-until c)))]
+        (forget-made! (take (- (count same) (* 2 values-kept)) (drop values-kept same)))))))
 
 (defn- keep-value!
   "Keep V as what the site SITE evaluated to in the call C - numbered in it,
@@ -120,7 +199,10 @@
     (.push numbers i)
     (when (> (alength vs) values-kept)
       (.shift vs)
-      (.shift numbers))
+      ;; the value that is not kept any more, and the calls made for it
+      (let [out (.shift numbers)]
+        (when-not (some #(= out (aget % 0)) (.-head e))
+          (forget-made! (made-for c out)))))
     (when (< (alength (.-head e)) values-kept)
       (.push (.-head e) #js [i v]))))
 
@@ -130,7 +212,8 @@
     (let [frame (cond
                   (some? outer) (Frame. (.-of outer) false)
                   gone (Frame. nil false)
-                  definition (let [c (new-call calls)]
+                  definition (let [c (new-call n calls)]
+                               (.push running c)
                                (changed! n)
                                (Frame. c true))
                   :else (Frame. (.latest this) false))]
@@ -148,13 +231,16 @@
         (changed! n)))
     v)
   (exit [this frame]
-    (when (and (.-own frame) (not gone))
-      (changed! n)))
+    (when (.-own frame)
+      (remove-from! running (.-of frame))
+      (ended! (.-of frame))
+      (when-not gone
+        (changed! n))))
   (latest [this]
     ;; the call a value outside of any is in: the last one, or a first
     (if (pos? (alength calls))
       (aget calls (dec (alength calls)))
-      (new-call calls))))
+      (new-call n calls))))
 
 (defn- unit-calls [^Unit u] (.-calls u))
 
@@ -169,10 +255,86 @@
         (swap! units assoc n u)
         u)))
 
+;;; Recording calls only
+
+;; The calls of a function whose code is not recorded - a library's - are
+;; recorded by its var: a property of its namespace's object, which every
+;; call reads at call time, made one whose value is a function that records
+;; the call and calls the one it held - and that, set again, as a `def'
+;; evaluated again sets it, wraps what it is set to. Of a call made in a call
+;; recorded only: see "Recording calls only" in replique/debug.clj.
+
+(defonce ^:private wrapped
+  ;; unit number -> #js {:name :original :wrapper}
+  (js/Map.))
+
+(defn- function?
+  "Whether X is a function of JavaScript's - which a multimethod, a keyword or
+  a map, though they are called as one, is not."
+  [x]
+  (identical? "function" (js* "typeof ~{}" x)))
+
+(defn- namespace-object [named]
+  (let [i (.indexOf named "/")]
+    (when (pos? i)
+      [(.get (.-namespaces (.-$CLJS js/globalThis)) (subs named 0 i))
+       ((.-munge (.-$CLJS js/globalThis)) (subs named (inc i)))])))
+
+(defn- calls-recorder
+  "What the var of the unit U holds while its calls are recorded, F being
+  what it held: its sites are ENTRY, RETURNED and THREW."
+  [u entry returned threw f]
+  (fn [& args]
+    (if (zero? (alength running))
+      (.apply f nil (into-array args))
+      (let [frame (.enter u entry nil (into-array args))]
+        (try
+          (.value u returned (.apply f nil (into-array args)) frame)
+          (catch :default e
+            (.value u threw e frame)
+            (throw e))
+          (finally (.exit u frame)))))))
+
+(defn- wrap!
+  "Record the calls of the var named :name, as the unit :unit whose sites are
+  :enter, :return and :threw. Answers why it cannot be, or nil."
+  [{:keys [name enter return threw] n :unit}]
+  (let [[o prop] (namespace-object name)
+        f (when o (unchecked-get o prop))]
+    (cond
+      (nil? o) "no such namespace in this runtime"
+      (not (js-in prop o)) "no such var in this runtime"
+      (not (function? f)) "not a function"
+      :else
+      (let [u (unit n true)
+            wrap #(calls-recorder u enter return threw %)
+            state #js {:name name :original f :wrapper (wrap f)}]
+        (.set wrapped n state)
+        (js/Object.defineProperty
+         o prop
+         #js {:configurable true
+              :enumerable true
+              :get (fn [] (.-wrapper state))
+              ;; defined again: what it is now is recorded
+              :set (fn [g]
+                     (set! (.-original state) g)
+                     (set! (.-wrapper state) (if (function? g) (wrap g) g)))})
+        nil))))
+
+(defn- unwrap! [n]
+  (when-let [state (.get wrapped n)]
+    (let [[o prop] (namespace-object (.-name state))]
+      (when o
+        (js/Object.defineProperty o prop #js {:configurable true :enumerable true
+                                              :writable true :value (.-original state)})))
+    (.delete wrapped n)))
+
 (defn- forget! [n]
+  (unwrap! n)
   (when-let [u (get @units n)]
     (set! (.-gone u) true)
     (swap! units dissoc n)
+    (forget-made! (vec (.-calls u)))
     (doseq [site (vec (es6-iterator-seq (.keys site-units)))
             :when (= n (.get site-units site))]
       (.delete site-units site))
@@ -342,6 +504,47 @@
           v (iteration-in c site iteration (when kept {:value (some-> kept .-values last-of)}))]
       (if (= :not-recorded v) :replique/not-recorded v))))
 
+(defn- call-said
+  "What is kept of the call CALL - the last one of the unit UNIT, CALL nil -
+  as replique/debug.clj takes it: what it was made by and made, the calls of
+  its unit kept, and of each site, how many times it was evaluated, and the
+  numbers of its values kept, first and last - not the values, which stay
+  here."
+  [unit call]
+  (let [c (if (some? call)
+            (.get by-number call)
+            (some-> (get @units unit) unit-calls vec peek))]
+    (when-not c
+      (throw (ex-info (if (some? call)
+                        (str "Call " call " is not kept any more")
+                        (str "Unit " unit " was not called yet"))
+                      {:kind "unknown-call"})))
+    {:call (.-n c)
+     :unit (.-unit c)
+     :at (.-at c)
+     :parent (.-parent c)
+     :children (mapv vec (.-children c))
+     :until (.-until c)
+     :calls (mapv #(.-n %) (some-> (get @units (.-unit c)) unit-calls))
+     :sites (into {} (map (fn [[site e]]
+                            [site {:times (.-times e)
+                                   :head (mapv #(aget % 0) (.-head e))
+                                   :tail (vec (.-numbers e))}]))
+                  (es6-iterator-seq (.entries (.-values c))))}))
+
+(defn plan-value
+  "What a cursor going through what was recorded is at, as PLAN says it - see
+  replique.iterations/at-outline: of the call numbered :call."
+  [{:keys [call] :as plan}]
+  (if-let [c (.get by-number call)]
+    (let [kept-of (kept-in c)]
+      (iterations/at-outline (fn [site n]
+                               (if-let [v (iterations/numbered (kept-of site) n)]
+                                 (:value v)
+                                 ::iterations/not-kept))
+                             plan))
+    :not-recorded))
+
 (defn loop-table
   "What each iteration kept of a loop of the call CALL - the last one,
   without - evaluated to, by iteration - see replique.iterations/table. TABLE
@@ -371,9 +574,45 @@
   [f indices]
   (iterations/first-where f indices))
 
+(defn- calls-said
+  "The calls kept made in none kept - or, with PARENT, the ones the call
+  PARENT made - as replique/debug.clj takes them: what each was made by and
+  made, the calls of its unit kept, and the last value of each of the sites
+  SITES it has a value of, printed - {:number :value}, and the :args, of an
+  entry."
+  [{:keys [parent sites]}]
+  (let [cs (if (some? parent)
+             (keep (fn [pair] (.get by-number (aget pair 1)))
+                   (some-> (.get by-number parent) .-children))
+             (filter (fn [c] (not (.has by-number (first (.-parent c)))))
+                     (es6-iterator-seq (.values by-number))))]
+    {:calls (mapv (fn [c]
+                    {:call (.-n c)
+                     :unit (.-unit c)
+                     :calls (mapv #(.-n %) (some-> (get @units (.-unit c)) unit-calls))
+                     :at (.-at c)
+                     :parent (first (.-parent c))
+                     :made (alength (.-children c))
+                     :last (into {} (keep (fn [site]
+                                            (when-let [e (.get (.-values c) site)]
+                                              (let [v (last-of (.-values e))]
+                                                [site (cond-> {:number (last-of (.-numbers e))
+                                                               :value (if (instance? js/Error v)
+                                                                        ;; what a call threw
+                                                                        (str (.-name v) ": " (.-message v))
+                                                                        (printed-briefly v))}
+                                                        (and (.has entries site) (vector? v))
+                                                        (assoc :args (mapv printed-briefly v)))]))))
+                                 sites)})
+                  cs)}))
+
 (defn- handle [{:keys [op unit call] :as msg}]
   (case op
     "recorded" (recorded unit call (:iteration msg))
+    "call" (call-said unit call)
+    "calls" (calls-said msg)
+    "wrap" {:skipped (vec (keep (fn [w] (when-let [why (wrap! w)] {:name (:name w) :why why}))
+                                (:wraps msg)))}
     "forget" {:forgotten (vec (filter forget! (if (contains? msg :unit)
                                                 [unit]
                                                 (keys @units))))}
