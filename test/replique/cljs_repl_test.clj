@@ -1601,3 +1601,118 @@
                 (is (= unit (:unit (await-event c "debug-uninstrumented")))))
               (finally (disconnect c)))))
         (finally (client/delete-recursively dir))))))
+
+(deftest test-a-value-of-the-runtime-has-a-shape-there
+  (when (compiling?)
+    (with-repl [r]
+      (eval! r "(require '[replique.shape :as shape])")
+      (let [said #(edn/read-string (:value (frame-tagged (eval! r %) "ret")))]
+        (is (= '{:id uuid, :n number, :status :draft, :tags (vector (or :a :b) 2), :f fn}
+               (said "(shape/shape {:id (random-uuid) :n 1 :status :draft :tags [:a :b] :f inc})")))
+        (is (= '(array number 2) (said "(shape/shape #js [1 2])")))
+        (is (= 'object (said "(shape/shape #js {:a 1})")))
+        (is (= 'js/Map (said "(shape/shape (js/Map.))")))
+        (testing "with nothing realized or dereferenced"
+          (is (= '[lazy atom false]
+                 (said "(let [s (map inc [1])] [(shape/shape s) (shape/shape (atom 1)) (realized? s)])"))))
+        (testing "and shapes merge as they do on the JVM"
+          (is (= '{:a number, :b (optional string)}
+                 (said "(shape/merged (shape/shape {:a 1}) (shape/shape {:a 2 :b \"x\"}))"))))))))
+
+(deftest test-what-a-runtime-recorded-reads-as-text
+  (when (compiling?)
+    (with-repl [r]
+      (let [c (client/control-client @the-process)
+            text (fn [f & args] (string/split-lines (with-out-str (apply (requiring-resolve f) args))))]
+        (try
+          (eval! r "#replique/ns rec.text\n(def z 1)")
+          (eval! r (record-src 1 1 "(defn tg [x] (* x 10))"))
+          (let [g (:unit (await-event c "debug-instrumented"))
+                _ (eval! r (record-src 2 1 "(defn tf [xs] (mapv tg xs))"))
+                f (:unit (await-event c "debug-instrumented"))
+                _ (eval! r "(tf [1 2])")
+                _ (loop [] (when-not (= f (:unit (await-event c "debug-recorded"))) (recur)))]
+            (testing "what is recorded, and how many calls of it the runtime keeps"
+              ;; of the other tests too, in this runtime
+              (is (= [[(str g) "rec.text/tg" "cljs node" "/tmp/recorded.cljs:1" "2 calls kept"]
+                      [(str f) "rec.text/tf" "cljs node" "/tmp/recorded.cljs:2" "1 call kept"]]
+                     (->> (text 'replique.recorded/recordings)
+                          (map #(string/split % #"\s{2,}"))
+                          (filter #(#{(str g) (str f)} (first %)))))))
+            (testing "and the calls, as a tree"
+              (let [lines (drop-while #(not (string/starts-with? % (str f "/")))
+                                      (text 'replique.recorded/calls))]
+                (is (re-find #"^\d+/\d+  \(rec\.text/tf \[1 2\]\) => \[10 20\]  · call 1 of 1 · node · " (first lines)))
+                (is (= ["(rec.text/tg 1) => 10  · call 1 of 2" "(rec.text/tg 2) => 20  · call 2 of 2"]
+                       (map #(second (re-find #"^  \d+/\d+  (.+)$" %)) (take 2 (rest lines))))))))
+          (finally (disconnect c)))))))
+
+(deftest test-a-call-of-the-runtime-reads-as-its-code-with-its-values
+  (when (compiling?)
+    (with-repl [r]
+      (let [c (client/control-client @the-process)
+            file (java.io.File/createTempFile "code" ".cljs")
+            code "(defn zt [x]\n  (* x 10))\n\n(defn zs [xs]\n  (mapv (fn [x] (zt x)) xs))\n"
+            _ (spit file code)
+            src (fn [line text]
+                  (str "#replique/src {:file " (pr-str (str file)) " :line " line " :column 1"
+                       " :instrument true :entry false :record true}\n" text))
+            text (fn [f & args] (string/split-lines (with-out-str (apply (requiring-resolve f) args))))]
+        (try
+          (eval! r "#replique/ns rec.code\n(def z 1)")
+          (eval! r (src 1 "(defn zt [x]\n  (* x 10))"))
+          (await-event c "debug-instrumented")
+          (eval! r (src 4 "(defn zs [xs]\n  (mapv (fn [x] (zt x)) xs))"))
+          (let [s (:unit (await-event c "debug-instrumented"))
+                _ (eval! r "(zs [1 2])")
+                _ (loop [] (when-not (= s (:unit (await-event c "debug-recorded"))) (recur)))
+                lines (text 'replique.recorded/call s)
+                bare (map #(string/replace % #"  \[\d+( \d+)?\]$" "") lines)
+                ref (subs (first (string/split (first lines) #"  ")) 3)]
+            (testing "the code, as its file has it, with what each form evaluated to"
+              (is (= ["(defn zs [xs]" ";; xs = [1 2]" "  (mapv (fn [x] (zt x)) xs))"]
+                     (take 3 (drop 2 bare))))
+              (is (some #{"  ;; (mapv (fn [x] (zt x)) xs) => [10 20]"} bare)))
+            (testing "each call of its fn"
+              (is (some #{";; fn [x], line 5, 2 calls"} bare))
+              (is (= [";;     x = 2" ";;     (zt x) => 20"]
+                     (take 2 (rest (drop-while #(not= ";;   call 2" %) bare))))))
+            (testing "a value, at a path in it, asked of the runtime"
+              (let [mapv-site (some #(some-> (re-find #"^  ;; \(mapv .+  \[(\d+)\]$" %) second) lines)
+                    fn-site (some #(some-> (re-find #"^;; fn \[x\].+  \[(\d+)\]$" %) second) lines)
+                    zt-site (some #(some-> (re-find #"^;;     \(zt x\) => \d+  \[(\d+)\]$" %) second) lines)]
+                (is (= ["20"] (text 'replique.recorded/value ref (parse-long mapv-site) [1])))
+                (is (= ["10"] (text 'replique.recorded/value ref (parse-long zt-site) nil
+                                    {:iteration [(parse-long fn-site) 1]}))))))
+          (finally (disconnect c) (.delete file)))))))
+
+(deftest test-what-the-calls-of-the-runtime-looked-like-is-summed-up
+  (when (compiling?)
+    (with-repl [r]
+      (let [c (client/control-client @the-process)
+            block (fn [name]
+                    (->> (string/split-lines (with-out-str ((requiring-resolve 'replique.recorded/summary))))
+                         (drop-while #(not (string/starts-with? % (str name "  "))))
+                         (take-while seq)
+                         (map #(string/replace % #" · /tmp/recorded\.cljs:\d+" ""))))]
+        (try
+          (eval! r "#replique/ns rec.sum\n(def z 1)")
+          (eval! r (record-src 1 1 "(defn sg [m] (assoc m :seen true))"))
+          (await-event c "debug-instrumented")
+          (eval! r (record-src 2 1 "(defn sf [ms] (mapv sg ms))"))
+          (let [f (:unit (await-event c "debug-instrumented"))]
+            (eval! r "(sf [{:a 1} {:a 2 :b \"x\"}])")
+            (loop [] (when-not (= f (:unit (await-event c "debug-recorded"))) (recur)))
+            (testing "the shapes are worked out in the runtime, and merged here"
+              (is (= ["rec.sum/sg  2 calls kept"
+                      "  made in:  rec.sum/sf ×2"
+                      "  called with 1 arg: [{:a number, :b (optional string)}]  (2 different)"
+                      "  returned: {:a number, :b (optional string), :seen boolean}  (2 different)"]
+                     (block "rec.sum/sg")))
+              (is (= ["rec.sum/sf  1 call kept"
+                      "  made in:  no call recorded ×1"
+                      "  called with 1 arg: [(vector {:a number, :b (optional string)} 2)]"
+                      "  returned: (vector {:a number, :b (optional string), :seen boolean} 2)"
+                      "  made:     rec.sum/sg ×2"]
+                     (block "rec.sum/sf")))))
+          (finally (disconnect c)))))))

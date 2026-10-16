@@ -53,6 +53,7 @@
             [replique.output :as output]
             [replique.protocol :as protocol]
             [replique.scope :as scope]
+            [replique.shape :as shape]
             [replique.state :as state]
             [replique.symbol :as sym])
   (:import [clojure.lang LineNumberingPushbackReader]
@@ -1976,7 +1977,15 @@
                        #"\s+" " ")]
     (if (> (count s) 70) (str (subs s 0 69) "…") s)))
 
-(defn- site-label
+(defn site-form
+  "The code written at the site K - nil, for a fn's entry, which is at no form
+  of its own, or a site made up."
+  [k]
+  (let [site (get @sites k)]
+    (when (and (not (:label site)) (not= :enter (:kind site)))
+      (scope/form-at (:form (get @units (:unit site))) (span-of site)))))
+
+(defn site-label
   "What the value of the site K of the unit UNIT is shown under: the code
   written there - the params, of a fn's entry."
   [unit k]
@@ -2514,14 +2523,77 @@
                          targets)]
         (->> (concat (jvm) cljs) (sort-by (juxt :at :call)) vec)))))
 
-;; The calls kept made in none kept - or, with :unit and :call, the calls that
-;; call made - each as `call-summary' says it
+(defn calls-said
+  "The calls kept made in none kept - or, with UNIT and CALL, the calls that
+  call made - each as `call-summary' says it."
+  [unit call]
+  (mapv (partial call-summary (memoize call-ends) (nil? call)) (calls-told unit call)))
+
+(defn calls-shaped
+  "The calls kept, of every unit that records, on the JVM and in each
+  ClojureScript runtime: each {:call :unit :made-by}, the unit of the call it
+  was made in, with the shapes of what it was called with, :args, and
+  returned, :value, where they are kept - and whether it :threw. See
+  replique.shape."
+  []
+  (let [recording (filter (comp :record val) @units)
+        ends (fn [n u] (let [[entries returns] (call-ends n)]
+                         [entries returns (when (:calls-only u) (second (:returns u)))]))
+        latest (fn [call ks]
+                 (->> ks
+                      (keep (fn [k]
+                              (when-let [{:keys [values numbers]} (get-in call [:values k])]
+                                [(peek numbers) k (peek values)])))
+                      (sort-by first)
+                      last))
+        all @calls
+        jvm-ends (into {} (for [[n u] recording :when (not= :cljs (:dialect u))] [n (ends n u)]))
+        jvm (for [[c call] all
+                  :let [[entries returns threw] (get jvm-ends (:unit call))]
+                  :when entries
+                  :let [[_ _ args] (latest call entries)
+                        [_ k v] (latest call returns)]]
+              (cond-> {:call c :unit (:unit call)
+                       :made-by (:unit (get all (first (:parent call))))}
+                (vector? args) (assoc :args (mapv shape/shape args))
+                k (assoc :value (shape/shape v) :threw (= k threw))))
+        targets (group-by (comp :target val)
+                          (filter #(and (= :cljs (:dialect (val %))) (not (cljs-unit-gone? (val %))))
+                                  recording))
+        cljs (mapcat (fn [[target us]]
+                       (binding [cljs/*target* target]
+                         (when (cljs/runtime-connected?)
+                           (let [answer (cljs-op {:op "shapes"
+                                                  :units (vec (for [[n u] us] (into [n] (ends n u))))})]
+                             (when-let [why (:error answer)] (refuse :runtime why))
+                             (:calls answer)))))
+                     targets)]
+    (vec (concat jvm cljs))))
+
 (defmethod protocol/handle :debug-calls [_ msg]
   (let [{:keys [unit call]} msg]
     (when-not (or (and (nil? unit) (nil? call)) (and (integer? unit) (integer? call)))
       (refuse :invalid-message "The calls a call made are asked by its :unit and its :call,"
               " got: " (pr-str (select-keys msg [:unit :call]))))
-    {:calls (mapv (partial call-summary (memoize call-ends) (nil? call)) (calls-told unit call))}))
+    {:calls (calls-said unit call)}))
+
+(defn units-recorded
+  "The units that record, the first evaluated first, each as a client is told
+  about it - its :file named as it was evaluated from where that is nowhere
+  now - with its :label, and how many of its calls are kept, :kept: nil
+  where its runtime cannot say, the page it was recorded in being gone or not
+  connected."
+  []
+  (vec (for [[n u] (sort-by key @units) :when (:record u)]
+         (assoc (merge (select-keys u [:file]) (unit-described n u))
+                :label (unit-label n)
+                :kept (if (= :cljs (:dialect u))
+                        (when-not (cljs-unit-gone? u)
+                          (binding [cljs/*target* (:target u)]
+                            (when (cljs/runtime-connected?)
+                              ;; a unit not called yet is an error there
+                              (count (:calls (cljs-op {:op "call" :unit n}))))))
+                        (count (get @recorded n [])))))))
 
 ;;; What the debugger calls, on the thread it stopped
 
@@ -2910,19 +2982,14 @@
     (assoc said :kind "enter" :params (:params site []) :args (mapv printed-briefly v))
     said))
 
-(defmethod protocol/handle :debug-recorded [_ msg]
-  (let [{:keys [unit call iteration]} msg]
-    (when-not (integer? unit)
-      (refuse :invalid-message "A unit is named by its number, got: " (pr-str unit)))
-    (when-not (or (nil? call) (integer? call))
-      (refuse :invalid-message "A call is named by its number, got: " (pr-str call)))
-    (when-not (:record (get @units unit))
-      (refuse :unknown-unit "Unit " unit " does not record"))
-    (when-not (or (nil? iteration)
-                  (and (map? iteration) (integer? (:site iteration))
-                       (integer? (:index iteration))))
-      (refuse :invalid-message "An iteration is {:site :index}, got: " (pr-str iteration)))
-    (let [iteration (when iteration
+(defn recorded-said
+  "What the unit UNIT recorded in its call CALL - the last one, CALL nil - as
+  `:debug-recorded' answers it: of the iteration ITERATION, {:site :index}, of
+  a loop of it, where there is one."
+  [unit call iteration]
+  (when-not (:record (get @units unit))
+    (refuse :unknown-unit "Unit " unit " does not record"))
+  (let [iteration (when iteration
                       (iterating unit {:site (long (:site iteration))
                                        :index (long (:index iteration))}))]
       (if (= :cljs (:dialect (get @units unit)))
@@ -2957,7 +3024,74 @@
                                               (:value picked)))))}
             c (assoc :call c)
             iteration (assoc :iteration {:site (:loop iteration)
-                                         :index (:index iteration)})))))))
+                                         :index (:index iteration)}))))))
+
+(defmethod protocol/handle :debug-recorded [_ msg]
+  (let [{:keys [unit call iteration]} msg]
+    (when-not (integer? unit)
+      (refuse :invalid-message "A unit is named by its number, got: " (pr-str unit)))
+    (when-not (or (nil? call) (integer? call))
+      (refuse :invalid-message "A call is named by its number, got: " (pr-str call)))
+    (when-not (or (nil? iteration)
+                  (and (map? iteration) (integer? (:site iteration))
+                       (integer? (:index iteration))))
+      (refuse :invalid-message "An iteration is {:site :index}, got: " (pr-str iteration)))
+    (recorded-said unit call iteration)))
+
+(defn value-said
+  "What the site SITE of the unit UNIT evaluated to last in its call CALL - in
+  the iteration ITERATION, {:site :index}, of a loop of it, where there is
+  one - at PATH in it, `get-in' takes it, printed LEVEL deep and LENGTH long,
+  with nothing realized. Or nil, where nothing is kept."
+  [unit call site iteration path level length]
+  (let [u (get @units unit)]
+    (when-not (:record u)
+      (refuse :unknown-unit "Unit " unit " does not record"))
+    (if (= :cljs (:dialect u))
+      (do (when (cljs-unit-gone? u)
+            (refuse :unknown-unit "Unit " unit " was recorded in a page that is gone"))
+          (let [answer (binding [cljs/*target* (:target u)]
+                         (cljs-op {:op "value" :site site :call call
+                                   :iteration (some-> (when iteration (iterating unit iteration))
+                                                      (update :owners #(vec %)))
+                                   ;; keywords, which JSON has not, as they print
+                                   :path (mapv #(if (keyword? %) (str %) %) path)
+                                   :level level :length length}))]
+            (when-let [why (:error answer)]
+              (refuse (if (= "unknown-iteration" (:kind answer)) :unknown-iteration :runtime) why))
+            (:printed answer)))
+      (let [v (iteration-of unit call site iteration)]
+        (when-not (= :not-recorded v)
+          (let [s (binding [*print-length* length *print-level* level]
+                    (pr-str (unforced (get-in v path) level length)))]
+            (if (> (count s) printed-up-to) (str (subs s 0 printed-up-to) "...") s)))))))
+
+(defn- written
+  "FORM as it prints, the names the reader made up - of #(...), and of a
+  syntax-quote - without their numbers, which reading it again changes."
+  [form]
+  (str/replace (pr-str form) #"__\d+(__auto__)?#?" ""))
+
+(defn unit-source
+  "The lines the unit UNIT was evaluated from, as its file has them now -
+  {:lines :line}, the number of the first one - or nil where the file is not
+  there, or what it has there is not that code any more."
+  [unit]
+  (let [{:keys [file form ns line column end-line end-column dialect]} (get @units unit)
+        {path :file entry :entry} (sym/source-of file)]
+    (when (and path (not entry) form line column end-line end-column)
+      (try
+        (let [lines (vec (str/split-lines (slurp path)))
+              these (subvec lines (dec line) end-line)
+              text (str/join "\n" (-> these
+                                       (update (dec (count these)) subs 0 (dec end-column))
+                                       (update 0 subs (dec column))))
+              opts {:read-cond :allow :features (if (= :cljs dialect) #{:cljs} #{:clj})}
+              read (binding [*ns* (or (some-> ns symbol find-ns) *ns*)]
+                     (read opts (LineNumberingPushbackReader. (StringReader. text))))]
+          (when (= (written read) (written form))
+            {:lines these :line line}))
+        (catch Exception _ nil)))))
 
 ;; The first iteration of a loop of a recorded call where something holds:
 ;; CODE, evaluated with the locals of the code in scope at :line and :column

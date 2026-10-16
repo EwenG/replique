@@ -5,6 +5,7 @@
   is a flag of the jvm - and the tests run in a jvm that was not started with
   it, which is the other thing tested here."
   (:require [clojure.data.json :as djson]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [replique.classpath :as classpath]
             [replique.debug :as debug]
@@ -987,6 +988,155 @@
                   (is (= (:call (second made))
                          (:call (ask! c {:op :debug-cursor :unit g :call (:call (second made)) :id 3})))))))
             (is (= "invalid-message" (:error (ask! c {:op :debug-calls :unit f :id 4})))))
+          (finally (disconnect r) (disconnect c) (.delete file)))))))
+
+(deftest what-was-recorded-reads-as-text
+  (if-not (debug/instrumenting?)
+    (println "replique.debug-test: no compiler to record with - run with :analysis")
+    (client/with-process [info nil]
+      (let [r (client/repl-client info nil 60000)
+            c (control info)
+            file (java.io.File/createTempFile "text" ".clj")
+            record (fn [line code]
+                     (ret r (str "#replique/src {:file " (pr-str (str file)) " :line " line
+                                 " :instrument true :entry false :record true}\n" code))
+                     (:unit (await-event c "debug-instrumented")))
+            ;; of the other tests too, in this JVM
+            text (fn [code] (str/split-lines (read-string (ret r (str "(with-out-str " code ")")))))]
+        (try
+          (ret r "(require 'replique.recorded)")
+          (let [g (record 1 "(defn xg [x] (* x 10))")
+                f (record 2 "(defn xf [xs]\n  (reduce + (map xg xs)))")
+                _ (ret r "(xf [1 2 3])")
+                lines (text "(replique.recorded/calls)")
+                [root & made] (drop-while #(not (str/starts-with? % (str f "/"))) lines)
+                ref (first (str/split root #"\s+"))]
+            (testing "what is recorded, where it is written, and how many calls of it are kept"
+              (is (= [[(str g) "user/xg" "clj" (str file ":1") "3 calls kept"]
+                      [(str f) "user/xf" "clj" (str file ":2") "1 call kept"]]
+                     (->> (text "(replique.recorded/recordings)")
+                          (map #(str/split % #"\s{2,}"))
+                          (filter #(#{"user/xg" "user/xf"} (second %)))))))
+            (testing "the calls, with what they were called with and returned, and the calls
+                      each made under it"
+              (is (re-matches #"\d+/\d+  \(user/xf \[1 2 3\]\) => 60  · call 1 of 1 · .+ · \d\d:\d\d:\d\d\.\d{3}"
+                              root))
+              (is (= [["(user/xg 1) => 10" "call 1 of 3"]
+                      ["(user/xg 2) => 20" "call 2 of 3"]
+                      ["(user/xg 3) => 30" "call 3 of 3"]]
+                     (mapv #(vec (take 2 (rest (re-find #"^  \d+/\d+  (.+?)  · (call \d of \d)" %))))
+                           (take 3 made)))))
+            (testing "and the ones a call made, by its name"
+              (let [call #(re-find #"\d+/\d+  .+?  · call \d of \d" %)
+                    lines (text (str "(replique.recorded/calls " (pr-str ref) ")"))]
+                (is (= (map call (take 3 made)) (map call lines)))
+                (testing "with their thread, and when they started, there being no call
+                          they were made in said"
+                  (is (every? #(re-find #" · .+ · \d\d:\d\d:\d\d\.\d{3}$" %) lines)))))
+            (testing "down to a depth, past which they are said to be there"
+              (is (= [root (str "  … 3 calls made in it: (calls " (pr-str ref) ")")]
+                     (->> (text "(replique.recorded/calls nil {:depth 1})")
+                          (drop-while #(not= root %))
+                          (take 2)))))
+            (testing "and as many lines as were asked for"
+              (is (= (str "… and more: (calls " (pr-str ref) " {:lines 2}) prints more")
+                     (second (text (str "(replique.recorded/calls " (pr-str ref) " {:lines 1})")))))))
+          (finally (disconnect r) (disconnect c) (.delete file)))))))
+
+(deftest a-call-reads-as-its-code-with-its-values
+  (if-not (debug/instrumenting?)
+    (println "replique.debug-test: no compiler to record with - run with :analysis")
+    (client/with-process [info nil]
+      (let [r (client/repl-client info nil 60000)
+            c (control info)
+            file (java.io.File/createTempFile "code" ".clj")
+            code "(defn yt [order]\n  (* 2 (:amount order)))\n\n(defn ys [orders]\n  (let [big (filterv (fn [o] (> (yt o) 20)) orders)]\n    (loop [os big, n 0]\n      (if (seq os)\n        (recur (rest os) (inc n))\n        n))))\n"
+            _ (spit file code)
+            record (fn [line]
+                     (let [text (second (with-in-str (str/join "\n" (drop (dec line) (str/split-lines code)))
+                                          (read+string)))]
+                       (ret r (str "#replique/src {:file " (pr-str (str file)) " :line " line
+                                   " :instrument true :entry false :record true}\n" text))
+                       (:unit (await-event c "debug-instrumented"))))
+            text (fn [code] (str/split-lines (read-string (ret r (str "(with-out-str " code ")")))))]
+        (try
+          (ret r "(require 'replique.recorded)")
+          (let [t (record 1)
+                u (record 4)
+                _ (is (= "2" (ret r "(ys [{:amount 5} {:amount 15} {:amount 30}])")))
+                lines (text (str "(replique.recorded/call " u ")"))
+                site-of (fn [re] (some #(some-> (re-find re %) second parse-long) lines))]
+            (testing "the code, its values under the line each form ends on, and the site of each"
+              (is (re-matches (re-pattern (str ";; " u "/\\d+  user/ys, call 1 of 1 · .+")) (first lines)))
+              (is (= (str ";; " file ":4") (second lines)))
+              (is (= ["(defn ys [orders]"
+                      ";; orders = [{:amount 5} {:amount 15} {:amount 30}]"]
+                     (map #(str/replace % #"  \[\d+( \d+)?\]$" "") (take 2 (drop 2 lines)))))
+              (is (some #{"    ;; os = ()  (×3, the last)"}
+                        (map #(str/replace % #"  \[\d+\]$" "") lines)))
+              (testing "not a literal, nor a local"
+                (is (not-any? #(re-find #";; (n|os|20|0) =>" %) lines))))
+            (testing "what each loop did each time round"
+              (is (some #{";; fn [o], line 5, 3 calls"} (map #(str/replace % #"  \[\d+\]$" "") lines)))
+              (is (some #(re-find #"^;;     \(yt o\) => 30  \[\d+\]$" %) lines))
+              (is (some #{";;   iteration 2"} lines)))
+            (testing "and the calls it made"
+              (is (= 3 (count (filter #(re-find (re-pattern (str "^;;   " t "/\\d+  \\(user/yt ")) %) lines)))))
+            (testing "a value, at a path in it, in an iteration"
+              (let [ref (subs (first (str/split (first lines) #"  ")) 3)
+                    big (site-of #";; \(filterv .+  \[(\d+)\]$")
+                    os (site-of #";; os = .+  \[(\d+)\]$")]
+                (is (= ["[{:amount 15} {:amount 30}]"] (text (str "(replique.recorded/value " (pr-str ref) " " big ")"))))
+                (is (= ["30"] (text (str "(replique.recorded/value " (pr-str ref) " " big " [1 :amount])"))))
+                (is (= ["({:amount 30})"]
+                       (text (str "(replique.recorded/value " (pr-str ref) " " os " nil {:iteration [" os " 2]})"))))))
+            (testing "and once its file does not have that code any more, by line"
+              (spit file (str/replace code "(inc n)" "(+ n 1)"))
+              (is (some #{";; (its file does not have the code it was evaluated from any more:"}
+                        (text (str "(replique.recorded/call " u ")"))))))
+          (finally (disconnect r) (disconnect c) (.delete file)))))))
+
+(deftest what-the-calls-looked-like-is-summed-up
+  (if-not (debug/instrumenting?)
+    (println "replique.debug-test: no compiler to record with - run with :analysis")
+    (client/with-process [info nil]
+      (let [r (client/repl-client info nil 60000)
+            c (control info)
+            file (java.io.File/createTempFile "summed" ".clj")
+            record (fn [line code]
+                     (ret r (str "#replique/src {:file " (pr-str (str file)) " :line " line
+                                 " :instrument true :entry false :record true}\n" code))
+                     (:unit (await-event c "debug-instrumented")))
+            ;; of the other tests too, in this JVM
+            text (fn [] (str/split-lines (read-string (ret r "(with-out-str (replique.recorded/summary))"))))
+            block (fn [lines name]
+                    (->> lines
+                         (drop-while #(not (str/starts-with? % (str name "  "))))
+                         (take-while seq)
+                         (map #(str/replace % (re-pattern (str " · " (java.util.regex.Pattern/quote (str file))
+                                                               ":\\d+"))
+                                            ""))))]
+        (try
+          (ret r "(require 'replique.recorded)")
+          (record 1 "(defn wt [order] (when-not order (throw (ex-info \"none\" {}))) (* 2 (:amount order)))")
+          (record 2 "(defn wf [orders] {:sum (reduce + (map wt orders)) :n (count orders)})")
+          (ret r "(wf [{:amount 1} {:amount 2 :note \"x\"}])")
+          (ret r "(wf [{:amount 3}])")
+          (ret r "(try (wt nil) (catch Exception _))")
+          (let [lines (text)]
+            (testing "each function, how many calls, made by what, and what they looked like"
+              (is (= ["user/wt  4 calls kept"
+                      "  made in:  user/wf ×3, no call recorded ×1"
+                      "  called with 1 arg: [(or {:amount long, :note (optional string)} nil)]  (3 different)"
+                      "  returned ×3: long"
+                      "  no value kept ×1"]
+                     (block lines "user/wt")))
+              (is (= ["user/wf  2 calls kept"
+                      "  made in:  no call recorded ×2"
+                      "  called with 1 arg: [(vector {:amount long, :note (optional string)} [1 2])]  (2 different)"
+                      "  returned: {:n int, :sum long}"
+                      "  made:     user/wt ×3"]
+                     (block lines "user/wf")))))
           (finally (disconnect r) (disconnect c) (.delete file)))))))
 
 (deftest a-literal-a-function-returns-is-what-it-returned

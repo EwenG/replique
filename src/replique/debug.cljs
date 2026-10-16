@@ -35,7 +35,8 @@
   Asked through `op', with what the JVM wants as JSON and what it gets back as
   EDN, as replique.inspect is. That a unit recorded is said with the
   runtime's notify, once every `tell-every' ms at most."
-  (:require [replique.iterations :as iterations]))
+  (:require [replique.iterations :as iterations]
+            [replique.shape :as shape]))
 
 (def ^:private calls-kept
   "How many calls of a unit made in no other call kept are kept, the last
@@ -606,9 +607,51 @@
                                  sites)})
                   cs)}))
 
+(defn- value-said
+  "What the site SITE evaluated to last in the call CALL - in the iteration
+  ITERATION of a loop of it, where there is one - at PATH in it, its keywords
+  as they print, printed LEVEL deep and LENGTH long, with nothing realized:
+  {:printed s}, or {} where nothing is kept."
+  [{:keys [site call iteration path level length]}]
+  (let [v (recorded-value site call iteration)]
+    (if (= :not-recorded v)
+      {}
+      (let [path (map #(if (and (string? %) (= ":" (first %))) (keyword (subs % 1)) %) path)
+            s (binding [*print-length* length *print-level* level]
+                (pr-str (unforced (get-in v path) level length)))]
+        {:printed (if (> (count s) 100000) (str (subs s 0 100000) "...") s)}))))
+
+(defn- shapes-said
+  "The calls kept, as replique/debug.clj takes them to sum them up: each
+  {:call :unit :made-by}, the unit of the call it was made in, with the shapes
+  of what it was called with, :args, and returned, :value, where they are
+  kept - and whether it :threw. UNITS says the sites of each unit:
+  [[unit entries returns threw] ...], threw nil where it does not record
+  what its calls threw."
+  [{:keys [units]}]
+  (let [ends (into {} (map (fn [[u entries returns threw]] [u [entries returns threw]])) units)
+        latest (fn [c ks]
+                 (->> ks
+                      (keep (fn [k]
+                              (when-let [e (.get (.-values c) k)]
+                                [(last-of (.-numbers e)) k (last-of (.-values e))])))
+                      (sort-by first)
+                      last))]
+    {:calls (vec (for [c (es6-iterator-seq (.values by-number))
+                       :let [[entries returns threw] (get ends (.-unit c))]
+                       :when entries
+                       :let [[_ _ args] (latest c entries)
+                             [_ k v] (latest c returns)]]
+                   (cond-> {:call (.-n c) :unit (.-unit c)
+                            :made-by (some-> (.get by-number (first (.-parent c))) .-unit)}
+                     (vector? args) (assoc :args (mapv shape/shape args))
+                     k (assoc :value (shape/shape v) :threw (= k threw)))))}))
+
 (defn- handle [{:keys [op unit call] :as msg}]
   (case op
     "recorded" (recorded unit call (:iteration msg))
+    "value" (value-said msg)
+    "shapes" (shapes-said msg)
     "call" (call-said unit call)
     "calls" (calls-said msg)
     "wrap" {:skipped (vec (keep (fn [w] (when-let [why (wrap! w)] {:name (:name w) :why why}))
